@@ -1,27 +1,11 @@
-# Configuracao com credenciais (NUNCA committar)
-.env
-
-# Python
+.venv/
 __pycache__/
 *.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-
-# Playwright
-pw-env/
-
-# Ollama
-.ollama/
-
-# Debug / screenshots
-artifacts/
-
-# VS Code
-.vscode/
-
-# OS
-Thumbs.db
-Desktop.ini
-.DS_Store
+data/
+logs/
+evidencias/
+*.db
+.env
+.pytest_cache/
+*.log
+bot_local.db

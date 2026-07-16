@@ -1,4 +1,7 @@
-﻿from bot.core.portal_adapter import PortalAdapter, PortalContext, StudentGrade, GradeResult
+﻿from bot.core.portal_adapter import (
+    PortalAdapter, PortalContext, StudentGrade, GradeResult,
+    LessonPlan, LessonPlanResult,
+)
 from bot.core.sge_adapter import SGEAdapter
 from bot.core.custom_adapter import CustomPortalAdapter
 from bot.core.engine import BotEngine
@@ -10,6 +13,8 @@ __all__ = [
     "PortalContext",
     "StudentGrade",
     "GradeResult",
+    "LessonPlan",
+    "LessonPlanResult",
     "SGEAdapter",
     "CustomPortalAdapter",
     "BotEngine",

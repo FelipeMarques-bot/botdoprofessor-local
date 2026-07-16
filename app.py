@@ -10,6 +10,7 @@ from bot.models.database import db, init_db
 from bot.models.user import User
 from bot.api.routes import auth_bp, license_bp, admin_bp, audit_bp
 from bot.payment.routes import payment_bp, webhook_bp
+from bot.api.lesson_plan_routes import lesson_plan_bp
 from bot.security.auth import require_auth, require_permission
 from bot.security.errors import register_error_handlers
 from bot.ops.monitoring import BackupManager, HealthChecker
@@ -35,6 +36,7 @@ def create_app():
     app.register_blueprint(audit_bp)
     app.register_blueprint(payment_bp)
     app.register_blueprint(webhook_bp)
+    app.register_blueprint(lesson_plan_bp)
 
     @app.route("/api/health")
     def health():

@@ -1,6 +1,11 @@
 import re
+import os
+import tempfile
+import urllib.request
 from typing import Optional, List, Dict
-from bot.core.portal_adapter import PortalAdapter, PortalContext, StudentGrade
+from bot.core.portal_adapter import (
+    PortalAdapter, PortalContext, StudentGrade, LessonPlan, LessonPlanResult,
+)
 from bot.core.portal_memory import PortalMemory
 
 try:
@@ -381,3 +386,626 @@ class SGEAdapter(PortalAdapter):
             return 0.0
         intersection = a_tokens & b_tokens
         return len(intersection) / max(len(a_tokens), len(b_tokens))
+
+    # ------------------------------------------------------------------ #
+    #  Helpers internos — Plano de Aula                                    #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalize(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    @staticmethod
+    def _extract_turma_number(turma: str) -> str:
+        m = re.search(r"(\d+)", turma or "")
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _extract_first_number(text: str) -> str:
+        m = re.search(r"(\d+)", text or "")
+        return m.group(1) if m else ""
+
+    def _iter_scopes(self, page: Page):
+        """Yield locators for main content, iframe, and shadow roots."""
+        yield page
+        for frame in page.frames:
+            if frame != page.main_frame:
+                yield frame
+
+    def _click_text_any_scope(self, page: Page, text: str) -> bool:
+        for scope in self._iter_scopes(page):
+            for tag in ["a", "input", "button", "span", "td"]:
+                loc = scope.locator(f"{tag}:has-text('{text}')")
+                if loc.count() > 0:
+                    try:
+                        loc.first.click(timeout=self.ACTION_TIMEOUT)
+                        return True
+                    except Exception:
+                        continue
+        return False
+
+    def _click_any_selector(self, page: Page, selectors: list) -> bool:
+        for scope in self._iter_scopes(page):
+            for sel in selectors:
+                try:
+                    loc = scope.locator(sel)
+                    if loc.count() == 0:
+                        continue
+                    loc.first.click(timeout=self.ACTION_TIMEOUT)
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _set_filters_on_portal(self, page: Page, context: PortalContext) -> None:
+        for scope in self._iter_scopes(page):
+            for dropdown in scope.locator("select").all():
+                try:
+                    text = dropdown.inner_text(timeout=300)
+                    norm = self._normalize(text)
+                    if context.turno and self._normalize(context.turno) in norm:
+                        for opt in dropdown.locator("option").all():
+                            if self._normalize(context.turno) in self._normalize(opt.inner_text(timeout=200)):
+                                dropdown.select_option(value=opt.get_attribute("value"))
+                                break
+                    elif context.turma and self._normalize(context.turma) in norm:
+                        for opt in dropdown.locator("option").all():
+                            if self._normalize(context.turma) in self._normalize(opt.inner_text(timeout=200)):
+                                dropdown.select_option(value=opt.get_attribute("value"))
+                                break
+                except Exception:
+                    continue
+        try:
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+    def _click_cell_action_by_header(self, row, header_key: str, prefer_arrow: bool = False) -> bool:
+        js = """
+        ({ key, preferArrow }) => {
+            const tr = rowEl;
+            const table = tr.closest('table');
+            if (!table) return false;
+            const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
+            const keyNorm = normalize(key);
+            const headerRow = Array.from(table.querySelectorAll('tr')).find((r) => {
+                const text = normalize(r.textContent || '');
+                return text.includes('periodo') && text.includes('situacao');
+            });
+            if (!headerRow) return false;
+            const heads = Array.from(headerRow.querySelectorAll('th, td'));
+            let colIdx = -1;
+            for (let i = 0; i < heads.length; i++) {
+                const h = normalize(heads[i].textContent || '');
+                if (h.includes(keyNorm)) { colIdx = i; break; }
+            }
+            if (colIdx < 0) return false;
+            const cells = Array.from(tr.querySelectorAll('td, th'));
+            if (colIdx >= cells.length) return false;
+            const cell = cells[colIdx];
+            const clickables = Array.from(cell.querySelectorAll('a, input[type="image"], button, img'));
+            if (!clickables.length) return false;
+            const meta = (el) => normalize([
+                el.getAttribute?.('title') || '', el.getAttribute?.('alt') || '',
+                el.getAttribute?.('name') || '', el.getAttribute?.('id') || '',
+                el.getAttribute?.('src') || '',
+            ].join(' '));
+            let target = null;
+            if (preferArrow) {
+                target = clickables.find((el) => {
+                    const m = meta(el);
+                    return m.includes('seta') || m.includes('arrow') || m.includes('direita') || m.includes('status') || m.includes('situ');
+                });
+            }
+            if (!target) target = clickables.find((el) => meta(el).includes(keyNorm));
+            if (!target) target = clickables[0];
+            const clickable = target.closest?.('a, button, input[type="image"]') || target;
+            clickable.click();
+            return true;
+        }
+        """
+        try:
+            return bool(row.evaluate(
+                js.replace("rowEl", "el"),
+                {"key": header_key, "preferArrow": prefer_arrow},
+            ))
+        except Exception:
+            return False
+
+    def _row_for_periodo(self, page: Page, data_inicio: str, data_fim: str):
+        dd_i = data_inicio[:5]
+        dd_f = data_fim[:5]
+        for scope in self._iter_scopes(page):
+            try:
+                grid = scope.locator("table[id='GRIDPLANEJADO']")
+                if grid.count() == 0:
+                    continue
+                rows = grid.locator("> tbody > tr")
+                total = rows.count()
+            except Exception:
+                continue
+            for idx in range(total):
+                row = rows.nth(idx)
+                try:
+                    text = self._normalize(row.inner_text(timeout=300))
+                except Exception:
+                    continue
+                if not text or "periodo" in text or "situacao" in text:
+                    continue
+                if dd_i in text and dd_f in text:
+                    return row
+        return None
+
+    def _click_anexo_icon_on_row(self, row) -> bool:
+        if self._click_cell_action_by_header(row, "anex", prefer_arrow=False):
+            return True
+        try:
+            icons = row.locator("a, img, input[type='image']")
+            total = icons.count()
+        except Exception:
+            return False
+        for idx in range(total):
+            node = icons.nth(idx)
+            try:
+                meta = " ".join([
+                    (node.get_attribute("title") or ""),
+                    (node.get_attribute("alt") or ""),
+                    (node.get_attribute("src") or ""),
+                    (node.get_attribute("name") or ""),
+                ])
+                if "anex" not in self._normalize(meta):
+                    continue
+                node.click(timeout=self.ACTION_TIMEOUT)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _ativar_situacao_da_linha(self, row) -> bool:
+        if self._click_cell_action_by_header(row, "situ", prefer_arrow=True):
+            return True
+        try:
+            icons = row.locator("a, img, input[type='image']")
+            total = icons.count()
+        except Exception:
+            return False
+        for idx in range(total):
+            node = icons.nth(idx)
+            try:
+                meta = " ".join([
+                    (node.get_attribute("title") or ""),
+                    (node.get_attribute("alt") or ""),
+                    (node.get_attribute("src") or ""),
+                    (node.get_attribute("name") or ""),
+                ])
+                norm = self._normalize(meta)
+                if "situ" in norm or "seta" in norm or "status" in norm:
+                    node.click(timeout=self.ACTION_TIMEOUT)
+                    return True
+            except Exception:
+                continue
+        if total > 0:
+            try:
+                icons.nth(total - 1).click(timeout=self.ACTION_TIMEOUT)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _click_plus_planejamento(self, page: Page) -> bool:
+        js = """
+        () => {
+            const incluir = document.querySelector('a[onclick*="INCLUIRPLANEJAMENTO" i]');
+            if (incluir) { incluir.click(); return true; }
+            const txt = Array.from(document.querySelectorAll('body *')).find((el) => {
+                const t = (el.textContent || '').toLowerCase();
+                return t.includes('planejamentos:');
+            });
+            if (!txt) return false;
+            const root = txt.closest('table, div, tr, td') || txt.parentElement || document.body;
+            const candidate = root.querySelector(
+                'img[alt="+"]' + ', input[type="image"][alt="+"]' + ', a img[alt="+"]'
+                + ', img[src*="plus" i]' + ', img[src*="mais" i]'
+                + ', button, a, input[type="submit"], input[type="button"]'
+            );
+            if (!candidate) return false;
+            if (['A', 'BUTTON', 'INPUT'].includes(candidate.tagName)) {
+                candidate.click();
+            } else {
+                const clickable = candidate.closest('a, button, input[type="image"]') || candidate;
+                clickable.click();
+            }
+            return true;
+        }
+        """
+        try:
+            if page.evaluate(js):
+                return True
+        except Exception:
+            pass
+        return self._click_any_selector(page, [
+            "a[onclick*='INCLUIRPLANEJAMENTO' i]",
+            "a:has(img[name='INCLUI'])",
+            "img[name='INCLUI']",
+            "img[alt='+']",
+            "input[type='image'][alt='+']",
+            "a:has(img[alt='+'])",
+            "img[src*='plus' i]",
+            "img[src*='mais' i]",
+            "button:has-text('+')",
+            "a:has-text('+')",
+        ])
+
+    def _set_periodo_and_aulas(self, page: Page, data_inicio: str, data_fim: str, n_aulas: int) -> bool:
+        try:
+            page.locator("input[name='_PLAULADTINICIO']").fill(data_inicio, timeout=self.ACTION_TIMEOUT)
+            page.locator("input[name='_PLAULADTFIM']").fill(data_fim, timeout=self.ACTION_TIMEOUT)
+            page.locator("input[name='_PLAULANUMAULAS']").fill(str(int(n_aulas)), timeout=self.ACTION_TIMEOUT)
+            page.wait_for_timeout(500)
+            return True
+        except Exception:
+            pass
+        js = """
+        ({ inicio, fim, aulas }) => {
+          const allText = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'))
+            .filter((el) => !el.disabled && !el.readOnly);
+          const isDateLike = (el) => {
+            const key = `${el.name || ''} ${el.id || ''}`.toLowerCase();
+            return key.includes('period') || key.includes('data') || key.includes('dt');
+          };
+          let dateInputs = allText.filter(isDateLike);
+          if (dateInputs.length >= 2) {
+            dateInputs[0].value = inicio;
+            dateInputs[1].value = fim;
+          }
+          let aulasInput = allText.find((el) => {
+            const key = `${el.name || ''} ${el.id || ''}`.toLowerCase();
+            return key.includes('aula');
+          });
+          if (!aulasInput) {
+            aulasInput = allText.find((el) => /^\\d*$/.test((el.value || '').trim())) || null;
+          }
+          if (!aulasInput) return false;
+          aulasInput.value = String(aulas);
+          return true;
+        }
+        """
+        try:
+            return bool(page.evaluate(js, {"inicio": data_inicio, "fim": data_fim, "aulas": int(n_aulas)}))
+        except Exception:
+            return False
+
+    def _click_confirmar(self, page: Page) -> bool:
+        return self._click_any_selector(page, [
+            "input[name='BTNCONFIRMAR']",
+            "button:has-text('Confirmar')",
+            "input[value*='Confirmar' i]",
+        ])
+
+    def _download_pdf(self, url: str, name_hint: str) -> str:
+        base_name = (name_hint or "plano_aula.pdf").strip()
+        if not base_name.lower().endswith(".pdf"):
+            base_name = f"{base_name}.pdf"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", base_name)
+        tmp_dir = tempfile.mkdtemp(prefix="plano_aula_")
+        target = os.path.join(tmp_dir, safe_name)
+        dl_url = url
+        m = re.search(r"(?:drive\.google\.com/file/d/|drive\.google\.com/open\?id=|drive\.google\.com/uc\?id=)([a-zA-Z0-9_-]+)", url)
+        if m:
+            dl_url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+        req = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            data = resp.read()
+        with open(target, "wb") as f:
+            f.write(data)
+        return target
+
+    def _fill_anexo_form(self, page: Page, titulo_documento: str, arquivo_path: str) -> bool:
+        ok_doc = False
+        for scope in self._iter_scopes(page):
+            for sel in [
+                "input[name*='ARQNOM' i]", "input[name*='DOCOBS' i]",
+                "input[id*='ARQNOM' i]", "input[name*='PLAULA' i][type='text']",
+                "input[type='text']",
+            ]:
+                try:
+                    loc = scope.locator(sel)
+                    if loc.count() == 0:
+                        continue
+                    loc.first.fill(titulo_documento, timeout=self.ACTION_TIMEOUT)
+                    ok_doc = True
+                    break
+                except Exception:
+                    continue
+            if ok_doc:
+                break
+
+        tipo_set = False
+        for scope in self._iter_scopes(page):
+            try:
+                selects = scope.locator("select")
+                total = selects.count()
+            except Exception:
+                continue
+            for i in range(total):
+                sel = selects.nth(i)
+                try:
+                    options = sel.locator("option")
+                    ocount = options.count()
+                except Exception:
+                    continue
+                target_value = None
+                for j in range(ocount):
+                    try:
+                        label = (options.nth(j).inner_text(timeout=200) or "").strip()
+                    except Exception:
+                        continue
+                    if "detal" in self._normalize(label) or "descricao" in self._normalize(label) or "anexo" in self._normalize(label):
+                        target_value = options.nth(j).get_attribute("value")
+                        break
+                if target_value is not None:
+                    try:
+                        sel.select_option(value=target_value)
+                        tipo_set = True
+                        break
+                    except Exception:
+                        continue
+            if tipo_set:
+                break
+
+        file_set = False
+        for scope in self._iter_scopes(page):
+            try:
+                file_loc = scope.locator("input[type='file']")
+                if file_loc.count() > 0:
+                    file_loc.first.set_input_files(arquivo_path)
+                    file_set = True
+                    break
+            except Exception:
+                continue
+
+        return ok_doc and tipo_set and file_set
+
+    # ------------------------------------------------------------------ #
+    #  API pública — Plano de Aula                                         #
+    # ------------------------------------------------------------------ #
+
+    def supports_lesson_plan(self) -> bool:
+        return True
+
+    def navigate_to_lesson_plan(self, context: PortalContext) -> bool:
+        p = self.page
+        try:
+            p.goto(
+                f"{self._base_url}/hportalprofessor.aspx",
+                wait_until="domcontentloaded", timeout=self.NAV_TIMEOUT,
+            )
+        except Exception:
+            pass
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+        except Exception:
+            pass
+        try:
+            p.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        escola_ok = False
+        for _ in range(5):
+            try:
+                p.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            try:
+                p.wait_for_timeout(1000)
+            except Exception:
+                pass
+            if self._click_text_any_scope(p, context.escola):
+                escola_ok = True
+                break
+        if not escola_ok:
+            return False
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+        except Exception:
+            pass
+        try:
+            p.wait_for_timeout(2000)
+        except Exception:
+            pass
+
+        turma_num = self._extract_turma_number(context.turma)
+        trimestre_num = self._extract_first_number(context.trimestre)
+        turno_norm = self._normalize(context.turno).upper()
+        etapa_num = self._extract_first_number(context.turma)
+
+        self._set_filters_on_portal(p, context)
+        try:
+            p.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        for scope in self._iter_scopes(p):
+            for attempt in range(10):
+                hidden_rows = scope.locator("input[name^='W0019W0075_TURNUMSTR_']")
+                total = hidden_rows.count()
+                if total > 0:
+                    break
+                try:
+                    p.wait_for_timeout(500)
+                except Exception:
+                    pass
+            else:
+                total = 0
+
+            for idx in range(total):
+                cell = hidden_rows.nth(idx)
+                try:
+                    label = (cell.input_value(timeout=400) or "").strip()
+                except Exception:
+                    continue
+                norm = self._normalize(label)
+                ok_turno = bool(turno_norm and self._normalize(turno_norm) in norm)
+                ok_turma = True if not turma_num else bool(re.search(rf"\bturma\s*{re.escape(turma_num)}\b", norm))
+                ok_trim = bool(trimestre_num and f"{trimestre_num}o trimestre" in norm)
+                ok_etapa = not bool(etapa_num) or bool(re.search(rf"\b{re.escape(etapa_num)}\s*[ºo]?\s*ano\b", norm))
+                if not (ok_turno and ok_turma and ok_trim and ok_etapa):
+                    continue
+
+                name = (cell.get_attribute("name") or "")
+                suffix = name.rsplit("_", 1)[-1]
+                selectors = [
+                    f"#W0019W0075_DISCIPLINA_{suffix}",
+                    f"img[name='W0019W0075_DISCIPLINA_{suffix}']",
+                    f"a:has(img[name='W0019W0075_DISCIPLINA_{suffix}'])",
+                    f"#W0019W0075_PLANOAULA_{suffix}",
+                    f"img[name='W0019W0075_PLANOAULA_{suffix}']",
+                    f"#W0019W0075_PLANODEAULA_{suffix}",
+                    f"img[name='W0019W0075_PLANODEAULA_{suffix}']",
+                ]
+                for sel in selectors:
+                    try:
+                        icon = scope.locator(sel)
+                        if icon.count() == 0:
+                            continue
+                        icon.first.click(timeout=self.ACTION_TIMEOUT)
+                        try:
+                            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+                        except Exception:
+                            pass
+                        try:
+                            p.wait_for_timeout(2000)
+                        except Exception:
+                            pass
+                        if "planejamentoaula" in (p.url or "").lower():
+                            self.memory.record_success("navigate_to_lesson_plan", context.escola)
+                            return True
+                    except Exception:
+                        continue
+
+        try:
+            p.goto(
+                f"{self._base_url}/hportalplanejamentoaula.aspx",
+                wait_until="domcontentloaded", timeout=self.NAV_TIMEOUT,
+            )
+            try:
+                p.wait_for_timeout(2000)
+            except Exception:
+                pass
+            if "planejamentoaula" in (p.url or "").lower():
+                self.memory.record_success("navigate_to_lesson_plan", "fallback_direct")
+                return True
+        except Exception:
+            pass
+        self.memory.record_failure("navigate_to_lesson_plan", context.escola, "not_found")
+        return False
+
+    def create_lesson_plan(self, plan: LessonPlan) -> bool:
+        p = self.page
+        if not self._click_plus_planejamento(p):
+            return False
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+            p.wait_for_timeout(2000)
+        except Exception:
+            pass
+        if not self._set_periodo_and_aulas(p, plan.data_inicio, plan.data_fim, plan.n_aulas):
+            return False
+        if not self._click_confirmar(p):
+            return False
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+            p.wait_for_timeout(2500)
+        except Exception:
+            pass
+
+        form_visivel = False
+        try:
+            form_visivel = p.locator("table[id='TABDADOSPLANEJAMENTO']").is_visible(timeout=1000)
+        except Exception:
+            pass
+        if form_visivel:
+            return False
+
+        self.memory.record_success("create_lesson_plan", plan.titulo)
+        return True
+
+    def upload_lesson_plan_pdf(self, titulo: str, pdf_path: str) -> bool:
+        p = self.page
+        row = None
+        for scope in self._iter_scopes(p):
+            try:
+                grid = scope.locator("table[id='GRIDPLANEJADO']")
+                if grid.count() == 0:
+                    continue
+                rows = grid.locator("> tbody > tr")
+                if rows.count() > 0:
+                    row = rows.last
+                    break
+            except Exception:
+                continue
+
+        if row is None:
+            return False
+
+        if not self._click_anexo_icon_on_row(row):
+            return False
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+            p.wait_for_timeout(2000)
+        except Exception:
+            pass
+
+        for scope in self._iter_scopes(p):
+            for sel in [
+                "a[onclick*='INCLUIRANEXO']",
+                "[name='W0260INCLUIANEXO']",
+                "[id='W0260INCLUIANEXO']",
+                "img[title*='Incluir anexo']",
+                "input[type='image'][name*='INCLUIANEXO']",
+            ]:
+                try:
+                    loc = scope.locator(sel)
+                    if loc.count() == 0:
+                        continue
+                    clickable = loc.first
+                    a_parent = clickable.locator("xpath=ancestor-or-self::a[1]")
+                    if a_parent.count() > 0:
+                        a_parent.first.click(timeout=self.ACTION_TIMEOUT)
+                    else:
+                        clickable.click(timeout=self.ACTION_TIMEOUT)
+                    break
+                except Exception:
+                    continue
+            else:
+                continue
+            break
+        else:
+            return False
+
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+            p.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        if not self._fill_anexo_form(p, titulo, pdf_path):
+            return False
+        if not self._click_confirmar(p):
+            return False
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+            p.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        self._click_text_any_scope(p, "Voltar")
+        try:
+            p.wait_for_load_state("networkidle", timeout=self.NAV_TIMEOUT)
+            p.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        self.memory.record_success("upload_lesson_plan_pdf", titulo)
+        return True

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Checkout — BotDoProfessor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .checkout { background: white; border-radius: 16px; padding: 40px; max-width: 480px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.1); }
+        .checkout h1 { font-size: 1.5em; margin-bottom: 8px; }
+        .checkout .plan-name { color: #e94560; font-weight: bold; margin-bottom: 24px; }
+        .checkout label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 0.9em; }
+        .checkout input, .checkout select { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; margin-bottom: 16px; }
+        .checkout .pay-btn { width: 100%; padding: 14px; background: #009ee3; color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: bold; cursor: pointer; margin-top: 8px; }
+        .checkout .pay-btn:hover { background: #0086cc; }
+        .checkout .pay-btn:disabled { background: #ccc; cursor: not-allowed; }
+        .checkout .divider { text-align: center; margin: 20px 0; color: #999; font-size: 0.9em; }
+        .checkout .pix-btn { width: 100%; padding: 14px; background: #32BCAD; color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: bold; cursor: pointer; }
+        .checkout .pix-btn:hover { background: #28a89e; }
+        .checkout .back { display: block; text-align: center; margin-top: 16px; color: #666; text-decoration: none; font-size: 0.9em; }
+        .loading { display: none; text-align: center; padding: 20px; }
+        .error { color: #e94560; font-size: 0.9em; margin-bottom: 12px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="checkout" id="checkout-form">
+        <h1>BotDoProfessor</h1>
+        <p class="plan-name" id="plan-label">Plano: Carregando...</p>
+
+        <div class="error" id="error-msg"></div>
+
+        <label for="name">Nome completo</label>
+        <input type="text" id="name" placeholder="Seu nome" required>
+
+        <label for="email">Email (receberá a chave de licença)</label>
+        <input type="email" id="email" placeholder="seu@email.com" required>
+
+        <label for="cpf">CPF (para o bot)</label>
+        <input type="text" id="cpf" placeholder="000.000.000-00" required>
+
+        <button class="pay-btn" id="pay-card" onclick="payWithCard()">
+            💳 Pagar com cartão
+        </button>
+
+        <div class="divider">— ou —</div>
+
+        <button class="pay-btn" style="background:#32BCAD" id="pay-pix" onclick="payWithPix()">
+            📱 Pagar com Pix
+        </button>
+
+        <a href="/" class="back">← Voltar</a>
+    </div>
+
+    <div class="checkout loading" id="loading">
+        <h2>Processando pagamento...</h2>
+        <p>Aguarde enquanto verificamos seu pagamento.</p>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const plan = params.get('plan') || '1ano';
+        const plans = {
+            '1ano': { label: '1 Ano — R$ 99,90', amount: 99.90 },
+            '2anos': { label: '2 Anos — R$ 169,83', amount: 169.83 },
+            '3anos': { label: '3 Anos — R$ 224,78', amount: 224.78 },
+        };
+        const planInfo = plans[plan] || plans['1ano'];
+        document.getElementById('plan-label').textContent = planInfo.label;
+
+        function showError(msg) {
+            const el = document.getElementById('error-msg');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function validateForm() {
+            const name = document.getElementById('name').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const cpf = document.getElementById('cpf').value.trim();
+            if (!name || !email || !cpf) {
+                showError('Preencha todos os campos.');
+                return false;
+            }
+            if (!email.includes('@')) {
+                showError('Email invalido.');
+                return false;
+            }
+            return true;
+        }
+
+        async function payWithCard() {
+            if (!validateForm()) return;
+            showError('');
+            document.getElementById('pay-card').disabled = true;
+            document.getElementById('pay-card').textContent = 'Criando pagamento...';
+
+            try {
+                const resp = await fetch('/api/payment/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        plan: plan,
+                        name: document.getElementById('name').value.trim(),
+                        email: document.getElementById('email').value.trim(),
+                        cpf: document.getElementById('cpf').value.trim(),
+                        payment_method: 'card',
+                    })
+                });
+                const data = await resp.json();
+                if (data.checkout_url) {
+                    window.location.href = data.checkout_url;
+                } else if (data.error) {
+                    showError(data.error);
+                    document.getElementById('pay-card').disabled = false;
+                    document.getElementById('pay-card').textContent = '💳 Pagar com cartão';
+                } else {
+                    window.location.href = data.init_point;
+                }
+            } catch (e) {
+                showError('Erro ao criar pagamento. Tente novamente.');
+                document.getElementById('pay-card').disabled = false;
+                document.getElementById('pay-card').textContent = '💳 Pagar com cartão';
+            }
+        }
+
+        async function payWithPix() {
+            if (!validateForm()) return;
+            showError('');
+            document.getElementById('pay-pix').disabled = true;
+            document.getElementById('pay-pix').textContent = 'Gerando Pix...';
+
+            try {
+                const resp = await fetch('/api/payment/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        plan: plan,
+                        name: document.getElementById('name').value.trim(),
+                        email: document.getElementById('email').value.trim(),
+                        cpf: document.getElementById('cpf').value.trim(),
+                        payment_method: 'pix',
+                    })
+                });
+                const data = await resp.json();
+                if (data.checkout_url) {
+                    window.location.href = data.checkout_url;
+                } else if (data.qr_code_base64) {
+                    document.getElementById('checkout-form').innerHTML = `
+                        <h1>Pagamento via Pix</h1>
+                        <p style="margin:16px 0">Escaneie o QR Code abaixo ou copie a chave Pix:</p>
+                        <img src="data:image/png;base64,${data.qr_code_base64}" style="width:200px;display:block;margin:0 auto 16px">
+                        <textarea readonly style="width:100%;height:60px;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:0.85em">${data.qr_code || ''}</textarea>
+                        <button onclick="navigator.clipboard.writeText('${data.qr_code || ''}')" style="width:100%;padding:10px;margin-top:8px;background:#32BCAD;color:white;border:none;border-radius:8px;cursor:pointer">Copiar chave Pix</button>
+                        <p style="margin-top:16px;color:#666;font-size:0.9em">Após o pagamento, a chave de licença será enviada para <b>${document.getElementById('email').value}</b></p>
+                        <a href="/" style="display:block;text-align:center;margin-top:16px;color:#666;text-decoration:none">← Voltar</a>
+                    `;
+                } else if (data.error) {
+                    showError(data.error);
+                    document.getElementById('pay-pix').disabled = false;
+                    document.getElementById('pay-pix').textContent = '📱 Pagar com Pix';
+                }
+            } catch (e) {
+                showError('Erro ao gerar Pix. Tente novamente.');
+                document.getElementById('pay-pix').disabled = false;
+                document.getElementById('pay-pix').textContent = '📱 Pagar com Pix';
+            }
+        }
+    </script>
+</body>
+</html>

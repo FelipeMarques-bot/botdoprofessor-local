@@ -13,6 +13,46 @@ from notion_client import Client
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+try:
+    from ai_assist import (
+        AI_ASSIST,
+        AI_LEARN_MODE,
+        GEMINI_API_KEY,
+        ai_is_available,
+        ai_is_enabled,
+        analyze_screen,
+        ensure_ollama,
+        find_element_on_screen,
+        record_demonstration_step,
+        learn_from_recording,
+    )
+except ImportError:
+    AI_ASSIST = False
+    AI_LEARN_MODE = False
+    GEMINI_API_KEY = ""
+
+    def ai_is_available():
+        return False
+
+    def ai_is_enabled():
+        return False
+
+    def analyze_screen(*args, **kwargs):
+        return {"elements": []}
+
+    def ensure_ollama(logger=None):
+        return False
+
+    def find_element_on_screen(*args, **kwargs):
+        return {"found": False}
+
+    def record_demonstration_step(*args, **kwargs):
+        return None
+
+    def learn_from_recording(*args, **kwargs):
+        return None
+
+
 from lancar_notas_sge import (
     ACTION_TIMEOUT_MS,
     HEADLESS,
@@ -341,15 +381,50 @@ def _load_sequencias_from_notion(logger=None) -> List[SequenciaRegistro]:
     _log(logger, f"Database de sequencias identificada: {title}")
 
     rows = _query_database_rows(notion, alvo_id, database_obj=db_obj)
+    _log(logger, f"Total de linhas na database de sequencias: {len(rows)}")
     result: List[SequenciaRegistro] = []
+    descartadas = 0
+
+    # Diagnostico: mostra propriedades da primeira linha
+    if rows:
+        first_props = rows[0].get("properties", {})
+        prop_summary = {k: v.get("type", "?") for k, v in first_props.items()}
+        _log(logger, f"[DIAG] Propriedades da database: {prop_summary}")
+        # Mostra valores da primeira linha para diagnostico
+        for k, v in first_props.items():
+            ptype = v.get("type", "?")
+            if ptype == "select":
+                val = (v.get("select") or {}).get("name", "(vazio)")
+            elif ptype == "title":
+                val = _extract_plain_text(v)
+            elif ptype == "checkbox":
+                val = v.get("checkbox", False)
+            elif ptype == "rich_text":
+                val = _extract_plain_text(v)[:80]
+            elif ptype == "date":
+                node = v.get("date") or {}
+                val = f"{node.get('start', '')} ate {node.get('end', '')}"
+            elif ptype == "files":
+                files = v.get("files") or []
+                val = [f.get("name", "") for f in files]
+            elif ptype == "url":
+                val = v.get("url", "")
+            else:
+                val = f"(tipo={ptype})"
+            if val and val != "(vazio)" and val != "(tipo=?)":
+                _log(logger, f"[DIAG]   {k} = {val}")
 
     for row in rows:
         props = row.get("properties", {})
         if not _is_active_row(props):
+            _log(logger, f"[DIAG] Linha descartada: campo 'Ativo' desmarcado ou ausente.")
+            descartadas += 1
             continue
 
         ano = _extract_select_or_text(props, ["Ano"])
         if not ano:
+            _log(logger, f"[DIAG] Linha descartada: campo 'Ano' vazio.")
+            descartadas += 1
             continue
 
         # Escola, Turno e Turma NAO sao mais obrigatorios: o mapeamento
@@ -451,6 +526,7 @@ def _load_sequencias_from_notion(logger=None) -> List[SequenciaRegistro]:
 
         if status.lower() == "publicado":
             _log(logger, f"Linha '{titulo_linha or '(sem titulo)'}' ja publicada; pulando.")
+            descartadas += 1
             continue
 
         # Log detalhado do que faltou (ajuda a diagnosticar schema do Notion).
@@ -462,6 +538,7 @@ def _load_sequencias_from_notion(logger=None) -> List[SequenciaRegistro]:
         if n_aulas <= 0: missing.append("N aulas")
         if missing:
             _log(logger, f"Linha '{titulo_linha or '(sem titulo)'}' ignorada. Faltando: {', '.join(missing)}.")
+            descartadas += 1
             continue
 
         result.append(
@@ -483,6 +560,7 @@ def _load_sequencias_from_notion(logger=None) -> List[SequenciaRegistro]:
         )
 
     if not result:
+        _log(logger, f"[DIAG] Total de linhas: {len(rows)}, validas: {len(result)}, descartadas: {descartadas}")
         raise LancamentoError("Nenhum registro ativo/valido encontrado na database de Sequencias Didaticas.")
 
     _log(logger, f"Registros de sequencia carregados do Notion: {len(result)}")
@@ -1455,6 +1533,14 @@ def executar_lancamento_sequencia(
 
     status_map: Dict[str, dict] = {}
 
+    # Prepara IA local se necessario (antes de abrir navegador)
+    provider = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+    if provider == "ollama":
+        _log(logger, "[Ollama] Verificando instalacao do Ollama e modelo de visao...")
+        _log(logger, "[Ollama] Nota: download pode levar varios minutos na primeira execucao.")
+        if not ensure_ollama(logger=logger):
+            _log(logger, "[Ollama] Aviso: Ollama nao disponivel. IA assistida desabilitada.")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
         context = browser.new_context()
@@ -1484,6 +1570,18 @@ def executar_lancamento_sequencia(
                     resumo.falhas_detalhes.append(msg)
                     continue
 
+                if ai_is_enabled():
+                    try:
+                        ai_shot = page.screenshot()
+                        ai_screen = analyze_screen(ai_shot, objective=f"executar fluxo plano de aulas para {turma_label}", logger=logger)
+                        if ai_screen.get("suggested_selector"):
+                            _log(logger, f"[AI] Sugestao: {ai_screen.get('next_step', '')[:80]}")
+                    except Exception:
+                        pass
+
+                if AI_LEARN_MODE:
+                    record_demonstration_step(idx, page, f"iniciando fluxo: {turma_label}", logger=logger)
+
                 ok_plan, ok_anexo, ok_sit = _executar_fluxo_plano_aulas(
                     page,
                     contexto=ctx,
@@ -1498,6 +1596,9 @@ def executar_lancamento_sequencia(
                 if ok_sit:
                     resumo.situacoes_ativadas += 1
 
+                if AI_LEARN_MODE:
+                    record_demonstration_step(900 + idx, page, f"fluxo concluido: {turma_label} plan={ok_plan} anexo={ok_anexo} sit={ok_sit}", logger=logger)
+
                 pid = registro.page_id
                 if pid not in status_map:
                     status_map[pid] = {"total": 0, "ok": 0, "titulo": registro.titulo_documento}
@@ -1509,13 +1610,37 @@ def executar_lancamento_sequencia(
                 resumo.falhas += 1
                 resumo.falhas_detalhes.append(msg)
                 _log(logger, msg)
-                _click_inicio(page)
+                if ai_is_enabled():
+                    try:
+                        ai_shot = page.screenshot()
+                        ai_result = find_element_on_screen(ai_shot, "botao de voltar ao inicio ou menu principal", logger=logger)
+                        raw_sel = ai_result.get("selector", "")
+                        sel = (raw_sel or "").replace("{", "").replace("}", "").strip().strip("'\"")
+                        if ai_result.get("found") and sel:
+                            page.locator(sel).first.click(timeout=5000)
+                            page.wait_for_timeout(1000)
+                    except Exception:
+                        _click_inicio(page)
+                else:
+                    _click_inicio(page)
             except Exception as exc:  # noqa: BLE001
                 msg = f"Falha em {turma_label}: {exc}"
                 resumo.falhas += 1
                 resumo.falhas_detalhes.append(msg)
                 _log(logger, msg)
-                _click_inicio(page)
+                if ai_is_enabled():
+                    try:
+                        ai_shot = page.screenshot()
+                        ai_result = find_element_on_screen(ai_shot, "botao de voltar ao inicio ou menu principal", logger=logger)
+                        raw_sel = ai_result.get("selector", "")
+                        sel = (raw_sel or "").replace("{", "").replace("}", "").strip().strip("'\"")
+                        if ai_result.get("found") and sel:
+                            page.locator(sel).first.click(timeout=5000)
+                            page.wait_for_timeout(1000)
+                    except Exception:
+                        _click_inicio(page)
+                else:
+                    _click_inicio(page)
 
         context.close()
         browser.close()
@@ -1532,6 +1657,14 @@ def executar_lancamento_sequencia(
                     _log(logger, f"Notion: registro '{info['titulo']}' marcado como Publicado.")
                 except Exception as exc:  # noqa: BLE001
                     _log(logger, f"Notion: falha ao marcar '{info['titulo']}' como Publicado: {exc}")
+
+    if AI_LEARN_MODE and ai_is_available():
+        _log(logger, "[AI] Modo aprendizado ativo. Gerando plano de automacao...")
+        plan = learn_from_recording(logger=logger)
+        if plan:
+            _log(logger, f"[AI] Plano gerado: {plan.get('workflow_name', 'sem nome')} com {len(plan.get('steps', []))} passos.")
+        else:
+            _log(logger, "[AI] Nao foi possivel gerar plano.")
 
     _log(logger, "--- Resumo da execucao ---")
     _log(logger, f"Contextos processados: {resumo.contextos_total}")
@@ -1560,11 +1693,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--arquivo-8-ano", default="")
     parser.add_argument("--arquivo-9-ano", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ai-assist", action="store_true", help="Ativa assistencia por IA para navegacao no portal")
+    parser.add_argument("--ai-learn", action="store_true", help="Ativa modo de aprendizado")
+    parser.add_argument("--gemini-api-key", default="", help="Chave API do Gemini")
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+
+    if args.ai_assist or args.ai_learn:
+        if args.gemini_api_key:
+            os.environ["GEMINI_API_KEY"] = args.gemini_api_key
+        if args.ai_assist:
+            os.environ["AI_ASSIST"] = "1"
+        if args.ai_learn:
+            os.environ["AI_ASSIST"] = "1"
+            os.environ["AI_LEARN_MODE"] = "1"
+        print(f"[AI] Modo {'aprendizado' if args.ai_learn else 'assistido'} ativado.")
+        if ai_is_available():
+            print("[AI] IA configurada e disponivel.")
+        else:
+            print("[AI] ATENCAO: IA nao disponivel. Defina GEMINI_API_KEY ou configure Ollama.")
 
     arquivo_por_ano = {
         "6º Ano": args.arquivo_6_ano,

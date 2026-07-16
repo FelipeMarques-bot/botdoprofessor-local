@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pagamento — BotDoProfessor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .card { background: white; border-radius: 16px; padding: 40px; max-width: 480px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.1); text-align: center; }
+        .card .icon { font-size: 4em; margin-bottom: 16px; }
+        .card h1 { margin-bottom: 12px; }
+        .card p { color: #666; margin-bottom: 24px; line-height: 1.6; }
+        .card .key { background: #f0f0f0; padding: 16px; border-radius: 8px; font-family: monospace; font-size: 1.1em; word-break: break-all; margin-bottom: 24px; border: 2px dashed #ccc; }
+        .card .btn { display: inline-block; padding: 14px 32px; background: #0f3460; color: white; border-radius: 8px; text-decoration: none; font-weight: bold; }
+        .card .btn:hover { background: #16213e; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon" id="icon">✅</div>
+        <h1 id="title">Pagamento confirmado!</h1>
+        <p id="msg">Sua chave de licença:</p>
+        <div class="key" id="license-key">---</div>
+        <p style="font-size:0.9em;color:#999">Copie esta chave e use no programa para ativar sua licença.</p>
+        <p style="font-size:0.85em;color:#999;margin-bottom:16px">Também enviamos uma cópia para seu email.</p>
+        <a href="/" class="btn">Voltar ao início</a>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const key = params.get('key') || 'Chave nao encontrada';
+        document.getElementById('license-key').textContent = key;
+
+        if (key === 'Chave nao encontrada') {
+            document.getElementById('icon').textContent = '⏳';
+            document.getElementById('title').textContent = 'Pagamento em processamento';
+            document.getElementById('msg').textContent = 'Assim que o pagamento for confirmado, sua chave será enviada por email.';
+        }
+    </script>
+</body>
+</html>

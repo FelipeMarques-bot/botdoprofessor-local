@@ -1,224 +1,143 @@
-# Notion_Escolas
+# Bot do Professor
 
-Automacao para criar estrutura no Notion e lancar notas no SGE via GitHub Actions, sem dependencia de N8N.
+Automacao de lancamento de notas do Notion para o portal SGE (sge8147.com.br).
 
-## Arquivos principais
+## O que faz
 
-- notion_lancamento.py: cria paginas e databases no Notion para escolas, turnos, turmas e trimestres.
-- lancar_notas_sge.py: le notas do Notion e tenta lancar no SGE via Playwright.
-- painel.py: interface Streamlit para executar o lancamento localmente.
-- .github/workflows/lancar-notas-sge.yml: workflow principal para lancamento manual no GitHub Actions.
-- .github/workflows/processar-solicitacoes-sge.yml: processa automaticamente solicitacoes marcadas no Notion.
-- .github/workflows/solicitar-lancamento-issue.yml: workflow de solicitacao via Issue (segundo botao).
-- .github/ISSUE_TEMPLATE/solicitar-lancamento-sge.yml: formulario para solicitar lancamento.
+1. Le as notas de databases do Notion (por escola, turno, turma, trimestre e atividade)
+2. Abre o portal SGE via navegador automatizado (Playwright)
+3. Preenche as notas de cada aluno na grade do SGE
+4. Marca no Notion o status como "Lancada" apos cada lancamento bem-sucedido
+5. (Opcional) Usa IA local (Ollama) para辅助ar navegacao quando elementos nao sao encontrados
 
-## URL do SGE
+## Requisitos
 
-Padrao do projeto:
+- **Windows 10/11**
+- **Python 3.12+** (o `run.bat` instala automaticamente)
+- **Conta no portal SGE** (credenciais CPF + senha)
+- **Integracao com Notion** (token de integracao + ID da pagina raiz)
 
-- https://www.sge8147.com.br/hportalprofessor.aspx
+## Instalacao rapida
 
-Se precisar trocar, configure a secret/variavel SGE_LOGIN_URL.
+1. Copie a pasta do projeto para a maquina
+2. Clique duas vezes em `run.bat`
+3. O script instala tudo automaticamente:
+   - Python (se nao tiver)
+   - Dependencias (`requirements.txt`)
+   - Navegador Chromium (Playwright)
+   - Ollama + modelo de IA (opcional)
+4. Na primeira execucao, o arquivo `.env` e criado e aberto para edicao
+5. Preencha as credenciais e salve
+6. O painel web abre automaticamente no navegador
 
-## Secrets obrigatorios no GitHub
+## Configuracao
 
-Em Settings > Secrets and variables > Actions:
+Edite o arquivo `.env` (criado na primeira execucao):
 
-- NOTION_TOKEN
-- ROOT_PAGE_ID
-- SGE_CPF
-- SGE_SENHA
-- SGE_LOGIN_URL (opcional)
-
-### Secret adicional para Sequencia Didatica
-
-O workflow `Plano de Aula - Sequencia Didatica` aceita uma secret extra:
-
-- SEQUENCIAS_DATABASE_ID (recomendado)
-
-Exemplo de valor: `383db7e871644613804539dcb69f6a1a`
-
-Quando definida, o script le a database `Sequencias Didaticas - PDFs`
-diretamente por ID, sem depender de permissao na pagina raiz apontada
-por ROOT_PAGE_ID. Sem essa secret, o script cai na descoberta recursiva
-(mais lenta e exige acesso de leitura a paginas ancestrais).
-
-## Instalacao local (opcional)
-
-```bash
-pip install -r requirements.txt
-playwright install chromium
-```
-
-## Execucao local (opcional)
-
-```bash
-python lancar_notas_sge.py --dry-run
-streamlit run painel.py
-```
-
-### Login manual local (alternativa)
-
-Quando o login no ambiente remoto falhar, rode localmente com navegador visivel:
-
-```bash
-HEADLESS=0 MANUAL_LOGIN=1 python lancar_notas_sge.py --escola "Tancredo" --turno "Matutino" --turma "6º Ano" --trimestre "2º Trimestre"
-```
-
-O script aguarda voce autenticar manualmente no SGE e continua automaticamente apos detectar que saiu da tela de login.
-
-## Execucao remota no GitHub
-
-Ha duas formas:
-
-1. Manual por `Run workflow`.
-2. Automatica por solicitacoes marcadas no Notion (agendamento a cada 10 minutos).
-
-### Botao 1: Run workflow (Actions)
-
-1. Abra o repositorio no GitHub.
-2. Acesse Actions.
-3. Selecione Lancar Notas SGE.
-4. Clique em Run workflow.
-5. Preencha filtros opcionais e execute.
-
-### Botao 2: Solicitar por Issue
-
-1. Abra o repositorio no GitHub.
-2. Acesse Issues > New issue.
-3. Escolha o formulario Solicitar lancamento SGE.
-4. Preencha os campos e clique em Submit new issue.
-5. A issue dispara o workflow automaticamente.
-
-### Processamento automatico por solicitacao no Notion
-
-1. Em cada database `Solicitacoes SGE - <Escola>`, marque `Solicitar lancamento`.
-2. O workflow `Processar Solicitacoes SGE` verifica pendencias no cron.
-3. Se houver item pendente, executa o lancamento e atualiza status/log na propria linha.
-4. Para teste, rode manualmente com `dry_run=true`.
-
-### Processamento manual por escola (sem checkbox)
-
-1. Acesse Actions > `Processar Solicitacoes SGE` > Run workflow.
-2. Preencha `escola` com o nome exato (ex.: `Juvenal`).
-3. Use `dry_run=true` para validar sem enviar ao SGE.
-4. Execute o workflow (neste modo, nao depende da tabela `Solicitacoes SGE`).
-
-## Sequencia Didatica (Plano de Aula)
-
-O workflow `Plano de Aula - Sequencia Didatica` le registros da database
-`Sequencias Didaticas - PDFs` e cria planejamentos, anexa PDFs e ativa
-situacoes no SGE para cada turma.
-
-### Fluxo de execucao
-
-1. Carrega registros da database do Notion.
-2. Filtra por ano (`--ano`) e escola (`--escola`).
-3. Para cada contexto (escola + turno + turma + trimestre), faz:
-   - **Match de template**: encontra o registro de sequencia correspondente
-     (por ano, escola e nome de arquivo/titulo).
-   - **Cria planejamento**: preenche periodo e numero de aulas no SGE.
-   - **Anexa PDF**: faz upload do arquivo da sequencia didatica.
-   - **Ativa situacao**: marca a situacao da linha como concluida.
-
-### Execucao local
-
-```bash
-# Validar sem enviar ao SGE
-python lancar_sequencia_didatica_sge.py --dry-run --data-inicio 2025-02-01 --data-fim 2025-02-28
-
-# Executar para todos os contextos
-python lancar_sequencia_didatica_sge.py --data-inicio 2025-02-01 --data-fim 2025-02-28
-
-# Filtrar por escola e ano
-python lancar_sequencia_didatica_sge.py --escola "Tancredo" --ano "6º Ano" --data-inicio 2025-02-01 --data-fim 2025-02-28
-
-# Especificar arquivos PDF por ano
-python lancar_sequencia_didatica_sge.py --arquivo-6-ano "seq_6.pdf" --arquivo-7-ano "seq_7.pdf" --data-inicio 2025-02-01 --data-fim 2025-02-28
-```
-
-### Match de template (sequencia)
-
-O script encontra o template correto seguindo esta ordem:
-
-1. **Por ano**: filtra registros cujo ano corresponde ao da turma.
-2. **Por escola**: prioriza registros com a mesma escola do contexto.
-   Se nenhum bater, usa registros sem escola preenchida.
-3. **Por arquivo**: se um nome de arquivo foi informado via CLI
-   (`--arquivo-6-ano`, etc.), tenta match tolerante:
-   - match exato apos normalizar (sem acentos, lowercase)
-   - `startswith` em qualquer direcao
-   - ignorar sufixo " Ano.pdf" / ".pdf"
-4. **Fallback por titulo**: se o nome do arquivo nao casar, tenta
-   match pelo titulo do documento no Notion.
-5. **Ultimo recurso**: usa o primeiro registro restante.
-
-Se nenhum template for encontrado para uma turma, ela e pulada com
-falha registrada no resumo final.
-
-### Troubleshooting de match
-
-- **"Nenhum template de sequencia encontrado"**: verifique se a database
-  `Sequencias Didaticas - PDFs` tem registros ativos para o ano da turma.
-- **Logs de diagnostico**: o script imprime logs com prefixo `[diag]`
-  mostrando quantos candidatos foram encontrados em cada etapa do match.
-- **Anos disponiveis**: a database lista os anos encontrados no inicio
-  da execucao. Use `--ano` para filtrar.
-
-## Troubleshooting de login SGE
-
-### Erros comuns
-
-| Erro | Causa provavel | Acao |
-|------|---------------|------|
-| `Nao foi possivel localizar os campos de login` | URL errada ou formulario mudou | Verificar `SGE_LOGIN_URL`; rodar localmente com `HEADLESS=0` |
-| `Falha no login do SGE: senha inval` | Credencial errada ou senha com maiuscula/minuscula | Verificar `SGE_CPF` e `SGE_SENHA` |
-| `Nao foi possivel encontrar formulario de login apos N fallbacks` | Portal SGE indisponivel ou URL desatualizada | Acessar manualmente o portal; atualizar `SGE_LOGIN_URL` |
-| `Timeout aguardando login manual` | Usuario nao completou login a tempo | Aumentar `MANUAL_LOGIN_TIMEOUT_SEC` |
-
-### Debug local
-
-```bash
-# Login manual com navegador visivel
-HEADLESS=0 MANUAL_LOGIN=1 python lancar_notas_sge.py --dry-run --escola "Tancredo" --turno "Matutino" --turma "6º Ano"
-
-# Capturar screenshot/HTML do estado de login
-SGE_DEBUG_LOGIN=1 SGE_DEBUG_DIR=./debug-login python lancar_sequencia_didatica_sge.py --dry-run --data-inicio 2025-02-01 --data-fim 2025-02-28
-```
-
-Os artifacts de debug sao salvos em `SGE_DEBUG_DIR` (padrao: `artifacts/sge-login/`)
-quando executado no GitHub Actions, ou no diretorio especificado localmente.
-
-### Mecanismo de retry
-
-O login tem ate 2 tentativas automaticas:
-1. Se a URL falhar (formulario nao encontrado), recarrega a pagina e tenta de novo.
-2. Se a senha for rejeitada, tenta com a senha em maiusculas (o SGE normaliza para maiusculas).
-3. Erros de credencial invalida nao sao retentados.
-
-## Checklist de secrets
-
-Secrets obrigatorias no GitHub (Settings > Secrets and variables > Actions):
-
-| Secret | Obrigatoria | Descricao |
-|--------|-------------|-----------|
+| Variavel | Obrigatoria | Descricao |
+|----------|:-----------:|-----------|
+| `SGE_CPF` | Sim | CPF de login no portal SGE |
+| `SGE_SENHA` | Sim | Senha do portal SGE |
 | `NOTION_TOKEN` | Sim | Token de integracao do Notion |
 | `ROOT_PAGE_ID` | Sim | ID da pagina raiz do Notion |
-| `SGE_CPF` | Sim | CPF de acesso ao SGE |
-| `SGE_SENHA` | Sim | Senha de acesso ao SGE |
-| `SGE_LOGIN_URL` | Nao | URL personalizada do portal SGE |
-| `SEQUENCIAS_DATABASE_ID` | Nao | ID da database de sequencias (acesso direto) |
+| `AI_ASSIST` | Nao | `1` para ativar IA, `0` para desativar |
+| `AI_PROVIDER` | Nao | `ollama` (local), `gemini` (Google), `openai` (GPT-4o), `anthropic` (Claude) |
+| `HEADLESS` | Nao | `0` para ver o navegador, `1` para oculto |
 
-## Fluxo recomendado
+Consulte `.env.example` para todas as opcoes disponiveis.
 
-Sempre siga esta ordem antes de uma execucao real:
+## Como obter as credenciais do Notion
 
-1. **Dry-run local**: `python lancar_sequencia_didatica_sge.py --dry-run --data-inicio ... --data-fim ...`
-2. **Dry-run no Actions**: execute o workflow com `dry_run=true`.
-3. **Verificar logs**: confira se todos os contextos foram processados sem erros.
-4. **Executar real**: rode com `dry_run=false` (ou omita `--dry-run` localmente).
+1. Acesse https://www.notion.so/my-integrations
+2. Crie uma nova integracao e copie o **Token**
+3. No Notion, abra a pagina raiz do workspace
+4. Clique em "..." > "Connections" > adicione sua integracao
+5. O **Page ID** esta na URL: `notion.so/workspace/PAGE_ID?...`
 
-## Observacoes importantes
+## Estrutura do Notion
 
-- Os nomes das colunas de avaliacao no Notion devem bater com os nomes das avaliacoes no SGE.
-- Use dry-run antes do primeiro envio real.
+O bot espera encontrar databases no Notion com:
+
+- **Colunas de nota**: nomeadas com padrao like `21-Atividade Avaliativa Individua`
+- **Coluna Status**: `Status lancamento N` (ex: `Status lancamento 1`) com opcao "Lancada"
+- **Contexto**: escola, turno, turma e trimestre devem estar nas propriedades do database
+
+O bot detecta automaticamente quais colunas sao notas (ignorando colunas como "ID", "Aluno", "Escola", etc.).
+
+## Uso pelo painel web
+
+1. Execute `run.bat` ou `python -m streamlit run painel.py`
+2. No painel, configure:
+   - Credenciais do SGE (se nao estiver no `.env`)
+   - Token do Notion e Page ID (se nao estiver no `.env`)
+   - Filtros: escola, turno, turma, trimestre
+3. Clique em "Lancar Notas"
+4. Acompanhe o progresso no log
+
+## Uso pela linha de comando
+
+```bash
+# Listar contextos disponiveis
+python lancar_notas_sge.py --listar-contextos
+
+# Lancar notas com filtros
+python lancar_notas_sge.py --escola "EMEF" --turno "Vespertino" --turma "9o Ano"
+
+# Dry-run (sem enviar ao SGE)
+python lancar_notas_sge.py --dry-run
+```
+
+## Protecao contra duplicacao
+
+O bot verifica antes de cada lancamento:
+
+1. **Status no Notion**: se ja esta "Lancada", pula o registro
+2. **Valor no SGE**: se a celula ja tem nota preenchida, nao sobrescreve e apenas confirma o status no Notion
+
+## Arquitetura
+
+```
+BotDoProfessor/
+  painel.py                     # Interface Streamlit
+  lancar_notas_sge.py           # Logica principal de lancamento
+  notion_lancamento.py          # Helpers de integracao Notion
+  ai_assist.py                  # Integracao com Ollama / Gemini
+  lancar_sequencia_didatica_sge.py  # Lancamento de sequencia didatica
+  requirements.txt              # Dependencias Python
+  run.bat                       # Instalador + executor (Windows)
+  .env.example                  # Modelo de configuracao
+```
+
+## Solucao de problemas
+
+### "Python nao encontrado"
+- Instale Python em https://python.org
+- Marque **"Add Python to PATH"** durante a instalacao
+- Reinicie o terminal
+
+### "NOTION_TOKEN ausente"
+- Verifique se o `.env` existe e tem o token preenchido
+- O token comeca com `secret_`
+
+### "Nenhuma nota valida foi encontrada no Notion"
+- Verifique se os databases tem colunas de nota com valores numericos
+- Confirme se o `ROOT_PAGE_ID` esta correto
+- O bot ignora registros sem nota preenchida
+
+### Nota ja lancada mas status nao atualizado no Notion
+- Verifique se existe a propriedade "Status lancamento N" no database do Notion
+- O tipo da propriedade deve ser **Select** com opcao "Lancada"
+
+### Bot nao encontra aluno no SGE
+- O bot tenta encontrar o aluno por nome com paginação
+- Verifique se o nome no Notion confere exatamente com o nome no SGE
+- Ative `AI_ASSIST=1` para usar IA como fallback
+
+### Erro 500 do Ollama
+- Maquinas com RAM < 16GB ou sem GPU dedicada podem ter problemas com modelos grandes
+- O bot usa automaticamente `openbmb/minicpm-v4.6` (1.6GB) como fallback
+- Desative com `AI_ASSIST=0` se nao precisar de IA
+
+## Licenca
+
+Uso interno. Nao distribuir.

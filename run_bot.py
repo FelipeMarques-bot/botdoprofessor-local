@@ -6,10 +6,14 @@ Valida licenca, conecta no SGE e executa lancamentos.
 """
 
 import os
+import re
 import sys
-import json
 import csv
+import json
+import tempfile
 import logging
+import subprocess
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -172,6 +176,37 @@ def get_context():
     return {"escola": escola, "turno": turno, "turma": turma, "trimestre": trimestre}
 
 
+def is_gsheets_url(url):
+    """Verifica se e uma URL do Google Sheets."""
+    return bool(re.search(r"docs\.google\.com/spreadsheets", url))
+
+
+def download_gsheets_as_csv(url):
+    """Baixa uma planilha Google Sheets como CSV."""
+    m = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        print("[ER] Nao foi possivel extrair o ID da planilha.")
+        return None
+
+    sheet_id = m.group(1)
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    print(f"[i] Baixando planilha do Google Sheets...")
+
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="gsheets_")
+        target = os.path.join(tmp_dir, "planilha.csv")
+        req = urllib.request.Request(csv_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+        with open(target, "wb") as f:
+            f.write(data)
+        print(f"[OK] Planilha baixada: {len(data)} bytes")
+        return target
+    except Exception as e:
+        print(f"[ER] Falha ao baixar: {e}")
+        return None
+
+
 def load_grades_from_file(filepath):
     """Carrega notas de um arquivo CSV ou Excel."""
     ext = Path(filepath).suffix.lower()
@@ -231,10 +266,17 @@ def execute_grades(cpf, context):
 
     grades = []
     if choice == "2":
-        filepath = input("Caminho do arquivo: ").strip().strip('"')
-        if not os.path.isfile(filepath):
+        filepath = input("Caminho do arquivo ou URL do Google Sheets: ").strip().strip('"')
+
+        if is_gsheets_url(filepath):
+            downloaded = download_gsheets_as_csv(filepath)
+            if not downloaded:
+                return
+            filepath = downloaded
+        elif not os.path.isfile(filepath):
             print(f"[ER] Arquivo nao encontrado: {filepath}")
             return
+
         grades = load_grades_from_file(filepath)
         if not grades:
             print("[ER] Nenhuma nota encontrada no arquivo.")
@@ -402,6 +444,22 @@ def execute_lesson_plan(cpf, context):
         adapter.stop()
 
 
+def start_dashboard():
+    """Inicia o dashboard Streamlit em background."""
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "streamlit", "run", "dashboard.py",
+             "--server.headless", "true", "--server.port", "8501"],
+            cwd=str(Path(__file__).parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        print("[OK] Dashboard aberto em http://localhost:8501")
+    except Exception:
+        print("[!!] Nao foi possivel abrir o dashboard automaticamente")
+
+
 def main():
     setup_logging()
     clear()
@@ -416,6 +474,8 @@ def main():
             sys.exit(1)
 
     print("[OK] Playwright detectado")
+    print()
+    start_dashboard()
     print()
 
     license_key = get_license_key()

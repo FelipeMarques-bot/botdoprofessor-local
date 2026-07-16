@@ -133,13 +133,10 @@ def get_sge_credentials():
         print(f"[i] CPF salvo: {saved_cpf[:3]}***{saved_cpf[-2:]}")
         use_saved = input("Usar CPF salvo? (S/n): ").strip().lower()
         if use_saved != "n":
-            cpf = saved_cpf
-            senha = input("Senha do SGE: ").strip()
-            return cpf, senha
+            return saved_cpf
 
     cpf = input("CPF (apenas numeros): ").strip().replace(".", "").replace("-", "")
-    senha = input("Senha do SGE: ").strip()
-    return cpf, senha
+    return cpf
 
 
 def get_context():
@@ -222,7 +219,7 @@ def load_grades_from_file(filepath):
     return grades
 
 
-def execute_grades(cpf, senha, context):
+def execute_grades(cpf, context):
     print()
     print("[i] Modo: Lancamento de notas")
     print("-" * 40)
@@ -274,8 +271,8 @@ def execute_grades(cpf, senha, context):
         print("  [OK] Browser iniciado")
 
         print("  Fazendo login no SGE...")
-        if not adapter.login(cpf, senha):
-            print("  [ER] Login falhou. Verifique CPF e senha.")
+        if not adapter.login(cpf, ""):
+            print("  [ER] Login falhou. Verifique o CPF.")
             return
         print("  [OK] Login realizado")
 
@@ -322,7 +319,7 @@ def execute_grades(cpf, senha, context):
         adapter.stop()
 
 
-def execute_lesson_plan(cpf, senha, context):
+def execute_lesson_plan(cpf, context):
     print()
     print("[i] Modo: Plano de Aula")
     print("-" * 40)
@@ -357,8 +354,8 @@ def execute_lesson_plan(cpf, senha, context):
         print("  [OK] Browser iniciado")
 
         print("  Fazendo login no SGE...")
-        if not adapter.login(cpf, senha):
-            print("  [ER] Login falhou. Verifique CPF e senha.")
+        if not adapter.login(cpf, ""):
+            print("  [ER] Login falhou. Verifique o CPF.")
             return
         print("  [OK] Login realizado")
 
@@ -435,7 +432,7 @@ def main():
     print(f"[OK] Licenca valida — plano: {plan} — {days} dias restantes")
 
     save_config({"license_key": license_key})
-    cpf, senha = get_sge_credentials()
+    cpf = get_sge_credentials()
     save_config({"cpf": cpf})
     context = get_context()
 
@@ -448,9 +445,9 @@ def main():
     choice = input("Opcao: ").strip()
 
     if choice == "2":
-        execute_lesson_plan(cpf, senha, context)
+        execute_lesson_plan(cpf, context)
     else:
-        execute_grades(cpf, senha, context)
+        execute_grades(cpf, context)
 
     print()
     print("=" * 50)

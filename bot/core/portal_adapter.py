@@ -33,6 +33,25 @@ class GradeResult:
     details: List[Dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class LessonPlan:
+    titulo: str
+    data_inicio: str
+    data_fim: str
+    n_aulas: int
+    pdf_path: str = ""
+    pdf_url: str = ""
+
+
+@dataclass
+class LessonPlanResult:
+    success: bool
+    message: str = ""
+    planejamento_criado: bool = False
+    anexo_enviado: bool = False
+    situacao_ativada: bool = False
+
+
 class PortalAdapter(ABC):
     """Interface abstrata que todo portal de professores deve implementar."""
 
@@ -94,4 +113,20 @@ class PortalAdapter(ABC):
 
     def handle_pagination(self) -> bool:
         """Avanca para a proxima pagina de alunos se existir."""
+        return False
+
+    def supports_lesson_plan(self) -> bool:
+        """Se o portal suporta planos de aula."""
+        return False
+
+    def navigate_to_lesson_plan(self, context: PortalContext) -> bool:
+        """Navega ate a secao de planos de aula do portal."""
+        return False
+
+    def create_lesson_plan(self, plan: LessonPlan) -> bool:
+        """Cria um planejamento com periodo e numero de aulas."""
+        return False
+
+    def upload_lesson_plan_pdf(self, titulo: str, pdf_path: str) -> bool:
+        """Faz upload de um PDF como anexo do plano de aula."""
         return False

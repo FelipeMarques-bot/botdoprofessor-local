@@ -77,15 +77,23 @@ def check_playwright():
 
 
 def install_playwright():
+    import subprocess
     print("[!] Playwright nao encontrado.")
-    print("[!] Executando install_baixar.py para instalar automaticamente...")
-    print()
-    install_script = Path(__file__).parent / "install_baixar.py"
-    if install_script.exists():
-        os.system(f'"{sys.executable}" "{install_script}"')
-    else:
-        print("[ER] install_baixar.py nao encontrado.")
-        print(f"[!] Baixe manualmente: {DOWNLOAD_URL}")
+    print("[i] Instalando playwright...")
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "playwright", "--quiet"], check=True)
+        print("  [OK] playwright instalado")
+    except Exception as e:
+        print(f"  [ER] Falha ao instalar playwright: {e}")
+        input("\nPressione Enter para sair...")
+        sys.exit(1)
+
+    print("[i] Baixando Chromium (~180MB, primeira vez)...")
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        print("  [OK] Chromium instalado")
+    except Exception as e:
+        print(f"  [ER] Falha ao baixar Chromium: {e}")
         input("\nPressione Enter para sair...")
         sys.exit(1)
 

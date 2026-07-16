@@ -16,6 +16,39 @@ admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 audit_bp = Blueprint("audit", __name__, url_prefix="/api/audit")
 
 
+@license_bp.route("/public-validate", methods=["POST"])
+def public_validate_license():
+    """Validacao publica de licenca (sem autenticacao).
+    Usado pelo executavel .exe para validar a chave.
+    """
+    data = request.get_json() or {}
+    key = data.get("license_key", "").strip()
+    if not key:
+        return jsonify({"valid": False, "error": "Chave obrigatoria"}), 400
+
+    lic = License.query.filter_by(license_key=key).first()
+    if not lic:
+        return jsonify({"valid": False, "error": "Licenca nao encontrada"})
+
+    if not lic.active:
+        return jsonify({"valid": False, "error": "Licenca desativada"})
+
+    if lic.expires_at and lic.expires_at < datetime.utcnow():
+        return jsonify({"valid": False, "error": "Licenca expirada"})
+
+    days_remaining = -1
+    if lic.expires_at:
+        delta = lic.expires_at - datetime.utcnow()
+        days_remaining = max(0, delta.days)
+
+    return jsonify({
+        "valid": True,
+        "plan": lic.plan,
+        "days_remaining": days_remaining,
+        "expires_at": lic.expires_at.isoformat() if lic.expires_at else None,
+    })
+
+
 @auth_bp.route("/login", methods=["POST"])
 def login():
     data = request.get_json() or {}

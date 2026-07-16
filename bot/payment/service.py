@@ -188,6 +188,8 @@ class PaymentService:
         msg["To"] = email
         msg["Subject"] = f"BotDoProfessor - Sua chave de licenca ({plan_info.get('label', plan)})"
 
+        download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
+
         html = f"""
         <html>
         <body style="font-family:Arial,sans-serif;padding:20px">
@@ -199,10 +201,11 @@ class PaymentService:
             </div>
             <p><b>Como usar:</b></p>
             <ol>
-                <li>Abra o BotDoProfessor</li>
-                <li>Va em Configuracoes > Licenca</li>
-                <li>Cole a chave acima</li>
+                <li>Baixe o programa: <a href="{download_url}">Clique aqui para baixar</a></li>
+                <li>Execute BotDoProfessor.exe</li>
+                <li>Cole a chave de licenca acima</li>
                 <li>Configure seu CPF e senha do SGE</li>
+                <li>Escolha o que deseja lancar (notas ou plano de aula)</li>
             </ol>
             <p style="color:#999;font-size:0.85em;margin-top:30px">
                 Duvidas? Responda este email.<br>

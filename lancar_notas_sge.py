@@ -1,16 +1,20 @@
 import argparse
 import difflib
 import html
+import json
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
+
+import httpx
 
 from notion_client import Client
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -22,9 +26,74 @@ except ImportError:  # pragma: no cover
     def load_dotenv(*args, **kwargs):
         return False
 
+try:
+    from ai_assist import (
+        AI_ASSIST,
+        AI_LEARN_MODE,
+        AI_RECORDING_DIR,
+        GEMINI_API_KEY,
+        OPENAI_API_KEY,
+        ANTHROPIC_API_KEY,
+        AI_PROVIDER,
+        AIAssistError,
+        analyze_login_screen,
+        analyze_screen,
+        find_element_on_screen,
+        is_available as ai_is_available,
+        is_enabled as ai_is_enabled,
+        ensure_ollama,
+        record_demonstration_step,
+        learn_from_recording,
+        load_learned_plan,
+        execute_learned_step,
+        suggest_next_action,
+    )
+except ImportError:
+    AI_ASSIST = False
+    AI_LEARN_MODE = False
+    AI_RECORDING_DIR = "artifacts/ai-recordings"
+    GEMINI_API_KEY = ""
+    OPENAI_API_KEY = ""
+    ANTHROPIC_API_KEY = ""
+    AI_PROVIDER = "local"
+
+    def ai_is_available():
+        return False
+
+    def ai_is_enabled():
+        return False
+
+    def ensure_ollama(logger=None):
+        return False
+
+    def analyze_login_screen(*args, **kwargs):
+        return {"elements": [], "has_login_form": False}
+
+    def analyze_screen(*args, **kwargs):
+        return {"elements": []}
+
+    def find_element_on_screen(*args, **kwargs):
+        return {"found": False}
+
+    def record_demonstration_step(*args, **kwargs):
+        return None
+
+    def learn_from_recording(*args, **kwargs):
+        return None
+
+    def load_learned_plan(*args, **kwargs):
+        return None
+
+    def execute_learned_step(*args, **kwargs):
+        return False
+
+    def suggest_next_action(*args, **kwargs):
+        return {"action": None}
+
+
 LogFn = Callable[[str], None]
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 # O SDK do Notion emite WARNING a cada retry de timeout/ObjectNotFound.
 # Mantemos o comportamento do script e reduzimos ruido no output do workflow.
@@ -36,6 +105,10 @@ ROOT_PAGE_ID = os.environ.get("ROOT_PAGE_ID", "")
 SGE_CPF = os.environ.get("SGE_CPF", "")
 SGE_SENHA = os.environ.get("SGE_SENHA", "")
 DEFAULT_SGE_LOGIN_URL = "https://www.sge8147.com.br/hportalprofessor.aspx"
+
+# Forca a deteccao da ia_assist (importada acima) com a env var ja carregada
+if not GEMINI_API_KEY:
+    globals()["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY", "")
 PORTAL_LOGIN_FALLBACK_URLS = [
     "https://www.sge8147.com.br/hportalprofessor.aspx",
     "https://www.sge8147.com.br/hPortalProfessor8147.aspx",
@@ -43,8 +116,74 @@ PORTAL_LOGIN_FALLBACK_URLS = [
 ]
 SGE_LOGIN_URL = os.environ.get("SGE_LOGIN_URL", DEFAULT_SGE_LOGIN_URL)
 HEADLESS = os.environ.get("HEADLESS", "1") == "1"
-NAV_TIMEOUT_MS = int(os.environ.get("NAV_TIMEOUT_MS", "35000"))
-ACTION_TIMEOUT_MS = int(os.environ.get("ACTION_TIMEOUT_MS", "9000"))
+NAV_TIMEOUT_MS = int(os.environ.get("NAV_TIMEOUT_MS", "20000"))
+ACTION_TIMEOUT_MS = int(os.environ.get("ACTION_TIMEOUT_MS", "5000"))
+
+# Timeout adaptativo: aumenta progressivamente em caso de falha
+_ADAPTIVE_TIMEOUT_MULTIPLIER = 1.0
+_ADAPTIVE_TIMEOUT_MAX = 3.0
+
+
+def _get_adaptive_timeout(base_ms: int) -> int:
+    """Retorna timeout adaptativo baseado no historico de falhas."""
+    return int(base_ms * min(_ADAPTIVE_TIMEOUT_MULTIPLIER, _ADAPTIVE_TIMEOUT_MAX))
+
+
+def _increase_adaptive_timeout():
+    """Aumenta o multiplicador de timeout adaptativo."""
+    global _ADAPTIVE_TIMEOUT_MULTIPLIER
+    _ADAPTIVE_TIMEOUT_MULTIPLIER = min(_ADAPTIVE_TIMEOUT_MULTIPLIER + 0.2, _ADAPTIVE_TIMEOUT_MAX)
+
+
+def _reset_adaptive_timeout():
+    """Reseta o multiplicador de timeout adaptativo."""
+    global _ADAPTIVE_TIMEOUT_MULTIPLIER
+    _ADAPTIVE_TIMEOUT_MULTIPLIER = 1.0
+
+# Mapeamento posicao da atividade na GRIDAGENDA → prefixo da coluna no SGE.
+_COLUNA_POR_POSICAO = {1: "N1S", 2: "N2S", 3: "N15S", 4: "PE"}
+
+
+def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None) -> str:
+    """Detecta o nome real da coluna de nota na pagina do SGE baseado na posicao da GRIDAGENDA.
+
+    Escaneia os inputs de nota na pagina e retorna o prefixo correto (ex: 'N1S', 'NOTA1', etc).
+    Se nao conseguir detectar, retorna o valor padrao de _COLUNA_POR_POSICAO.
+    """
+    coluna_default = _COLUNA_POR_POSICAO.get(posicao_grid, "")
+
+    try:
+        detected = page.evaluate("""
+            () => {
+                const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+                const patterns = [];
+                for (const el of inputs) {
+                    const name = (el.getAttribute('name') || '').trim();
+                    const id = (el.getAttribute('id') || '').trim();
+                    const attrs = name + ' ' + id;
+                    // Procura por padroes de coluna: _N1S_, _NOTA1_, _NOTA_1_, etc
+                    const m = attrs.match(/(?:^|[_.])(N\d+S|NOTA\s*\d+|Nota\s*\d+|PE|N\d+(?:\.\d+)?S?)(?:[_\s]|$)/i);
+                    if (m) {
+                        patterns.push(m[1].toUpperCase());
+                    }
+                }
+                // Retorna o pattern mais comum
+                const counts = {};
+                for (const p of patterns) {
+                    counts[p] = (counts[p] || 0) + 1;
+                }
+                const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                return sorted.length > 0 ? sorted[0][0] : '';
+            }
+        """)
+        if detected:
+            _log(logger, f"[COLUNA-DETECT] Coluna detectada na pagina: '{detected}' (posicao_grid={posicao_grid})")
+            return detected
+    except Exception:
+        pass
+
+    _log(logger, f"[COLUNA-DETECT] Usando coluna padrao: '{coluna_default}' (posicao_grid={posicao_grid})")
+    return coluna_default
 MANUAL_LOGIN = os.environ.get("MANUAL_LOGIN", "0") == "1"
 MANUAL_LOGIN_TIMEOUT_SEC = int(os.environ.get("MANUAL_LOGIN_TIMEOUT_SEC", "300"))
 DEBUG_LOGIN = os.environ.get("SGE_DEBUG_LOGIN", "1" if os.environ.get("GITHUB_ACTIONS") == "true" else "0") == "1"
@@ -56,6 +195,87 @@ NOTION_LOG_PROP = os.environ.get("NOTION_LOG_PROP", "Log execucao")
 NOTION_REQUEST_PROP = os.environ.get("NOTION_REQUEST_PROP", "Solicitar lancamento")
 
 _DEBUG_CAPTURED_STAGES: set[str] = set()
+
+# Cache simples para chamadas de metadata de databases (evita retrive redundante)
+_db_metadata_cache: Dict[str, Dict] = {}
+
+# Cache de slots de alunos por escopo (evita coletas repetidas do DOM)
+# Chave: id do elemento scope no DOM; Valor: lista de slots
+_slots_cache: Dict[int, List[Dict[str, str]]] = {}
+
+
+def _sanitize_ai_selector(selector: str) -> str:
+    """Sanitiza seletores CSS retornados por IA, removendo caracteres invalidos."""
+    if not selector:
+        return ""
+    # Remove { } que a IA as vezes coloca em seletores
+    cleaned = selector.replace("{", "").replace("}", "")
+    # Remove espacos extras
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Remove aspas simples/duplas no inicio/fim que podem causar problemas
+    cleaned = cleaned.strip("'\"")
+    return cleaned
+
+
+class _LearningStore:
+    """Armazena seletores que funcionaram para cada tipo de operacao.
+
+    Arquivo: ~/.sge_bot/learning.json
+    Estrutura: { "operacoes": { "abrir_icone_avaliacao": { "seletor": "...", "vezes": 5 }, ... } }
+    """
+
+    def __init__(self):
+        self._path = os.path.join(os.path.expanduser("~"), ".sge_bot", "learning.json")
+        self._data: Dict[str, Any] = {"operacoes": {}}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if os.path.exists(self._path):
+                with open(self._path, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+        except Exception:
+            self._data = {"operacoes": {}}
+
+    def _save(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def registrar_sucesso(self, operacao: str, detalhes: Dict[str, Any]) -> None:
+        """Registra que uma operacao funcionou com determinados detalhes."""
+        ops = self._data.setdefault("operacoes", {})
+        entry = ops.setdefault(operacao, {"vezes": 0, "ultimo_sucesso": "", "detalhes": {}})
+        entry["vezes"] = entry.get("vezes", 0) + 1
+        entry["ultimo_sucesso"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        entry["detalhes"].update(detalhes)
+        self._save()
+
+    def registrar_falha(self, operacao: str, detalhes: Dict[str, Any]) -> None:
+        """Registra que uma operacao falhou (para evitar repetir)."""
+        ops = self._data.setdefault("operacoes", {})
+        entry = ops.setdefault(operacao, {"vezes": 0, "falhas": 0, "detalhes_falha": {}})
+        entry["falhas"] = entry.get("falhas", 0) + 1
+        entry["detalhes_falha"].update(detalhes)
+        self._save()
+
+    def melhor_seletor(self, operacao: str) -> Optional[str]:
+        """Retorna o seletor mais bem-sucedido para uma operacao."""
+        entry = self._data.get("operacoes", {}).get(operacao, {})
+        return entry.get("detalhes", {}).get("seletor")
+
+    def pode_pular(self, operacao: str) -> bool:
+        """Retorna True se uma operacao falhou muitas vezes (evita repetir)."""
+        entry = self._data.get("operacoes", {}).get(operacao, {})
+        falhas = entry.get("falhas", 0)
+        sucessos = entry.get("vezes", 0)
+        return falhas > 3 and sucessos == 0
+
+
+_learning_store = _LearningStore()
 
 TURNOS_KNOWN = ["Matutino", "Vespertino", "Noturno", "Integral"]
 TRIMESTRES_KNOWN = [
@@ -69,12 +289,19 @@ TRIMESTRES_KNOWN = [
 
 IGNORE_COLS = {
     "Nome",
+    "Name",
     "Status",
     "Status Fluxo",
     "Media",
     "Media Final",
     "Observacoes",
     "Observacoes Pedagogicas",
+    "Observações",
+    "Observações 1",
+    "Observações 2",
+    "Observações 3",
+    "Ultima Atualizacao",
+    "Última Atualização",
 }
 
 
@@ -89,6 +316,7 @@ class RegistroNota:
     nota: float
     notion_page_id: str = ""
     notion_status_prop: str = ""
+    data_realizacao: str = ""
 
 
 @dataclass
@@ -254,18 +482,40 @@ def _to_float(value: object) -> Optional[float]:
     if not text:
         return None
     text = text.replace(",", ".")
-    if re.fullmatch(r"-?\d+(\.\d+)?", text):
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_date(value: str) -> Optional[datetime]:
+    """Tenta extrair uma data de uma string no formato ISO (YYYY-MM-DD) ou DD/MM/YYYY."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
         try:
-            return float(text)
+            return datetime.strptime(raw, fmt)
         except ValueError:
-            return None
+            continue
     return None
+
+
+def _date_diff_days(date_str: str) -> Optional[int]:
+    """Retorna a diferenca em dias entre a data informada e hoje. Negativo = futuro."""
+    dt = _parse_date(date_str)
+    if dt is None:
+        return None
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (dt.date() - today.date()).days
 
 
 def _status_prop_for_activity(atividade: str) -> str:
     texto = (atividade or "").strip().lower()
     match = re.search(r"(\d+)\s*$", texto)
-    if match and match.group(1) in {"1", "2", "3"}:
+    if not match:
+        match = re.search(r"^(\d+)", texto)
+    if match:
         return f"Status lancamento {match.group(1)}"
     return "Status lancamento"
 
@@ -275,17 +525,36 @@ def _resolve_existing_status_prop(props: Dict[str, Dict], preferred: str) -> str
     if not alvo:
         return preferred
 
-    candidates = [alvo]
-    if not re.search(r"\d+\s*$", alvo):
-        candidates.extend([f"{alvo} 1", f"{alvo} 2", f"{alvo} 3"])
+    num_match = re.search(r"(\d+)", alvo)
+    num_suffix = num_match.group(1) if num_match else ""
 
-    for candidate in candidates:
-        if candidate in props:
-            return candidate
+    # 1) Match exato primeiro
+    if alvo in props:
+        return alvo
 
+    # 2) Se tem numero, busca a propriedade com o mesmo numero
+    if num_suffix:
+        for name in props.keys():
+            name_num = re.search(r"(\d+)", name)
+            if name_num and name_num.group(1) == num_suffix:
+                norm = _normalize(name)
+                if "status" in norm and "lancamento" in norm:
+                    return name
+
+    # 3) Fallback: qualquer propriedade que contenha "status" e "lancamento"
+    best: Optional[str] = None
     for name in props.keys():
-        if _normalize(name).startswith("status lancamento"):
-            return name
+        norm = _normalize(name)
+        if "status" in norm and "lancamento" in norm:
+            if best is None:
+                best = name
+            # Se preferred tem numero, prefere match com o mesmo numero
+            if num_suffix:
+                name_num = re.search(r"(\d+)", norm)
+                if name_num and name_num.group(1) == num_suffix:
+                    return name
+    if best is not None:
+        return best
 
     return preferred
 
@@ -600,6 +869,11 @@ def _extract_plain_text(prop: Dict) -> str:
     if ptype == "select":
         node = prop.get("select")
         return "" if not node else node.get("name", "")
+    if ptype == "date":
+        node = prop.get("date")
+        if not node:
+            return ""
+        return node.get("start", "") or ""
     if ptype == "formula":
         formula = prop.get("formula", {})
         ftype = formula.get("type")
@@ -631,7 +905,12 @@ def _database_title(database: Dict) -> str:
 
 
 def _is_notas_database(title: str) -> bool:
-    return _normalize(title).startswith("notas escolas -")
+    norm = _normalize(title)
+    if norm.startswith("notas escolas -"):
+        return True
+    if any(kw in norm for kw in ("notas", "escola", "lancamento", "boletim", "avaliacao")):
+        return True
+    return False
 
 
 def _page_title(page: Dict) -> str:
@@ -656,20 +935,117 @@ def _list_children(notion: Client, block_id: str) -> List[Dict]:
     return items
 
 
+def _search_databases_by_name(
+    query: str,
+    exclude_ids: set,
+    logger: Optional[LogFn] = None,
+) -> List[Tuple[str, List[str], str]]:
+    results = []
+    cursor = None
+    MAX_PAGES = 5  # Limita paginas de busca para nao demorar
+    pages_searched = 0
+
+    while pages_searched < MAX_PAGES:
+        body = {"query": query, "filter": {"property": "object", "value": "database"}, "page_size": 100}
+        if cursor:
+            body["start_cursor"] = cursor
+
+        response = _safe_notion_call(
+            lambda: httpx.post(
+                "https://api.notion.com/v1/search",
+                headers={
+                    "Authorization": f"Bearer {NOTION_TOKEN}",
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=30,
+            ).json()
+        )
+        pages_searched += 1
+        for item in response.get("results", []):
+            db_id = item.get("id", "")
+            if db_id in exclude_ids:
+                continue
+            title = "".join(x.get("plain_text", "") for x in item.get("title", []))
+            results.append((db_id, [], title))
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+
+    if results:
+        _log(logger, f"  -> {len(results)} database(s) encontrada(s) via busca por nome.")
+    return results
+
+
+_DISCOVERY_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".sge_bot", "notion_discovery_cache.json")
+_DISCOVERY_CACHE_MAX_AGE = 86400  # 24 horas em segundos
+
+
+def _load_discovery_cache() -> Optional[List[Tuple[str, List[str], str]]]:
+    """Carrega cache de descoberta do Notion se valido (menos de 24h)."""
+    try:
+        if not os.path.exists(_DISCOVERY_CACHE_FILE):
+            return None
+        mtime = os.path.getmtime(_DISCOVERY_CACHE_FILE)
+        age = time.time() - mtime
+        if age > _DISCOVERY_CACHE_MAX_AGE:
+            return None
+        with open(_DISCOVERY_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Valida formato
+        if isinstance(data, list) and all(isinstance(item, list) and len(item) == 3 for item in data):
+            return [tuple(item) for item in data]
+    except Exception:
+        pass
+    return None
+
+
+def _save_discovery_cache(databases: List[Tuple[str, List[str], str]]) -> None:
+    """Salva cache de descoberta do Notion."""
+    try:
+        os.makedirs(os.path.dirname(_DISCOVERY_CACHE_FILE), exist_ok=True)
+        with open(_DISCOVERY_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump([list(item) for item in databases], f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def _discover_databases(
     notion: Client,
     root_page_id: str,
     logger: Optional[LogFn] = None,
 ) -> List[Tuple[str, List[str], str]]:
-    queue: List[Tuple[str, List[str]]] = [(root_page_id, ["ROOT"])]
+    # Verificar cache primeiro
+    cached = _load_discovery_cache()
+    if cached is not None:
+        _log(logger, f"[CACHE] Usando cache de descoberta: {len(cached)} databases (valido por 24h)")
+        return cached
+
+    queue: List[Tuple[str, List[str], int]] = [(root_page_id, ["ROOT"], 0)]
     visited_pages = set()
     databases: List[Tuple[str, List[str], str]] = []
+    discovered_count = 0
+    log_interval = 5
+    MAX_DEPTH = 4  # Limita profundidade para evitar traversals infinitos
 
     while queue:
-        page_id, breadcrumb = queue.pop(0)
+        page_id, breadcrumb, depth = queue.pop(0)
         if page_id in visited_pages:
             continue
         visited_pages.add(page_id)
+
+        # Poda: nao atravessa paginas muito profundas (> 4 niveis)
+        if depth > MAX_DEPTH:
+            _log(logger, f"  [PRUNE] Pulando pagina no nivel {depth}: {' > '.join(breadcrumb[-2:])}")
+            continue
+
+        # Poda: ignora paginas cujo titulo sugere que nao contem databases de notas
+        page_title = breadcrumb[-1] if len(breadcrumb) > 1 else ""
+        title_lower = _normalize(page_title)
+        skip_keywords = {"dashboard", "menu", "instrucoes", "tutorial", "config", "ajuda", "sobre"}
+        if any(kw in title_lower for kw in skip_keywords):
+            continue
 
         try:
             children = _list_children(notion, page_id)
@@ -684,20 +1060,26 @@ def _discover_databases(
 
             if btype == "child_page":
                 title = block.get("child_page", {}).get("title", "")
-                queue.append((block["id"], breadcrumb + [title]))
+                queue.append((block["id"], breadcrumb + [title], depth + 1))
                 continue
 
             if btype == "link_to_page":
                 link_data = block.get("link_to_page", {})
                 if link_data.get("type") == "page_id":
-                    queue.append((link_data.get("page_id", ""), breadcrumb + ["linked-page"]))
+                    queue.append((link_data.get("page_id", ""), breadcrumb + ["linked-page"], depth + 1))
                 continue
 
             if btype == "child_database":
                 db_title = block.get("child_database", {}).get("title", "")
                 databases.append((block["id"], breadcrumb.copy(), db_title))
+                discovered_count += 1
+                if discovered_count % log_interval == 0:
+                    _log(logger, f"  -> {discovered_count} databases encontradas ate agora...")
                 continue
 
+    _log(logger, f"Descoberta concluida: {len(databases)} databases encontradas ({len(visited_pages)} paginas visitadas)")
+    # Salvar cache para proximas execucoes
+    _save_discovery_cache(databases)
     return databases
 
 
@@ -777,20 +1159,36 @@ def _infer_context(parts: Iterable[str]) -> ContextoTurma:
                 turma = found.group(1).replace("º", "o")
 
     if not escola:
-        # Heuristica: assume o primeiro item relevante do breadcrumb
+        SKIP_PAGES = {"root", "linked-page"}
+        SKIP_KEYWORDS = {"dashboard de lancamentos", "portal de gestao de avaliacoes", "acesso rapido"}
         for p in parts_clean:
-            if p.lower() in {"root", "linked-page"}:
+            norm = _normalize(p)
+            if p.lower() in SKIP_PAGES:
                 continue
-            if _normalize(p) in {"dashboard de lancamentos", "portal de gestao de avaliacoes"}:
+            if any(kw in norm for kw in SKIP_KEYWORDS):
                 continue
-            if any(_normalize(x) in _normalize(p) for x in TURNOS_KNOWN + TRIMESTRES_KNOWN):
+            if any(_normalize(x) in norm for x in TURNOS_KNOWN + TRIMESTRES_KNOWN):
                 continue
             if re.search(r"[6-9][oº]?\s*ano", p, flags=re.IGNORECASE):
                 continue
             escola = p
             break
 
-    if not escola:
+    if not escola or "nao identificad" in _normalize(escola):
+        for p in parts_clean:
+            partes = re.split(r"\s*[|]\s*", p)
+            if len(partes) < 2:
+                continue
+            candidatas = [x for x in partes if x not in TURNOS_KNOWN + ["Matutino", "Vespertino", "Noturno", "Integral"]]
+            for tr in TRIMESTRES_KNOWN:
+                candidatas = [x for x in candidatas if _normalize(tr) not in _normalize(x)]
+            candidatas = [x for x in candidatas if not re.search(r"[6-9][oº]?\s*ano", x, flags=re.IGNORECASE)]
+            candidatas = [x for x in candidatas if not any(kw in _normalize(x) for kw in SKIP_KEYWORDS)]
+            if candidatas:
+                escola = candidatas[0].strip()
+                break
+
+    if not escola or "nao identificad" in _normalize(escola):
         escola = "Escola nao identificada"
     if not turno:
         turno = "Turno nao identificado"
@@ -809,13 +1207,110 @@ def _infer_context(parts: Iterable[str]) -> ContextoTurma:
     return ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
 
 
+_IGNORE_COLS_NORM = frozenset(_normalize(c) for c in IGNORE_COLS)
+
+
+def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
+    """Mapeia colunas de nota para 'Status lancamento N' usando estrutura do Notion.
+
+    Estrategia:
+    1) Encontra ancora "Data realização N" para cada coluna de nota (proximo no dict)
+    2) Fallback: tenta extrair numero do nome da coluna (ex: "Atividade 2" → 2)
+    3) Fallback: tenta extrair numero de padroes como "24 - Resolução 1" → 1
+    4) Fallback: mapeia para a primeira Status lancamento disponivel (por ordem N)
+    """
+    prop_names = list(props.keys())
+
+    # Pre-calcula quais Status lancamento N existem de fato
+    existing_status_n = set()
+    for p in prop_names:
+        m = re.search(r"status\s*lancamento\s*(\d+)", _normalize(p))
+        if m:
+            existing_status_n.add(m.group(1))
+
+    # 1) Encontra ancora "Data realização N" → indice no dict
+    ancora_por_n: Dict[str, int] = {}
+    for idx, name in enumerate(prop_names):
+        m = re.search(r"data\s*realiza[çc][ãa]o\s*(\d+)", _normalize(name))
+        if m:
+            ancora_por_n[m.group(1)] = idx
+
+    # 2) Para cada coluna de nota, encontra a ancora mais proxima
+    #    (em caso de empate, menor N vence — garante mapeamento deterministico)
+    grade_status_map: Dict[str, str] = {}
+    for idx, name in enumerate(prop_names):
+        if not _is_probably_grade_column(name):
+            continue
+        best_n = ""
+        best_dist = len(prop_names) + 1
+        for n in sorted(ancora_por_n.keys()):
+            dist = abs(idx - ancora_por_n[n])
+            if dist < best_dist:
+                best_dist = dist
+                best_n = n
+        if best_n and best_n in existing_status_n:
+            grade_status_map[name] = f"Status lancamento {best_n}"
+
+    # 3) Fallback para colunas sem ancora: extrai numero do nome (ex: "Atividade 2")
+    for idx, name in enumerate(prop_names):
+        if name in grade_status_map:
+            continue
+        if not _is_probably_grade_column(name):
+            continue
+        num_match = re.search(r"(?:atividade|activity|avaliacao|prova|trabalho)\s*(\d+)", _normalize(name))
+        if num_match:
+            n = num_match.group(1)
+            status_cand = f"Status lancamento {n}"
+            if n in existing_status_n:
+                grade_status_map[name] = status_cand
+
+    # 3b) Fallback: tenta extrair ultimo digito de "XX - Nome Atividade N"
+    for idx, name in enumerate(prop_names):
+        if name in grade_status_map:
+            continue
+        if not _is_probably_grade_column(name):
+            continue
+        num_match = re.search(r"[-–]\s*\S+\s+(\d+)$", name.strip())
+        if num_match:
+            n = num_match.group(1)
+            status_cand = f"Status lancamento {n}"
+            if n in existing_status_n:
+                grade_status_map[name] = status_cand
+
+    # 4) Fallback final: colunas ainda sem mapeamento → primeira Status disponivel
+    usados = set(grade_status_map.values())
+    for idx, name in enumerate(prop_names):
+        if name in grade_status_map:
+            continue
+        if not _is_probably_grade_column(name):
+            continue
+        for n in sorted(ancora_por_n.keys()):
+            cand = f"Status lancamento {n}"
+            if cand not in usados and n in existing_status_n:
+                grade_status_map[name] = cand
+                usados.add(cand)
+                break
+
+    return grade_status_map
+
+
 def _is_probably_grade_column(col_name: str) -> bool:
     clean = col_name.strip()
-    if not clean or clean in IGNORE_COLS:
+    if not clean:
         return False
-    lowered = clean.lower()
-    blacklist = ["status", "media", "obs", "coment", "nome", "id", "chamada", "frequencia"]
-    return all(word not in lowered for word in blacklist)
+    # Normaliza (remove acentos, lower) para capturar variantes como "Média", "Observações", "Data realização"
+    norm = _normalize(clean)
+    if norm in _IGNORE_COLS_NORM:
+        return False
+    blacklist_long = {"status", "media", "coment", "nome", "name", "chamada", "frequencia", "observa", "data", "numero", "criado", "editado", "ultima", "realizacao"}
+    blacklist_short = {"id", "obs"}
+    for term in blacklist_long:
+        if term in norm:
+            return False
+    for term in blacklist_short:
+        if re.search(rf"(?:^|[\s\-_/]){re.escape(term)}(?:[\s\-_/]|$)", norm):
+            return False
+    return True
 
 
 def _context_matches_filter(context: ContextoTurma, filtro: Optional[Dict[str, str]]) -> bool:
@@ -824,7 +1319,9 @@ def _context_matches_filter(context: ContextoTurma, filtro: Optional[Dict[str, s
 
     def match(value: str, key: str) -> bool:
         expected = (filtro.get(key) or "").strip()
-        return True if not expected else _normalize(value) == _normalize(expected)
+        if not expected:
+            return True
+        return _normalize(expected) in _normalize(value)
 
     return (
         match(context.escola, "escola")
@@ -847,27 +1344,50 @@ def carregar_notas_notion(
 
     notion = Client(auth=NOTION_TOKEN)
     _log(logger, "Conectando ao Notion e descobrindo databases...")
-    databases = _discover_databases(notion, root_page_id, logger=logger)
+    databases = _search_databases_by_name("Notas Escolas", set(), logger=logger)
+    if not databases:
+        _log(logger, "Nenhuma database encontrada via busca por nome, percorrendo arvore...")
+        databases = _discover_databases(notion, root_page_id, logger=logger)
 
     if not databases:
-        raise LancamentoError("Nenhuma database foi encontrada a partir de ROOT_PAGE_ID.")
+        raise LancamentoError("Nenhuma database foi encontrada.")
 
     registros: List[RegistroNota] = []
     candidatos: List[Dict[str, Any]] = []
 
+    escola_filtro = _normalize(filtro.get("escola", "")) if filtro else ""
+    ignoradas_escola = 0
+
     for db_id, breadcrumb, db_title in databases:
         try:
-            db_obj = _safe_notion_call(lambda: notion.databases.retrieve(database_id=db_id))
+            # Usa cache de metadata para evitar retrive redundante
+            if db_id in _db_metadata_cache:
+                db_obj = _db_metadata_cache[db_id]
+                _log(logger, f"  [CACHE] Metadata da database '{db_title}' obtida do cache.")
+            else:
+                db_obj = _safe_notion_call(lambda: notion.databases.retrieve(database_id=db_id))
+                _db_metadata_cache[db_id] = db_obj
         except Exception as exc:  # noqa: BLE001
             _log(logger, f"Aviso: falha ao ler metadata da database {db_id}: {exc}")
             continue
 
         title = _database_title(db_obj) or db_title
         if not _is_notas_database(title):
+            _log(logger, f"Aviso: database ignorada (nome nao reconhecido): '{title}' (breadcrumb: {' > '.join(breadcrumb)})")
             continue
 
+        # Pre-filtro rapido por escola: se o filtro especifica uma escola e o
+        # titulo/breadcrumb nao a mencionam, pula sem log verbose.
+        if escola_filtro:
+            full_path = f"{' '.join(breadcrumb)} {title}"
+            if escola_filtro not in _normalize(full_path):
+                ignoradas_escola += 1
+                continue
+
         context = _infer_context([*breadcrumb, title])
+        _log(logger, f"Database: '{title}' | contexto inferido: {context.escola} | {context.turno} | {context.turma} | {context.trimestre}")
         if not _context_matches_filter(context, filtro):
+            _log(logger, f"  -> Ignorada: filtro {filtro} nao corresponde ao contexto")
             continue
 
         try:
@@ -877,6 +1397,7 @@ def carregar_notas_notion(
             continue
 
         if not rows:
+            _log(logger, f"  -> Database sem linhas: '{title}'")
             continue
 
         candidatos.append(
@@ -887,6 +1408,9 @@ def carregar_notas_notion(
                 "rows": rows,
             }
         )
+
+    if ignoradas_escola:
+        _log(logger, f"  -> {ignoradas_escola} database(s) de outras escolas ignoradas pelo filtro.")
 
     if not candidatos:
         return registros
@@ -916,6 +1440,22 @@ def carregar_notas_notion(
         rows = item["rows"]
         _log(logger, f"Database {title}: {len(rows)} alunos encontrados")
 
+        if rows:
+            sample_props = rows[0].get("properties", {})
+            all_cols = list(sample_props.keys())
+            grade_cols = [c for c in all_cols if _is_probably_grade_column(c)]
+            _log(logger, f"  [diag] Colunas da database ({len(all_cols)}): {', '.join(all_cols)}")
+            if grade_cols:
+                _log(logger, f"  [diag] Colunas de nota detectadas: {', '.join(grade_cols)}")
+            else:
+                _log(logger, f"  [diag] NENHUMA coluna de nota detectada!")
+
+        # Pre-computa mapeamento coluna_de_nota → Status lancamento N
+        # usando "Data realização N" como ancora (ordem da API pode variar)
+        grade_status_map = _build_grade_status_map(rows[0].get("properties", {})) if rows else {}
+        if grade_status_map:
+            _log(logger, f"  [diag] Mapeamento nota→status: {grade_status_map}")
+
         for row in rows:
             props = row.get("properties", {})
 
@@ -932,11 +1472,76 @@ def carregar_notas_notion(
             if not _is_non_empty(aluno):
                 continue
 
+            # Mapeia colunas de nota para "Status lancamento N" usando ancora
+            # "Data realização N" (ordem da API do Notion pode variar)
             for col_name, prop in props.items():
                 if not _is_probably_grade_column(col_name):
                     continue
-                nota = _to_float(_extract_plain_text(prop))
+
+                atividade_nome = col_name.strip()
+
+                # Usa mapeamento pre-computado; fallback para resolução por numero
+                status_prop_nome = grade_status_map.get(col_name, "")
+                if not status_prop_nome:
+                    # Fallback: tenta extrair numero do nome da coluna.
+                    # Preferencialmente usa o ultimo numero (ex.: "24 - Resolucao 1" → "1"),
+                    # pois o primeiro pode ser parte do nome (ex.: "24").
+                    all_nums = re.findall(r"(\d+)", col_name)
+                    if all_nums:
+                        last_num = all_nums[-1]
+                        cand = f"Status lancamento {last_num}"
+                        if any(
+                            re.search(rf"status\s*lancamento\s*{re.escape(last_num)}", _normalize(p))
+                            for p in props
+                        ):
+                            status_prop_nome = cand
+                        else:
+                            # Tenta o primeiro numero como ultimo recurso
+                            first_num = all_nums[0]
+                            cand_first = f"Status lancamento {first_num}"
+                            if any(
+                                re.search(rf"status\s*lancamento\s*{re.escape(first_num)}", _normalize(p))
+                                for p in props
+                            ):
+                                status_prop_nome = cand_first
+                            else:
+                                continue
+                    else:
+                        continue
+
+                # Verifica se a atividade ja foi lancada (Status lancamento N == "Lancada")
+                status_prop_real = _resolve_existing_status_prop(props, status_prop_nome)
+                status_val = ""
+                if status_prop_real:
+                    status_info = props.get(status_prop_real, {})
+                    ptype = status_info.get("type", "")
+                    if ptype == "select":
+                        status_val = ((status_info.get("select") or {}).get("name") or "").strip()
+                    elif ptype == "status":
+                        status_val = ((status_info.get("status") or {}).get("name") or "").strip()
+                    elif ptype == "rich_text":
+                        rt = status_info.get("rich_text") or []
+                        status_val = "".join(t.get("plain_text", "") for t in rt).strip() if isinstance(rt, list) else ""
+
+                # Le a data de realizacao da atividade (Data realização N)
+                data_realizacao = ""
+                num_match_data = re.search(r"(\d+)", status_prop_nome)
+                if num_match_data:
+                    n_data = num_match_data.group(1)
+                    for pname, pval in props.items():
+                        if re.search(rf"data\s*realiza[çc][ãa]o\s*{re.escape(n_data)}", _normalize(pname)):
+                            data_realizacao = _extract_plain_text(pval).strip()
+                            break
+
+                raw_val = _extract_plain_text(prop)
+                nota = _to_float(raw_val)
                 if nota is None:
+                    if status_val == "Lancada":
+                        _log(logger, f"  [skip] '{aluno}' - '{atividade_nome}' ja lancada (status Lancada, nota ausente)")
+                    continue
+
+                if status_val == "Lancada":
+                    _log(logger, f"  [skip] '{aluno}' - '{atividade_nome}' ja lancada (status Lancada, nota={nota})")
                     continue
 
                 registros.append(
@@ -946,10 +1551,11 @@ def carregar_notas_notion(
                         turma=context.turma,
                         trimestre=context.trimestre,
                         aluno=aluno,
-                        atividade=col_name.strip(),
+                        atividade=atividade_nome,
                         nota=nota,
                         notion_page_id=row.get("id", ""),
-                        notion_status_prop=_status_prop_for_activity(col_name.strip()),
+                        notion_status_prop=status_prop_nome,
+                        data_realizacao=data_realizacao,
                     )
                 )
 
@@ -983,7 +1589,9 @@ def listar_contextos_disponiveis(logger: Optional[LogFn] = None) -> List[Dict[st
 
     notion = Client(auth=NOTION_TOKEN)
     _log(logger, "Nenhuma nota valida encontrada. Listando contextos pela estrutura das databases...")
-    databases = _discover_databases(notion, root_page_id, logger=logger)
+    databases = _search_databases_by_name("Notas Escolas", set(), logger=logger)
+    if not databases:
+        databases = _discover_databases(notion, root_page_id, logger=logger)
 
     contextos = set()
     for db_id, breadcrumb, db_title in databases:
@@ -1007,22 +1615,69 @@ def listar_contextos_disponiveis(logger: Optional[LogFn] = None) -> List[Dict[st
     ]
 
 
-def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str, str]]) -> List[RegistroNota]:
+def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str, str]], logger: Optional[LogFn] = None) -> List[RegistroNota]:
     if not filtro:
         return registros
 
+    _log(logger, f"[FILTRO] Filtro aplicado: {filtro}")
+    _log(logger, f"[FILTRO] Registros antes do filtro: {len(registros)}")
+
     def match(value: str, key: str) -> bool:
         expected = filtro.get(key)
-        return True if not expected else _normalize(value) == _normalize(expected)
+        if not expected:
+            return True
+        result = _normalize(expected) in _normalize(value)
+        if not result:
+            _log(logger, f"[FILTRO] Descartado por '{key}': esperado='{expected}', valor='{value}'")
+        return result
 
-    return [
+    def _normalize_date(date_str: str) -> str:
+        """Normaliza data para formato AAAA-MM-DD para comparacao."""
+        if not date_str:
+            return ""
+        d = date_str.strip()
+        # Formato dd/mm/aaaa ou dd-mm-aaaa
+        m = re.match(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})", d)
+        if m:
+            day, month, year = m.group(1), m.group(2), m.group(3)
+            return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+        # Formato aaaa-mm-dd
+        m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", d)
+        if m:
+            return d
+        return _normalize(d)
+
+    def match_date(value: str, key: str) -> bool:
+        expected = filtro.get(key)
+        if not expected:
+            return True
+        # Se o registro nao tem data, nao filtra por data (deixa passar)
+        if not value:
+            return True
+        # Normaliza ambas as datas para formato AAAA-MM-DD
+        expected_norm = _normalize_date(expected)
+        value_norm = _normalize_date(value)
+        # Tenta comparacao exata primeiro
+        if expected_norm == value_norm:
+            return True
+        # Fallback: comparacao por substring apos normalizacao
+        result = _normalize(expected) in _normalize(value)
+        if not result:
+            _log(logger, f"[FILTRO] Descartado por '{key}': esperado='{expected}' (norm='{expected_norm}'), valor='{value}' (norm='{value_norm}')")
+        return result
+
+    resultado = [
         r
         for r in registros
         if match(r.escola, "escola")
         and match(r.turno, "turno")
         and match(r.turma, "turma")
         and match(r.trimestre, "trimestre")
+        and match(r.atividade, "atividade")
+        and match_date(r.data_realizacao, "data_realizacao")
     ]
+    _log(logger, f"[FILTRO] Registros apos filtro: {len(resultado)}")
+    return resultado
 
 
 def _first_visible(page, selectors: List[str]):
@@ -1064,6 +1719,10 @@ def _pick_user_input(scope):
             "input[name*='user' i]",
             "input[id*='user' i]",
             "input[placeholder*='user' i]",
+            "input[name*='email' i]",
+            "input[id*='email' i]",
+            "input[autocomplete='username']",
+            "input[autocomplete='current-password']",
         ],
     )
     if direct is not None:
@@ -1230,7 +1889,7 @@ def _ensure_login_form_available(page, logger: Optional[LogFn]) -> None:
         try:
             page.locator("input[name='BUTTON1'][type='submit']").first.click(timeout=ACTION_TIMEOUT_MS)
             page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(250)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1245,12 +1904,33 @@ def _ensure_login_form_available(page, logger: Optional[LogFn]) -> None:
         _log(logger, f"Formulario de login nao encontrado em {page.url}; tentando {fallback_url}")
         try:
             page.goto(fallback_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(250)
         except Exception:  # noqa: BLE001
             continue
         _, cpf_input, senha_input = _find_login_inputs(page)
         if cpf_input is not None and senha_input is not None:
             return
+
+    if ai_is_enabled():
+        _log(logger, "[AI] Fallbacks exauridos. Tentando encontrar formulario de login via IA...")
+        try:
+            screenshot = page.screenshot()
+            ai_result = analyze_login_screen(screenshot, logger=logger)
+            if ai_result.get("has_login_form") and ai_result.get("elements"):
+                _log(logger, "[AI] IA identificou campos de login. Tentando preencher diretamente...")
+                for elem in ai_result["elements"]:
+                    selector = elem.get("selector", "")
+                    if not selector:
+                        continue
+                    try:
+                        loc = page.locator(selector)
+                        if loc.count() > 0:
+                            _log(logger, f"[AI] Elemento visivel via IA: {elem.get('type')} -> {selector}")
+                    except Exception:
+                        continue
+                return
+        except Exception as exc:
+            _log(logger, f"[AI] Erro na analise via IA: {exc}")
 
     _capture_login_debug(page, logger=logger)
     raise LancamentoError(
@@ -1348,12 +2028,155 @@ def _is_login_page(page) -> bool:
         return False
 
 
+def _is_school_selection_page(page) -> bool:
+    """Retorna True se a pagina mostra a lista de escolas para selecionar (pos-login)."""
+    url = (page.url or "").lower()
+    if "hlogin8147" in url:
+        return False
+    if "hportalprofperiodos" in url:
+        return False
+    if _is_login_page(page):
+        return False
+    try:
+        if page.locator("input[name='_USUCOD']").count() > 0:
+            return False
+        if page.locator("select[name='W0019_SECNUMFILTRODISC']").count() > 0:
+            return False
+        # Procura links com nomes de escola ou texto indicativo
+        links = page.locator("a")
+        total = min(links.count(), 40)
+        found_school = False
+        for idx in range(total):
+            texto = (links.nth(idx).inner_text(timeout=200) or "").strip()
+            if not texto:
+                continue
+            if any(p in texto.lower() for p in ["escola", "professor", "selecion", "acessar", "entrar"]):
+                found_school = True
+            if texto.lower().startswith("escola"):
+                return True
+        return found_school and total > 2
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _select_school(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> None:
+    """Clica no nome da escola na tela de selecao de escolas."""
+    escola = contexto.escola
+    if not escola:
+        return
+    _log(logger, f"Selecionando escola: {escola}")
+    if _click_text_any_scope(page, escola):
+        _clear_slots_cache()
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(200)
+        _log(logger, f"Escola '{escola}' selecionada.")
+    else:
+        _log(logger, f"Aviso: nao foi possivel clicar na escola '{escola}'.")
+
+
+def _is_period_selection_page(page) -> bool:
+    """Retorna True se a pagina e a tela de selecao de periodo/trimestre."""
+    url = (page.url or "").lower()
+    if "hportalprofperiodos" in url:
+        return True
+    try:
+        # Exclusoes: pagina de login ou dashboard do professor
+        if page.locator("input[name='_USUCOD']").count() > 0:
+            return False
+        if page.locator("select[name='W0019_SECNUMFILTRODISC']").count() > 0:
+            return False
+        # Exclusao: grade de alunos (Nome Estudante presente)
+        if _is_student_grid_visible(page):
+            return False
+        # Exclusao: pagina contem campos de nota (ja estamos na grade)
+        if page.locator("input[name*='_NOTA_' i]").count() > 0:
+            return False
+        # Procura por trimestres como links/botoes + indicador de tela de periodo
+        if page.get_by_text("Período Letivo", exact=False).count() > 0:
+            return True
+        # Só considera periodo se houver multiplas opcoes de trimestre visiveis
+        opcoes = 0
+        for periodo in ["1o", "2o", "3o"]:
+            if page.get_by_text(periodo, exact=False).count() > 0:
+                opcoes += 1
+        if opcoes >= 2:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> None:
+    """Seleciona o trimestre na tela de selecao de periodo e confirma."""
+    trimestre = contexto.trimestre
+    if not trimestre:
+        return
+    _log(logger, f"Selecionando periodo: {trimestre}")
+
+    # Tenta clicar no texto do trimestre (caso seja um link)
+    clicked = _click_text_any_scope(page, trimestre)
+    if clicked:
+        _clear_slots_cache()
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(200)
+        _log(logger, f"Periodo '{trimestre}' selecionado.")
+        return
+
+    # Se ja estiver pre-selecionado, procura botao de confirmar/visualizar
+    _log(logger, "Periodo pode ja estar pre-selecionado. Procurando botao de confirmar...")
+    for texto_botao in ["Continuar", "Visualizar", "Prosseguir", "Visualisar", "Confirmar", "OK", "Acessar", "Selecionar", "Abrir"]:
+        if _click_text_any_scope(page, texto_botao):
+            _clear_slots_cache()
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=8000)
+            except Exception:  # noqa: BLE001
+                pass
+            page.wait_for_timeout(200)
+            _log(logger, f"Botao '{texto_botao}' clicado para confirmar periodo.")
+            return
+
+    _log(logger, f"Aviso: nao foi possivel selecionar o periodo '{trimestre}'.")
+
+
+def _handle_assessment_period_page(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
+    """Apos clicar no icone de avaliacao, confirma o trimestre se a tela de periodo aparecer."""
+    page.wait_for_timeout(200)
+
+    if not _is_period_selection_page(page):
+        return False
+
+    _log(logger, "Tela de selecao de trimestre detectada apos icone de avaliacao.")
+    _select_period(page, contexto, logger=logger)
+
+    # Apos confirmar, aguarda navegacao e verifica se chegou na grade de alunos
+    _clear_slots_cache()
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=8000)
+    except Exception:  # noqa: BLE001
+        pass
+    page.wait_for_timeout(200)
+
+    # Se chegou na grade, consideramos periodo resolvido com sucesso
+    if _is_student_grid_visible(page):
+        _log(logger, "Grade de alunos detectada apos confirmar periodo.")
+        return False  # False = nao precisa de retry, ja estamos na grade
+
+    return True
+
+
 def _wait_for_manual_login(page, logger: Optional[LogFn]) -> bool:
     deadline = time.time() + max(30, MANUAL_LOGIN_TIMEOUT_SEC)
     while time.time() < deadline:
         if not _is_login_page(page):
             return True
-        page.wait_for_timeout(700)
+        page.wait_for_timeout(250)
     _log(logger, "Timeout aguardando login manual no SGE.")
     return False
 
@@ -1366,6 +2189,47 @@ def _read_login_error_message(page) -> str:
     except Exception:  # noqa: BLE001
         pass
     return ""
+
+
+def _is_dashboard_page(page) -> bool:
+    """Retorna True se a pagina atual parece ser o painel do professor (pos-login)."""
+    url = (page.url or "").lower()
+    if "hlogin8147" in url:
+        return False
+    try:
+        # Elementos tipicos do dashboard do professor no SGE
+        if page.locator("select[name='W0019_SECNUMFILTRODISC']").count() > 0:
+            return True
+        if page.locator("input[name='W0019_TURNUMFILTRODISC']").count() > 0:
+            return True
+        if page.locator("#W0019REFRESH1").count() > 0:
+            return True
+        if page.get_by_text("Professor", exact=False).count() > 0:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _confirm_logged_in(page, logger: Optional[LogFn]) -> None:
+    """Apos o login, verifica se entrou no dashboard, selecao de escolas ou periodo."""
+    for _ in range(15):
+        if _is_dashboard_page(page):
+            _log(logger, "Dashboard do professor detectado.")
+            return
+        if _is_school_selection_page(page):
+            _log(logger, "Tela de selecao de escolas detectada.")
+            return
+        if _is_period_selection_page(page):
+            _log(logger, "Tela de selecao de periodo detectada.")
+            return
+        page.wait_for_timeout(250)
+    _capture_stage_debug(page, stage="post_login_not_dashboard", logger=logger)
+    url_atual = page.url
+    raise LancamentoError(
+        f"Login aparentemente falhou: pagina atual ({url_atual}) nao contem o painel do professor, "
+        "selecao de escolas ou periodo. Verifique CPF/senha ou tente HEADLESS=0 para visualizar."
+    )
 
 
 def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], attempt: int = 1) -> None:
@@ -1384,7 +2248,36 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
         scope, cpf_input, senha_input = _find_login_inputs(page)
         if cpf_input is not None and senha_input is not None:
             break
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(200)
+
+    if cpf_input is None or senha_input is None or scope is None:
+        if ai_is_enabled():
+            _log(logger, "[AI] Campos de login nao encontrados por seletores. Tentando IA...")
+            try:
+                screenshot = page.screenshot()
+                ai_result = analyze_login_screen(screenshot, logger=logger)
+                for elem in ai_result.get("elements", []):
+                    selector = elem.get("selector", "")
+                    etype = elem.get("type", "")
+                    if not selector or not etype:
+                        continue
+                    try:
+                        loc = page.locator(selector)
+                        if loc.count() > 0 and loc.first.is_visible():
+                            _log(logger, f"[AI] Elemento '{etype}' via IA: {selector}")
+                            if etype == "cpf_input":
+                                cpf_input = loc.first
+                            elif etype == "password_input":
+                                senha_input = loc.first
+                            elif etype == "login_button":
+                                pass
+                            if cpf_input is not None and senha_input is not None:
+                                scope = page
+                                break
+                    except Exception:
+                        continue
+            except Exception as exc:
+                _log(logger, f"[AI] Erro: {exc}")
 
     if cpf_input is None or senha_input is None or scope is None:
         raise LancamentoError(
@@ -1412,29 +2305,24 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
         except Exception:  # noqa: BLE001
             pass
 
-    submit = _first_visible(
-        scope,
-        [
-            "input[name='BTNLOGIN']",
-            "button[type='submit']",
-            "input[type='submit']",
-            "button:has-text('Entrar')",
-            "button:has-text('Acessar')",
-            "button:has-text('Login')",
-        ],
-    )
+    _submit_selectors = [
+        "input[name='BTNLOGIN']",
+        "button[type='submit']",
+        "input[type='submit']",
+        "button:has-text('Entrar')",
+        "button:has-text('Acessar')",
+        "button:has-text('Login')",
+        "input[value*='Entrar' i]",
+        "input[value*='Acessar' i]",
+        "input[value*='Login' i]",
+        "a:has-text('Entrar')",
+        "a:has-text('Acessar')",
+        "input[type='image'][src*='login' i]",
+        "input[type='image'][alt*='entrar' i]",
+    ]
+    submit = _first_visible(scope, _submit_selectors)
     if submit is None:
-        submit = _first_visible(
-            page,
-            [
-                "input[name='BTNLOGIN']",
-                "button[type='submit']",
-                "input[type='submit']",
-                "button:has-text('Entrar')",
-                "button:has-text('Acessar')",
-                "button:has-text('Login')",
-            ],
-        )
+        submit = _first_visible(page, _submit_selectors)
     if submit is None:
         raise LancamentoError("Nao foi possivel localizar botao de login no SGE.")
 
@@ -1442,11 +2330,11 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
     submit.click(timeout=ACTION_TIMEOUT_MS)
 
     try:
-        page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+        page.wait_for_load_state("domcontentloaded", timeout=10000)
     except PlaywrightTimeoutError:
         pass
 
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(250)
 
     if _is_login_page(page):
         err = _read_login_error_message(page)
@@ -1458,39 +2346,33 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
             if scope2 is not None and cpf_input2 is not None and senha_input2 is not None:
                 cpf_input2.fill(cpf, timeout=ACTION_TIMEOUT_MS)
                 senha_input2.fill(senha_upper, timeout=ACTION_TIMEOUT_MS)
-                submit2 = _first_visible(
-                    scope2,
-                    [
-                        "input[name='BTNLOGIN']",
-                        "button[type='submit']",
-                        "input[type='submit']",
-                        "button:has-text('Entrar')",
-                        "button:has-text('Acessar')",
-                        "button:has-text('Login')",
-                    ],
-                )
+                _retry_submit_selectors = [
+                    "input[name='BTNLOGIN']",
+                    "button[type='submit']",
+                    "input[type='submit']",
+                    "button:has-text('Entrar')",
+                    "button:has-text('Acessar')",
+                    "button:has-text('Login')",
+                    "input[value*='Entrar' i]",
+                    "input[value*='Acessar' i]",
+                    "input[value*='Login' i]",
+                    "a:has-text('Entrar')",
+                    "a:has-text('Acessar')",
+                ]
+                submit2 = _first_visible(scope2, _retry_submit_selectors)
                 if submit2 is None:
-                    submit2 = _first_visible(
-                        page,
-                        [
-                            "input[name='BTNLOGIN']",
-                            "button[type='submit']",
-                            "input[type='submit']",
-                            "button:has-text('Entrar')",
-                            "button:has-text('Acessar')",
-                            "button:has-text('Login')",
-                        ],
-                    )
+                    submit2 = _first_visible(page, _retry_submit_selectors)
                 if submit2 is not None:
                     _dismiss_cookie_banner(page, logger=logger)
                     submit2.click(timeout=ACTION_TIMEOUT_MS)
                     try:
-                        page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+                        page.wait_for_load_state("domcontentloaded", timeout=10000)
                     except PlaywrightTimeoutError:
                         pass
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(250)
                     if not _is_login_page(page):
                         _log(logger, "Login realizado. Iniciando lancamento...")
+                        _confirm_logged_in(page, logger=logger)
                         return
                     err = _read_login_error_message(page)
 
@@ -1499,6 +2381,7 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
         raise LancamentoError(f"Falha no login do SGE: {detalhe}")
 
     _log(logger, "Login realizado. Iniciando lancamento...")
+    _confirm_logged_in(page, logger=logger)
 
 
 def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
@@ -1519,7 +2402,7 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
         _log(logger, "Login manual detectado. Iniciando lancamento...")
         return
 
-    max_attempts = 2
+    max_attempts = 4
     last_exception = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1533,10 +2416,13 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
                 _log(logger, "Credencial invalida detectada; sem retentativa.")
                 raise
             if attempt < max_attempts:
-                _log(logger, f"Tentativa {attempt} falhou: {exc}. Recarregando pagina para retentativa...")
+                wait_sec = 3 * attempt
+                _log(logger, f"Tentativa {attempt} falhou: {exc}. Aguardando {wait_sec}s e recarregando pagina...")
                 _capture_stage_debug(page, stage=f"login_retry_{attempt}", logger=logger)
+                page.wait_for_timeout(wait_sec * 1000)
                 try:
                     page.goto(_resolve_sge_login_url(logger=logger), wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                    page.wait_for_timeout(1000)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -1544,7 +2430,22 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
     raise LancamentoError(f"Falha no login do SGE apos {max_attempts} tentativas: {last_exception}")
 
 
+# Cache de contexto atual (evita re-selecao desnecessaria)
+_current_context: Optional[ContextoTurma] = None
+
+
 def _select_context(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> None:
+    global _current_context
+
+    # Se ja estamos no mesmo contexto, pular
+    if (_current_context and
+        _current_context.escola == contexto.escola and
+        _current_context.turno == contexto.turno and
+        _current_context.turma == contexto.turma and
+        _current_context.trimestre == contexto.trimestre):
+        _log(logger, f"[CACHE] Contexto ja selecionado: {contexto.escola} | {contexto.turno} | {contexto.turma} | {contexto.trimestre}")
+        return
+
     _log(logger, f"Selecionando contexto: {contexto.escola} | {contexto.turno} | {contexto.turma} | {contexto.trimestre}")
 
     textos = [contexto.escola, contexto.turno, contexto.turma, contexto.trimestre]
@@ -1552,6 +2453,8 @@ def _select_context(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> N
         if item.startswith("Escola nao") or item.startswith("Turno nao"):
             continue
         _click_text_any_scope(page, item)
+
+    _current_context = contexto
 
 
 def _extract_first_number(text: str) -> str:
@@ -1617,16 +2520,48 @@ def _set_filters_on_portal(page, contexto: ContextoTurma, logger: Optional[LogFn
                     "button:has-text('Filtr')",
                 ],
             ):
+                _clear_slots_cache()
                 try:
-                    page.wait_for_load_state("networkidle", timeout=30000)
+                    page.wait_for_load_state("domcontentloaded", timeout=8000)
                 except Exception:  # noqa: BLE001
                     pass
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(200)
 
             _log(logger, "Filtros de contexto aplicados na tela do professor.")
             return
         except Exception:  # noqa: BLE001
             continue
+
+
+WRONG_ASSESSMENT_URLS = [
+    "hconteudoperiodohtml.aspx",
+    "hportalplanejamentoaula.aspx",
+    "hdisturfrealunopaginado.aspx",
+    "havaliacaoprofagendabim.aspx",
+    "hportalprofturma.aspx",
+    "hportalprofperiodos.aspx",
+    "hselprofessormaterialapoioaluno.aspx",
+]
+CORRECT_ASSESSMENT_URLS = ["hdisciplinaturmaaluno.aspx", "hdiscturalunonota.aspx"]
+
+
+def _is_wrong_assessment_page(page) -> bool:
+    """Verifica se a pagina apos clicar no icone nao e a de lancamento de notas."""
+    try:
+        url = page.url.lower()
+        for correct in CORRECT_ASSESSMENT_URLS:
+            if correct in url:
+                return False
+        for wrong in WRONG_ASSESSMENT_URLS:
+            if wrong in url:
+                return True
+        if "adaptacao" in url or "adapt" in url:
+            return True
+        if page.get_by_text("Adaptação Curricular", exact=False).count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
@@ -1636,14 +2571,21 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
     trimestre_num = _extract_first_number(contexto.trimestre)
     turno_norm = _normalize(contexto.turno).upper()
 
+    # Padroes de ID do ASP.NET (podem variar entre versoes do SGE)
+    _id_prefixes = ["W0019W0075", "W0019W0076", "W0019W0080", "W0019W0060"]
+
     for scope in _iter_scopes(page):
         # Aguarda o grid responder ao filtro antes de procurar a linha.
         for _ in range(8):
-            hidden_rows = scope.locator("input[name^='W0019W0075_TURNUMSTR_']")
-            total = hidden_rows.count()
-            if total > 0:
+            for prefix in _id_prefixes:
+                hidden_rows = scope.locator(f"input[name^='{prefix}_TURNUMSTR_']")
+                if hidden_rows.count() > 0:
+                    break
+            else:
+                hidden_rows = scope.locator("input[name*='_TURNUMSTR_']")
+            if hidden_rows.count() > 0:
                 break
-            page.wait_for_timeout(300)
+            page.wait_for_timeout(150)
 
         total = hidden_rows.count()
         for idx in range(total):
@@ -1661,25 +2603,168 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
                 continue
 
             try:
-                name = cell.get_attribute("name") or ""
-                suffix = name.rsplit("_", 1)[-1]
-                icon = scope.locator(f"#W0019W0075_AVALIACAO_{suffix}, img[name='W0019W0075_AVALIACAO_{suffix}']")
-                if icon.count() == 0:
+                # Sobe para a linha <tr> da turma
+                row = cell.locator("xpath=ancestor::tr[1]")
+                if row.count() == 0:
                     continue
 
-                node = icon.first
-                anchor = node.locator("xpath=ancestor::a[1]")
-                if anchor.count() > 0:
-                    anchor.first.click(timeout=ACTION_TIMEOUT_MS)
-                else:
-                    node.click(timeout=ACTION_TIMEOUT_MS)
-                page.wait_for_timeout(900)
-                _log(logger, f"Avaliacao aberta pela linha de turma: {label}")
-                return True
+                # Estrategia 1: procura link/imagem com alt/title/texto contendo "avalia" ou "nota"
+                # Pula "Agenda Avaliações" e "Adaptação Curricular"
+                def _has_texto_valido(texto: str) -> bool:
+                    return "agenda" not in texto and "adaptação" not in texto and "adapt" not in texto
+
+                def _preferir_avaliacao(texto: str) -> bool:
+                    return "avaliação" in texto or "avaliacao" in texto
+
+                for sel in [
+                    "a img[alt*='Avalia' i], a img[title*='Avalia' i]",
+                    "a img[alt*='Nota' i], a img[title*='Nota' i]",
+                    "a img[alt*='Lan' i], a img[title*='Lan' i]",
+                    "input[type='image'][alt*='Avalia' i], input[type='image'][title*='Avalia' i]",
+                    "input[type='image'][alt*='Nota' i], input[type='image'][title*='Nota' i]",
+                ]:
+                    assessment_icon = row.locator(sel)
+                    count = assessment_icon.count()
+                    if count == 0:
+                        continue
+                    # Primeira passada: prefere icones com "avaliação" (exclui adaptacao curricular)
+                    for idx_icon in range(count):
+                        icon = assessment_icon.nth(idx_icon)
+                        try:
+                            alt_text = (icon.get_attribute("alt") or "").lower()
+                            title_text = (icon.get_attribute("title") or "").lower()
+                        except Exception:  # noqa: BLE001
+                            alt_text = title_text = ""
+                        texto_icone = f"{alt_text} {title_text}"
+                        if not _has_texto_valido(texto_icone):
+                            continue
+                        if not _preferir_avaliacao(texto_icone):
+                            continue
+                        try:
+                            icon.click(timeout=ACTION_TIMEOUT_MS)
+                            page.wait_for_timeout(200)
+                            if _is_wrong_assessment_page(page):
+                                _log(logger, f"Icone errado (adaptacao), tentando proximo...")
+                                continue
+                            _log(logger, f"Avaliacao aberta (por atributo): {label}")
+                            _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "atributo", "label": label})
+                            return True
+                        except Exception:  # noqa: BLE001
+                            continue
+                    # Segunda passada: qualquer icone valido (excluindo agenda e adaptacao)
+                    for idx_icon in range(count):
+                        icon = assessment_icon.nth(idx_icon)
+                        try:
+                            alt_text = (icon.get_attribute("alt") or "").lower()
+                            title_text = (icon.get_attribute("title") or "").lower()
+                        except Exception:  # noqa: BLE001
+                            alt_text = title_text = ""
+                        texto_icone = f"{alt_text} {title_text}"
+                        if not _has_texto_valido(texto_icone):
+                            continue
+                        try:
+                            icon.click(timeout=ACTION_TIMEOUT_MS)
+                            page.wait_for_timeout(200)
+                            if _is_wrong_assessment_page(page):
+                                _log(logger, f"Icone errado (adaptacao), tentando proximo...")
+                                continue
+                            _log(logger, f"Avaliacao aberta (por atributo): {label}")
+                            return True
+                        except Exception:  # noqa: BLE001
+                            continue
+
+                # Estrategia 2: ultimo link da linha (comum no SGE)
+                links = row.locator("a")
+                if links.count() > 0:
+                    links.last.click(timeout=ACTION_TIMEOUT_MS)
+                    page.wait_for_timeout(200)
+                    _log(logger, f"Avaliacao aberta (ultimo link): {label}")
+                    _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "ultimo_link", "label": label})
+                    return True
+
+                # Estrategia 3: ultimo input[type='image']
+                imgs = row.locator("input[type='image']")
+                if imgs.count() > 0:
+                    imgs.last.click(timeout=ACTION_TIMEOUT_MS)
+                    page.wait_for_timeout(200)
+                    return True
+
+                # Estrategia 4: penultimo link da linha (se o ultimo for navegacao)
+                if links.count() > 1:
+                    links.nth(links.count() - 2).click(timeout=ACTION_TIMEOUT_MS)
+                    page.wait_for_timeout(200)
+                    _log(logger, f"Avaliacao aberta (penultimo link): {label}")
+                    return True
             except Exception:  # noqa: BLE001
                 continue
 
+    # Fallback: procura a linha correta por texto e tenta achar o icone dentro dela
+    _log(logger, "Tentando fallback para abrir avaliacao (busca por texto)...")
+    for scope in _iter_scopes(page):
+        all_rows = scope.locator("tr")
+        total_rows = all_rows.count()
+        for idx_row in range(total_rows):
+            row = all_rows.nth(idx_row)
+            try:
+                row_text = _normalize(row.inner_text(timeout=400))
+            except Exception:  # noqa: BLE001
+                continue
+            if turno_norm and turno_norm not in row_text:
+                continue
+            if turma_num and f"turma {turma_num}" not in row_text:
+                continue
+            if trimestre_num and f"{trimestre_num}o" not in row_text:
+                continue
+            for palavras in ["Avaliacao", "Avaliação", "Notas", "Lancar", "Lançar"]:
+                try:
+                    icone = row.locator(f"img[alt*='{palavras}' i], img[title*='{palavras}' i], button:has-text('{palavras}'), a:has-text('{palavras}')")
+                    icount = icone.count()
+                    if icount == 0:
+                        continue
+                    for idx_ic in range(icount):
+                        ic = icone.nth(idx_ic)
+                        try:
+                            alt_ic = (ic.get_attribute("alt") or "").lower()
+                            title_ic = (ic.get_attribute("title") or "").lower()
+                        except Exception:
+                            alt_ic = title_ic = ""
+                        texto_ic = f"{alt_ic} {title_ic}"
+                        if "agenda" in texto_ic or "adaptação" in texto_ic or "adapt" in texto_ic:
+                            continue
+                        ic.click(timeout=ACTION_TIMEOUT_MS)
+                        page.wait_for_timeout(200)
+                        if _is_wrong_assessment_page(page):
+                            _log(logger, f"Icone errado via fallback (adaptacao), tentando proximo...")
+                            continue
+                        _log(logger, f"Avaliacao aberta via fallback: '{palavras}'")
+                        _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "fallback_texto", "palavras": palavras})
+                        return True
+                except Exception:  # noqa: BLE001
+                    continue
+            try:
+                links = row.locator("a")
+                if links.count() > 0:
+                    links.last.click(timeout=ACTION_TIMEOUT_MS)
+                    page.wait_for_timeout(200)
+                    _log(logger, f"Avaliacao aberta via fallback (ultimo link da linha)")
+                    _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "fallback_ultimo_link"})
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+
+    _capture_stage_debug(page, stage="assessment_icon_not_found", logger=logger)
+    # Salva screenshot mesmo sem DEBUG_LOGIN para diagnostico
+    try:
+        debug_dir = "artifacts/sge-login"
+        os.makedirs(debug_dir, exist_ok=True)
+        page.screenshot(path=os.path.join(debug_dir, "assessment_icon_not_found.png"), full_page=True)
+        with open(os.path.join(debug_dir, "assessment_icon_not_found_url.txt"), "w") as f:
+            f.write(f"url={page.url}\n")
+            f.write(f"title={page.title()}\n")
+    except Exception:  # noqa: BLE001
+        pass
     _log(logger, "Aviso: nao foi possivel abrir icone de avaliacao pela linha da turma.")
+    _learning_store.registrar_falha("abrir_icone_avaliacao", {"motivo": "icone_nao_encontrado"})
     return False
 
 
@@ -1693,65 +2778,293 @@ def _is_student_grid_visible(page) -> bool:
     return False
 
 
-def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> None:
+def _extract_date_from_gridagenda_row(page, matched_element) -> str:
+    """Extrai a data de avaliacao do GRIDAGENDA a partir do elemento clicado (link/td).
+
+    Procura o <tr> pai e busca o input hidden _AVALIACAOPROFDTSTR_ ou um <td>
+    com data no formato DD/MM/AA.
+    Retorna a data como string (ex.: '29/06/2026') ou string vazia.
+    """
+    try:
+        row = matched_element.locator("xpath=ancestor::tr[1]")
+        if row.count() == 0:
+            return ""
+
+        # Estrategia 1: input hidden _AVALIACAOPROFDTSTR_NNNN
+        date_input = row.locator("input[name*='_AVALIACAOPROFDTSTR_']")
+        if date_input.count() > 0:
+            raw = (date_input.first.input_value(timeout=300) or "").strip()
+            if raw and not raw.startswith("-"):
+                return _normalize_sge_date(raw)
+
+        # Estrategia 2: percorre todos os <td> e busca padrao de data
+        tds = row.locator("td")
+        for i in range(tds.count()):
+            try:
+                texto = (tds.nth(i).inner_text(timeout=200) or "").strip()
+                if re.match(r"\d{2}/\d{2}/\d{2,4}$", texto):
+                    return _normalize_sge_date(texto)
+            except Exception:
+                continue
+
+        # Estrategia 3: JS para buscar qualquer input com data na row
+        js_date = row.evaluate("""
+            (tr) => {
+                const inputs = tr.querySelectorAll('input');
+                for (const inp of inputs) {
+                    const name = (inp.getAttribute('name') || '').toLowerCase();
+                    if (name.includes('avaliacaoprofdtstr') || name.includes('_dtstr_')) {
+                        return (inp.value || '').trim();
+                    }
+                }
+                const tds = tr.querySelectorAll('td');
+                for (const td of tds) {
+                    const txt = (td.textContent || '').trim();
+                    if (/^\\d{2}\\/\\d{2}\\/\\d{2,4}$/.test(txt)) {
+                        return txt;
+                    }
+                }
+                return '';
+            }
+        """)
+        if js_date:
+            return _normalize_sge_date(js_date)
+
+    except Exception:
+        pass
+    return ""
+
+
+def _normalize_sge_date(raw: str) -> str:
+    """Normaliza data do SGE (DD/MM/AA ou DD/MM/AAAA) para DD/MM/AAAA."""
+    raw = (raw or "").strip()
+    if not raw or raw.startswith("-"):
+        return ""
+    m = re.match(r"(\d{2})/(\d{2})/(\d{2,4})", raw)
+    if not m:
+        return ""
+    dia, mes, ano = m.group(1), m.group(2), m.group(3)
+    if len(ano) == 2:
+        ano_int = int(ano)
+        ano = f"20{ano}" if ano_int <= 50 else f"19{ano}"
+    return f"{dia}/{mes}/{ano}"
+
+
+def _dates_match(sge_date: str, notion_date: str) -> bool:
+    """Compara data do SGE (DD/MM/AAAA) com data do Notion (YYYY-MM-DD ou DD/MM/AAAA).
+
+    Retorna True se as datas representam o mesmo dia.
+    Retorna True se qualquer uma estiver vazia (sem validacao).
+    """
+    if not sge_date or not notion_date:
+        return True
+
+    sge_dt = _parse_date(sge_date)
+    notion_dt = _parse_date(notion_date)
+
+    if sge_dt is None or notion_dt is None:
+        return True
+
+    return sge_dt.date() == notion_dt.date()
+
+
+def _activity_match(target: str, link_text: str) -> bool:
+    """Verifica se o texto do link corresponde a atividade desejada."""
+    t = _normalize(target)
+    l = _normalize(link_text)
+    if not t or not l:
+        return False
+    if t in l or l in t:
+        return True
+    tl = _normalize_loose(target)
+    ll = _normalize_loose(link_text)
+    if tl in ll or ll in tl:
+        return True
+
+    def _strip_trailing_num(s: str) -> str:
+        return re.sub(r"\s+\d+\s*$", "", s).strip()
+
+    def _collapse_hyphens(s: str) -> str:
+        return re.sub(r"\s*[-–—]\s*", " - ", s)
+
+    t_stripped = _strip_trailing_num(_collapse_hyphens(t))
+    l_stripped = _strip_trailing_num(_collapse_hyphens(l))
+    if t_stripped and l_stripped and (t_stripped in l_stripped or l_stripped in t_stripped):
+        return True
+    t_stripped_loose = _strip_trailing_num(tl)
+    l_stripped_loose = _strip_trailing_num(ll)
+    if t_stripped_loose and l_stripped_loose and (
+        t_stripped_loose in l_stripped_loose or l_stripped_loose in t_stripped_loose
+    ):
+        return True
+    t_parts = re.split(r"[\s]*[-–—]\s*", tl, maxsplit=1)
+    l_parts = re.split(r"[\s]*[-–—]\s*", ll, maxsplit=1)
+    if len(t_parts) == 2 and len(l_parts) == 2:
+        t_num, t_txt = t_parts[0].strip(), t_parts[1].strip()
+        l_num, l_txt = l_parts[0].strip(), l_parts[1].strip()
+        if t_num == l_num and (t_txt in l_txt or l_txt in t_txt):
+            return True
+        if t_num == l_txt and l_num == t_txt:
+            return True
+    t_num_m = re.match(r"^(\d+)\s*", tl)
+    l_num_m = re.match(r"^(\d+)\s*", ll)
+    if t_num_m and l_num_m and t_num_m.group(1) == l_num_m.group(1):
+        t_txt = tl[t_num_m.end():].strip()
+        l_txt = ll[l_num_m.end():].strip()
+        if t_txt and l_txt and (t_txt in l_txt or l_txt in t_txt):
+            return True
+    return False
+
+
+def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[bool, str, int]:
     _log(logger, f"Selecionando avaliacao: {atividade}")
+
+    max_grid_retries = 2
+    for grid_attempt in range(1, max_grid_retries + 1):
+        try:
+            page.wait_for_selector("table#GRIDAGENDA", timeout=10000)
+            _log(logger, "GRIDAGENDA visivel.")
+            break
+        except Exception:
+            _log(logger, f"GRIDAGENDA nao encontrado em 10s (tentativa {grid_attempt}/{max_grid_retries}).")
+            url_atual = (page.url or "").lower()
+            if "hdiscturalunonota" in url_atual:
+                try:
+                    span_atual = page.locator("#span__AVALIACAO")
+                    if span_atual.count() > 0:
+                        texto_atual = (span_atual.first.inner_text(timeout=2000) or "").strip()
+                        if texto_atual and _activity_match(atividade, texto_atual):
+                            _log(logger, f"[PRE-CHECK] Atividade '{atividade}' ja esta aberta.")
+                            posicao = 0
+                            try:
+                                posicao_input = page.locator("input[name*='_POSICAO_0001']")
+                                if posicao_input.count() > 0:
+                                    posicao = int(posicao_input.first.input_value(timeout=500) or "0")
+                            except Exception:
+                                pass
+                            data_sge = ""
+                            try:
+                                dt_input = page.locator("input[name='_AVALIACAOPROFDT']")
+                                if dt_input.count() > 0:
+                                    data_sge = _normalize_sge_date(dt_input.first.input_value(timeout=500) or "")
+                            except Exception:
+                                pass
+                            return True, data_sge, posicao
+                except Exception:
+                    pass
+            if grid_attempt < max_grid_retries:
+                _log(logger, "Recarregando pagina para tentar encontrar GRIDAGENDA...")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+    def _esperar_grade_lancamento() -> bool:
+        try:
+            page.wait_for_url("**/hdiscturalunonota.aspx**", timeout=10000)
+            return True
+        except Exception:
+            return False
+
+    # OTIMIZACAO: Uma unica avaliacao JS para extrair TODOS os elementos clicaveis da GRIDAGENDA
+    agenda = page.locator("table#GRIDAGENDA")
+    if agenda.count() > 0:
+        js_elements = agenda.evaluate("""
+            (table) => {
+                const out = [];
+                let posicao = 0;
+                // Links
+                for (const a of table.querySelectorAll('a')) {
+                    const text = (a.textContent || '').trim();
+                    if (text) {
+                        posicao++;
+                        out.push({tag: 'a', text, posicao, rowIdx: a.closest('tr')?.rowIndex ?? -1});
+                    }
+                }
+                // Clickable tds
+                for (const td of table.querySelectorAll('td[onclick], td[style*="cursor:pointer"], td[style*="cursor: pointer"]')) {
+                    const text = (td.textContent || '').trim();
+                    if (text) {
+                        posicao++;
+                        out.push({tag: 'td', text, posicao, rowIdx: td.closest('tr')?.rowIndex ?? -1});
+                    }
+                }
+                // Inputs/buttons
+                for (const el of table.querySelectorAll('input[type="image"], input[type="submit"], button')) {
+                    const text = (el.value || el.alt || el.title || '').trim();
+                    if (text) {
+                        posicao++;
+                        out.push({tag: el.tagName.toLowerCase(), text, posicao, rowIdx: el.closest('tr')?.rowIndex ?? -1});
+                    }
+                }
+                return out;
+            }
+        """)
+        _log(logger, f"[GRID-SCAN] {len(js_elements)} elemento(s) encontrados na GRIDAGENDA via JS.")
+
+        # Matching em Python (rapido, sem chamadas ao DOM)
+        for item in js_elements:
+            texto = item["text"]
+            if not texto:
+                continue
+            _log(logger, f"[GRID-SCAN] {item['tag']}[pos={item['posicao']}] texto={texto!r}")
+            if _activity_match(atividade, texto):
+                _log(logger, f"[GRID-SCAN] MATCH encontrado: {texto!r}")
+                # Clique direto no elemento por seletor
+                posicao = item["posicao"]
+                selector = None
+                if item["tag"] == "a":
+                    selector = f"table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) a"
+                elif item["tag"] == "td":
+                    selector = f"table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) td[onclick], table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) td[style*='cursor:pointer']"
+                else:
+                    selector = f"table#GRIDAGENDA input[type='image'], table#GRIDAGENDA input[type='submit'], table#GRIDAGENDA button"
+
+                if selector:
+                    clicked = False
+                    try:
+                        loc = page.locator(selector).first
+                        if loc.count() > 0:
+                            loc.click(timeout=ACTION_TIMEOUT_MS)
+                            clicked = True
+                            page.wait_for_timeout(250)
+                            if _esperar_grade_lancamento():
+                                _log(logger, f"[GRID-SCAN] Posicao: {posicao} → Status lancamento {posicao}")
+                                return True, "", posicao
+                    except Exception:
+                        pass
+                    # Fallback: clique via JS
+                    if not clicked:
+                        try:
+                            el_js = page.locator(selector).first
+                            if el_js.count() > 0:
+                                el_js.evaluate("el => el.click()")
+                                page.wait_for_timeout(300)
+                                if _esperar_grade_lancamento():
+                                    _log(logger, f"[GRID-SCAN-JS] Posicao: {posicao} → Status lancamento {posicao}")
+                                    return True, "", posicao
+                        except Exception:
+                            pass
+
+                # Fallback: clicar por texto
+                if _click_text_any_scope(page, texto):
+                    page.wait_for_timeout(250)
+                    if _esperar_grade_lancamento():
+                        return True, "", posicao
+
+    # Fallback: tentar clicar no texto da atividade diretamente
     if _click_text_any_scope(page, atividade):
-        page.wait_for_timeout(500)
-        return
+        page.wait_for_timeout(250)
+        if _esperar_grade_lancamento():
+            return True, "", 0
 
-    # Quando a grade de estudantes ja estiver visivel, nao bloqueia o fluxo
-    # por causa de variacao de rótulo da atividade (ex.: 8-Avaliacao).
     if _normalize(atividade) == "avaliacao" and _is_student_grid_visible(page):
-        _log(logger, "Grade de estudantes detectada; seguindo sem clique explicito da atividade.")
-        return
-
-    alvo_norm = _normalize(atividade)
-    alvo_loose = _normalize_loose(atividade)
-    for scope in _iter_scopes(page):
-        links = scope.locator("a")
-        total_links = links.count()
-        for idx in range(total_links):
-            link = links.nth(idx)
-            try:
-                texto = (link.inner_text(timeout=600) or "").strip()
-                if not texto:
-                    continue
-                texto_norm = _normalize(texto)
-                texto_loose = _normalize_loose(texto)
-                if alvo_norm and (alvo_norm in texto_norm or texto_norm in alvo_norm):
-                    link.click(timeout=ACTION_TIMEOUT_MS)
-                    page.wait_for_timeout(700)
-                    return
-                if alvo_loose and (alvo_loose in texto_loose or texto_loose in alvo_loose):
-                    link.click(timeout=ACTION_TIMEOUT_MS)
-                    page.wait_for_timeout(700)
-                    return
-                if alvo_norm == "avaliacao" and ("avaliacao" in texto_norm or "avali" in texto_loose):
-                    link.click(timeout=ACTION_TIMEOUT_MS)
-                    page.wait_for_timeout(700)
-                    return
-            except Exception:  # noqa: BLE001
-                continue
-
-    # Alguns layouts trazem avaliacao como botao submit em vez de link.
-    for scope in _iter_scopes(page):
-        submit = _first_visible(
-            scope,
-            [
-                "input[type='submit'][value*='Avalia']",
-                "button:has-text('Avalia')",
-            ],
-        )
-        if submit is not None:
-            try:
-                submit.click(timeout=ACTION_TIMEOUT_MS)
-                page.wait_for_timeout(700)
-                return
-            except Exception:  # noqa: BLE001
-                continue
+        return True, "", 0
 
     _capture_stage_debug(page, stage="activity_not_found", logger=logger)
-    _log(logger, f"Aviso: avaliacao nao encontrada diretamente na tela: {atividade}")
+    _log(logger, f"Aviso: avaliacao nao encontrada na tela: {atividade}")
+    return False, "", 0
 
 
 def _find_student_row(page, aluno: str):
@@ -1791,7 +3104,8 @@ def _go_to_first_grade_page(page) -> bool:
         ],
     )
     if moved:
-        page.wait_for_timeout(450)
+        _clear_slots_cache()
+        page.wait_for_timeout(200)
     return moved
 
 
@@ -1822,7 +3136,8 @@ def _go_to_next_grade_page(page) -> bool:
         ],
     )
     if moved:
-        page.wait_for_timeout(450)
+        _clear_slots_cache()
+        page.wait_for_timeout(200)
     return moved
 
 
@@ -1831,19 +3146,39 @@ def _find_student_row_with_pagination(page, aluno: str, max_pages: int = 5):
     if row is not None:
         return row
 
+    # Cache de posicao de aluno: tentar ultima pagina conhecida primeiro
+    aluno_norm = _normalize_loose(aluno)
+    last_known_page = _student_page_cache.get(aluno_norm, 0)
+    if last_known_page > 0:
+        # Ir para pagina conhecida primeiro
+        _go_to_first_grade_page(page)
+        for _ in range(last_known_page):
+            if not _go_to_next_grade_page(page):
+                break
+        row = _find_student_row(page, aluno)
+        if row is not None:
+            _student_page_cache[aluno_norm] = last_known_page
+            return row
+
     _go_to_first_grade_page(page)
     row = _find_student_row(page, aluno)
     if row is not None:
+        _student_page_cache[aluno_norm] = 0
         return row
 
-    for _ in range(max_pages - 1):
+    for page_num in range(1, max_pages):
         if not _go_to_next_grade_page(page):
             break
         row = _find_student_row(page, aluno)
         if row is not None:
+            _student_page_cache[aluno_norm] = page_num
             return row
 
     return None
+
+
+# Cache de posicao de aluno por pagina (evita busca repetida)
+_student_page_cache: Dict[str, int] = {}
 
 
 def _collect_student_slots(scope) -> List[Dict[str, str]]:
@@ -1853,11 +3188,14 @@ def _collect_student_slots(scope) -> List[Dict[str, str]]:
                         r"""
             (els) => {
               const out = [];
+              const seen = new Set();
               for (const el of els) {
                 const attr = (el.getAttribute('name') || el.getAttribute('id') || '').trim();
                                 const m = attr.match(/_ALUMATNOM_(\d{4})$/);
                 if (!m) continue;
                 const suffix = m[1];
+                if (seen.has(suffix)) continue;
+                seen.add(suffix);
                 const raw = (el.value ?? el.textContent ?? '').trim();
                 if (!raw) continue;
                 out.push({ suffix, aluno: raw });
@@ -1873,9 +3211,15 @@ def _collect_student_slots(scope) -> List[Dict[str, str]]:
     return []
 
 
-def _wait_student_slots(scope, attempts: int = 6, delay_ms: int = 250) -> List[Dict[str, str]]:
+def _wait_student_slots(scope, attempts: int = 4, delay_ms: int = 200) -> List[Dict[str, str]]:
+    scope_id = id(scope)
+    cached = _slots_cache.get(scope_id)
+    if cached is not None:
+        return cached
+
     slots = _collect_student_slots(scope)
     if slots:
+        _slots_cache[scope_id] = slots
         return slots
 
     for _ in range(max(0, attempts - 1)):
@@ -1885,6 +3229,7 @@ def _wait_student_slots(scope, attempts: int = 6, delay_ms: int = 250) -> List[D
             pass
         slots = _collect_student_slots(scope)
         if slots:
+            _slots_cache[scope_id] = slots
             return slots
 
     return []
@@ -1925,9 +3270,14 @@ def _candidate_suffixes_for_student(expected: str, slots: List[Dict[str, str]]) 
     return [suffix for _, suffix in scored]
 
 
-def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str) -> bool:
-    selector = ", ".join(
-        [
+def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
+    if coluna_sge:
+        selectors = [
+            f"input[name='_{coluna_sge}_{suffix}']",
+            f"input[id='_{coluna_sge}_{suffix}']",
+        ]
+    else:
+        selectors = [
             f"input[name='_NOTA_{suffix}']",
             f"input[id='_NOTA_{suffix}']",
             f"input[name$='_{suffix}'][name*='NOTA' i]",
@@ -1935,7 +3285,7 @@ def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str) -> bool:
             f"input[name$='_{suffix}'][name*='AVAL' i]",
             f"input[id$='_{suffix}'][id*='AVAL' i]",
         ]
-    )
+    selector = ", ".join(selectors)
     try:
         field = scope.locator(selector)
         if field.count() == 0:
@@ -1958,15 +3308,23 @@ def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str) -> bool:
         return bool(
             scope.evaluate(
                 """
-                ({ suffix, nota }) => {
-                  const selectors = [
-                    `input[name='_NOTA_${suffix}']`,
-                    `input[id='_NOTA_${suffix}']`,
-                    `input[name$='_${suffix}'][name*='NOTA' i]`,
-                    `input[id$='_${suffix}'][id*='NOTA' i]`,
-                    `input[name$='_${suffix}'][name*='AVAL' i]`,
-                    `input[id$='_${suffix}'][id*='AVAL' i]`,
-                  ];
+                ({ suffix, nota, coluna }) => {
+                  let selectors;
+                  if (coluna) {
+                    selectors = [
+                      `input[name='_${coluna}_${suffix}']`,
+                      `input[id='_${coluna}_${suffix}']`,
+                    ];
+                  } else {
+                    selectors = [
+                      `input[name='_NOTA_${suffix}']`,
+                      `input[id='_NOTA_${suffix}']`,
+                      `input[name$='_${suffix}'][name*='NOTA' i]`,
+                      `input[id$='_${suffix}'][id*='NOTA' i]`,
+                      `input[name$='_${suffix}'][name*='AVAL' i]`,
+                      `input[id$='_${suffix}'][id*='AVAL' i]`,
+                    ];
+                  }
 
                   for (const sel of selectors) {
                     const all = Array.from(document.querySelectorAll(sel));
@@ -1981,17 +3339,17 @@ def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str) -> bool:
                   return false;
                 }
                 """,
-                {"suffix": suffix, "nota": nota_texto},
+                {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge},
             )
         )
     except Exception:  # noqa: BLE001
         return False
 
 
-def _try_fill_any_numeric_input_for_suffix(scope, suffix: str, nota_texto: str) -> bool:
+def _try_fill_any_numeric_input_for_suffix(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
         # Fallback amplo: alguns layouts do SGE nao usam prefixo NOTA/AVAL no campo.
         js = """
-        ({ suffix, nota }) => {
+        ({ suffix, nota, coluna }) => {
             const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
             const isVisible = (el) => {
                 const st = window.getComputedStyle(el);
@@ -2003,6 +3361,7 @@ def _try_fill_any_numeric_input_for_suffix(scope, suffix: str, nota_texto: str) 
                 const id = (el.getAttribute('id') || '').trim();
                 const attrs = `${name} ${id}`;
                 if (!attrs.includes(`_${suffix}`)) continue;
+                if (coluna && !attrs.includes(`_${coluna}_`)) continue;
                 if (el.disabled || el.readOnly) continue;
                 if (!isVisible(el)) continue;
 
@@ -2016,14 +3375,14 @@ def _try_fill_any_numeric_input_for_suffix(scope, suffix: str, nota_texto: str) 
         """
 
         try:
-                return bool(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto}))
+                return bool(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge}))
         except Exception:  # noqa: BLE001
                 return False
 
 
-def _is_any_numeric_input_for_suffix_already_set(scope, suffix: str, nota_texto: str) -> bool:
+def _is_any_numeric_input_for_suffix_already_set(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
         js = """
-        ({ suffix }) => {
+        ({ suffix, coluna }) => {
             const out = [];
             const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
             for (const el of candidates) {
@@ -2031,6 +3390,7 @@ def _is_any_numeric_input_for_suffix_already_set(scope, suffix: str, nota_texto:
                 const id = (el.getAttribute('id') || '').trim();
                 const attrs = `${name} ${id}`;
                 if (!attrs.includes(`_${suffix}`)) continue;
+                if (coluna && !attrs.includes(`_${coluna}_`)) continue;
                 out.push((el.value || '').trim());
             }
             return out;
@@ -2038,7 +3398,7 @@ def _is_any_numeric_input_for_suffix_already_set(scope, suffix: str, nota_texto:
         """
 
         try:
-                values = scope.evaluate(js, {"suffix": suffix})
+                values = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge})
         except Exception:  # noqa: BLE001
                 return False
 
@@ -2067,88 +3427,221 @@ def _grade_value_matches_target(raw_value: str, nota_texto: str) -> bool:
         return False
 
 
-def _is_grade_already_set_for_suffix(scope, suffix: str, nota_texto: str) -> bool:
-    selectors = [
-        f"input[name='_NOTA_{suffix}']",
-        f"input[id='_NOTA_{suffix}']",
-        f"input[name$='_{suffix}'][name*='NOTA' i]",
-        f"input[id$='_{suffix}'][id*='NOTA' i]",
-        f"input[name$='_{suffix}'][name*='AVAL' i]",
-        f"input[id$='_{suffix}'][id*='AVAL' i]",
-    ]
+def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[LogFn], coluna_sge: str = "", filled_suffix: str = "") -> bool:
+    """Re-le os inputs do aluno apos o preenchimento e confere se o valor gravou.
 
-    for sel in selectors:
-        try:
-            fields = scope.locator(sel)
-            total = min(fields.count(), 6)
-            for idx in range(total):
-                node = fields.nth(idx)
-                try:
-                    current_value = node.input_value(timeout=350)
-                except Exception:  # noqa: BLE001
-                    current_value = ""
-                if _grade_value_matches_target(current_value, nota_texto):
-                    return True
-        except Exception:  # noqa: BLE001
-            continue
+    Se filled_suffix for fornecido, verifica apenas esse campo (rapido).
+    Caso contrario, busca por todos os suffixes do aluno (fallback).
+    Nota: so retorna True se o campo estiver PREENCHIDO com valor NAO-ZERO.
+    Valores zero/vazio sao considerados falha (podem indicar campo nao gravado).
+    Tenta primeiro com coluna_sge, depois sem filtro como fallback.
+    """
+    def _try_verify(cols: str) -> bool:
+        if filled_suffix:
+            for scope in _iter_scopes(page):
+                if _verify_fill_js(scope, filled_suffix, nota_texto, cols):
+                    val = _read_grade_value_js(scope, filled_suffix, cols)
+                    if val is not None and not _is_zero_like_value(val):
+                        return True
+                    if _is_zero_like_value(nota_texto):
+                        return True
+            return False
+        for scope in _iter_scopes(page):
+            slots = _wait_student_slots(scope)
+            if not slots:
+                continue
+            suffixes = _candidate_suffixes_for_student(aluno, slots)
+            for suffix in suffixes[:3]:
+                if _verify_fill_js(scope, suffix, nota_texto, cols):
+                    val = _read_grade_value_js(scope, suffix, cols)
+                    if val is not None and not _is_zero_like_value(val):
+                        return True
+                    if _is_zero_like_value(nota_texto):
+                        return True
+        return False
 
+    if _try_verify(coluna_sge):
+        return True
+    if coluna_sge and _try_verify(""):
+        _log(logger, f"[DEBUG] Verificacao sem filtro de coluna funcionou para '{aluno}'")
+        return True
     return False
 
 
-def _try_fill_grade_for_student_on_current_page(page, aluno: str, nota_texto: str) -> bool:
-    if not _normalize_loose(aluno):
+def _is_grade_already_set_for_suffix(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
+    """Verifica se o campo de nota ja esta preenchido com o valor desejado (via JS, 1 round-trip)."""
+    js = """
+    ({suffix, nota, coluna}) => {
+        const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        for (const el of candidates) {
+            const name = (el.getAttribute('name') || '').trim();
+            const id = (el.getAttribute('id') || '').trim();
+            const attrs = (name + ' ' + id).toLowerCase();
+            if (!attrs.includes('_' + suffix)) continue;
+            if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
+            const val = (el.value || '').trim().replace(',', '.');
+            const target = nota.trim().replace(',', '.');
+            if (val === target) return true;
+        }
+        return false;
+    }
+    """
+    try:
+        return bool(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge}))
+    except Exception:  # noqa: BLE001
         return False
+
+
+def _clear_slots_cache():
+    """Limpa cache de slots apos navegacao de pagina."""
+    _slots_cache.clear()
+
+
+def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> str:
+    """Tenta preencher o campo de nota e retorna o resultado (1 round-trip JS).
+
+    Retorna:
+      'filled'    - campo preenchido com sucesso
+      'already'   - campo ja continha o valor desejado
+      'not_found' - campo nao encontrado
+      'error'     - erro ao preencher
+    """
+    js = """
+    ({suffix, nota, coluna}) => {
+        const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        // 1) Buscar por ID primeiro (mais confiavel para ASP.NET)
+        for (const el of candidates) {
+            const id = (el.getAttribute('id') || '').trim();
+            if (id && id.toLowerCase().includes('_' + suffix.toLowerCase())) {
+                if (coluna && !id.toLowerCase().includes('_' + coluna.toLowerCase() + '_')) continue;
+                const currentVal = (el.value || '').trim().replace(',', '.');
+                const target = nota.trim().replace(',', '.');
+                if (currentVal === target) return 'already';
+                try {
+                    const prevValue = el.value;
+                    el.value = nota;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    // ASP.NET WebForms: __doPostBack para atualizar VIEWSTATE
+                    const updatePanel = el.closest('form');
+                    if (updatePanel && typeof __doPostBack === 'function') {
+                        try { __doPostBack('', ''); } catch(e) {}
+                    }
+                    // Tambem tentar onchange/onblur inline
+                    if (el.getAttribute('onchange')) {
+                        try { el.getAttribute('onchange').call(el); } catch(e) {}
+                    }
+                    return 'filled';
+                } catch (e) {
+                    return 'error';
+                }
+            }
+        }
+        // 2) Fallback: buscar por name
+        for (const el of candidates) {
+            const name = (el.getAttribute('name') || '').trim();
+            if (name && name.toLowerCase().includes('_' + suffix.toLowerCase())) {
+                if (coluna && !name.toLowerCase().includes('_' + coluna.toLowerCase() + '_')) continue;
+                const currentVal = (el.value || '').trim().replace(',', '.');
+                const target = nota.trim().replace(',', '.');
+                if (currentVal === target) return 'already';
+                try {
+                    el.value = nota;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    const updatePanel = el.closest('form');
+                    if (updatePanel && typeof __doPostBack === 'function') {
+                        try { __doPostBack('', ''); } catch(e) {}
+                    }
+                    return 'filled';
+                } catch (e) {
+                    return 'error';
+                }
+            }
+        }
+        return 'not_found';
+    }
+    """
+    try:
+        return str(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge}))
+    except Exception:  # noqa: BLE001
+        return "error"
+
+
+def _verify_fill_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
+    """Verifica se o campo de nota foi preenchido corretamente (1 round-trip JS)."""
+    js = """
+    ({suffix, nota, coluna}) => {
+        const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        for (const el of candidates) {
+            const name = (el.getAttribute('name') || '').trim();
+            const id = (el.getAttribute('id') || '').trim();
+            const attrs = (name + ' ' + id).toLowerCase();
+            if (!attrs.includes('_' + suffix)) continue;
+            if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
+            const val = (el.value || '').trim().replace(',', '.');
+            const target = nota.trim().replace(',', '.');
+            return val === target;
+        }
+        return false;
+    }
+    """
+    try:
+        return bool(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge}))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _try_fill_grade_for_student_on_current_page(page, aluno: str, nota_texto: str, coluna_sge: str = "") -> str:
+    """Tenta preencher a nota do aluno. Retorna o suffix preenchido ou '' se falhou."""
+    if not _normalize_loose(aluno):
+        return ""
 
     for scope in _iter_scopes(page):
         slots = _wait_student_slots(scope)
         if not slots:
             continue
 
-        for suffix in _candidate_suffixes_for_student(aluno, slots):
-            if _try_fill_grade_by_suffix(scope, suffix, nota_texto):
-                return True
-            if _is_grade_already_set_for_suffix(scope, suffix, nota_texto):
-                return True
-            if _try_fill_any_numeric_input_for_suffix(scope, suffix, nota_texto):
-                return True
-            if _is_any_numeric_input_for_suffix_already_set(scope, suffix, nota_texto):
-                return True
+        suffixes = _candidate_suffixes_for_student(aluno, slots)
+        for suffix in suffixes:
+            result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge=coluna_sge)
+            if result in ("filled", "already"):
+                return suffix
 
-        # Compatibilidade com estrategia anterior: tenta melhor slot unico.
-        slot = _pick_best_student_slot(aluno, slots)
-        if slot and _try_fill_grade_by_suffix(scope, str(slot.get("suffix", "")), nota_texto):
-            return True
-        if slot and _is_grade_already_set_for_suffix(scope, str(slot.get("suffix", "")), nota_texto):
-            return True
-        if slot and _try_fill_any_numeric_input_for_suffix(scope, str(slot.get("suffix", "")), nota_texto):
-            return True
-        if slot and _is_any_numeric_input_for_suffix_already_set(scope, str(slot.get("suffix", "")), nota_texto):
-            return True
+    # Fallback: tenta SEM filtro de coluna caso o anterior tenha falhado
+    if coluna_sge:
+        for scope in _iter_scopes(page):
+            slots = _wait_student_slots(scope)
+            if not slots:
+                continue
+            suffixes = _candidate_suffixes_for_student(aluno, slots)
+            for suffix in suffixes:
+                result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge="")
+                if result in ("filled", "already"):
+                    return suffix
 
-        suffix = _find_student_suffix_by_html(scope, aluno)
-        if suffix and _try_fill_grade_by_suffix(scope, suffix, nota_texto):
-            return True
-        if suffix and _is_grade_already_set_for_suffix(scope, suffix, nota_texto):
-            return True
-
-    return False
+    return ""
 
 
-def _fill_grade_for_student_by_indexed_inputs(page, aluno: str, nota_texto: str, max_pages: int = 5) -> bool:
-    if _try_fill_grade_for_student_on_current_page(page, aluno, nota_texto):
-        return True
+def _fill_grade_for_student_by_indexed_inputs(page, aluno: str, nota_texto: str, max_pages: int = 5, coluna_sge: str = "") -> str:
+    """Tenta preencher a nota. Retorna o suffix preenchido ou '' se falhou."""
+    suffix = _try_fill_grade_for_student_on_current_page(page, aluno, nota_texto, coluna_sge=coluna_sge)
+    if suffix:
+        return suffix
 
     _go_to_first_grade_page(page)
-    if _try_fill_grade_for_student_on_current_page(page, aluno, nota_texto):
-        return True
+    suffix = _try_fill_grade_for_student_on_current_page(page, aluno, nota_texto, coluna_sge=coluna_sge)
+    if suffix:
+        return suffix
 
     for _ in range(max_pages - 1):
         if not _go_to_next_grade_page(page):
             break
-        if _try_fill_grade_for_student_on_current_page(page, aluno, nota_texto):
-            return True
+        suffix = _try_fill_grade_for_student_on_current_page(page, aluno, nota_texto, coluna_sge=coluna_sge)
+        if suffix:
+            return suffix
 
-    return False
+    return ""
 
 
 def _sample_students_from_current_grade_page(page, limit: int = 12) -> List[str]:
@@ -2163,41 +3656,133 @@ def _sample_students_from_current_grade_page(page, limit: int = 12) -> List[str]
     return sample
 
 
-def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogFn]) -> bool:
+def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogFn], coluna_sge: str = "") -> str:
+    """Preenche a nota do aluno. Retorna o suffix preenchido ou '' se falhou."""
     nota_texto = str(nota).replace(".", ",")
 
-    if _fill_grade_for_student_by_indexed_inputs(page, aluno, nota_texto):
-        return True
+    suffix = _fill_grade_for_student_by_indexed_inputs(page, aluno, nota_texto, coluna_sge=coluna_sge)
+    if suffix:
+        return suffix
+
+    _log(logger, f"[DEBUG] URL atual: {page.url}")
+    _log(logger, f"[DEBUG] Titulo: {page.title()}")
 
     amostra = _sample_students_from_current_grade_page(page, limit=12)
     if amostra:
         _log(logger, f"Diagnostico: aluno alvo='{aluno}' nao casou via campos indexados. Amostra da pagina: {', '.join(amostra)}")
 
+    # Debug: mostra nomes de input disponiveis na pagina
+    try:
+        input_info = page.evaluate("""
+            () => Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'))
+                .slice(0, 20)
+                .map(el => ({ name: el.name || '', id: el.id || '', value: (el.value || '').trim() }))
+        """)
+        if input_info:
+            _log(logger, f"[DEBUG] Inputs na pagina: {input_info}")
+    except Exception:
+        pass
+
     row = _find_student_row_with_pagination(page, aluno)
     if row is None:
         _capture_stage_debug(page, stage="student_not_found", logger=logger)
         _log(logger, f"Aviso: aluno nao localizado na grade: {aluno}")
-        return False
+        return ""
 
-    inputs = row.locator("input[type='text'], input[type='number']")
-    if inputs.count() == 0:
-        _log(logger, f"Aviso: campo de nota nao encontrado para aluno: {aluno}")
-        return False
+    # Tenta com coluna_sge primeiro, depois sem
+    for col in ([coluna_sge, ""] if coluna_sge else [""]):
+        if col:
+            inputs = row.locator(f"input[type='text'][name*='_{col}_'], input[type='number'][name*='_{col}_'], input[type='text'][id*='_{col}_'], input[type='number'][id*='_{col}_']")
+        else:
+            inputs = row.locator("input[type='text']:visible, input[type='number']:visible")
+        if inputs.count() > 0:
+            try:
+                cell = inputs.first
+                cell.click(timeout=ACTION_TIMEOUT_MS)
+                cell.fill(nota_texto, timeout=ACTION_TIMEOUT_MS)
+                if col:
+                    _log(logger, f"[DEBUG] Preenchido via row_fallback com coluna '{col}' para '{aluno}'")
+                else:
+                    _log(logger, f"[DEBUG] Preenchido via row_fallback sem coluna para '{aluno}'")
+                return "row_fallback"
+            except Exception as exc:
+                _log(logger, f"Erro ao preencher nota de {aluno} (coluna='{col}'): {exc}")
 
-    try:
-        cell = inputs.first
-        cell.click(timeout=ACTION_TIMEOUT_MS)
-        cell.fill(nota_texto, timeout=ACTION_TIMEOUT_MS)
+    _log(logger, f"Aviso: campo de nota nao encontrado para aluno: {aluno}")
+    return ""
+
+
+def _is_zero_like_value(value: str) -> bool:
+    """Retorna True se o valor for um zero/vazio padrao do SGE (ex.: '0,0', '0')."""
+    normalized = (value or "").strip().replace(",", ".").replace(" ", "")
+    if not normalized:
         return True
-    except Exception as exc:  # noqa: BLE001
-        try:
-            current_value = cell.input_value(timeout=350)
-        except Exception:  # noqa: BLE001
-            current_value = ""
-        if _grade_value_matches_target(current_value, nota_texto):
-            return True
-        _log(logger, f"Erro ao preencher nota de {aluno}: {exc}")
+    try:
+        return abs(float(normalized)) < 1e-9
+    except ValueError:
         return False
+
+
+def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], coluna_sge: str = "") -> Optional[str]:
+    """Le o valor atual da celula de nota no SGE para o aluno (via JS, rapido).
+
+    Retorna o valor como string se preenchido com valor != zero, ou None.
+    Tenta primeiro com coluna_sge, depois sem filtro como fallback.
+    """
+    if not _normalize_loose(aluno):
+        return None
+
+    def _try_read(cols: str) -> Optional[str]:
+        try:
+            for scope in _iter_scopes(page):
+                slots = _wait_student_slots(scope)
+                if not slots:
+                    continue
+
+                suffixes = _candidate_suffixes_for_student(aluno, slots)
+                for suffix in suffixes[:3]:
+                    val = _read_grade_value_js(scope, suffix, cols)
+                    if val is not None:
+                        return val
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    result = _try_read(coluna_sge)
+    if result is not None:
+        return result
+    if coluna_sge:
+        result = _try_read("")
+        if result is not None:
+            _log(logger, f"[DEBUG] Leitura sem filtro de coluna encontrou nota '{result}' para '{aluno}'")
+            return result
+    return None
+
+
+def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "") -> Optional[str]:
+    """Le o valor de um campo de nota via JS (1 round-trip)."""
+    js = """
+    ({suffix, coluna}) => {
+        const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        for (const el of candidates) {
+            const name = (el.getAttribute('name') || '').trim();
+            const id = (el.getAttribute('id') || '').trim();
+            const attrs = (name + ' ' + id).toLowerCase();
+            if (!attrs.includes('_' + suffix)) continue;
+            if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
+            const val = (el.value || '').trim();
+            return val || '';
+        }
+        return '';
+    }
+    """
+    try:
+        val = str(scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge}))
+        if val and not _is_zero_like_value(val):
+            return val
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _update_launch_status_for_notes(registros: List[RegistroNota], logger: Optional[LogFn]) -> None:
@@ -2210,12 +3795,15 @@ def _update_launch_status_for_notes(registros: List[RegistroNota], logger: Optio
     notion = Client(auth=NOTION_TOKEN)
     atualizados = 0
     falhas = 0
+    ignorados = 0
     vistos = set()
+    _diag_logged = False
 
     for reg in registros:
         page_id = _normalize_notion_id(reg.notion_page_id)
         status_prop = (reg.notion_status_prop or "").strip()
         if not page_id or not status_prop:
+            ignorados += 1
             continue
 
         chave = (page_id, status_prop)
@@ -2226,30 +3814,57 @@ def _update_launch_status_for_notes(registros: List[RegistroNota], logger: Optio
         try:
             page = _safe_notion_call(lambda page_id=page_id: notion.pages.retrieve(page_id=page_id))
             props = page.get("properties", {})
+
+            if not _diag_logged:
+                _diag_logged = True
+                status_candidates = [k for k in props if "status" in k.lower() and "lancamento" in k.lower()]
+                _log(logger, f"[STATUS-DIAG] Propriedades com 'status'+'lancamento': {status_candidates}")
+                _log(logger, f"[STATUS-DIAG] Buscando: '{status_prop}'")
+                _log(logger, f"[STATUS-DIAG] Todas propriedades: {list(props.keys())}")
+
             status_prop_real = _resolve_existing_status_prop(props, status_prop)
+
+            if status_prop_real != status_prop:
+                _log(logger, f"[STATUS-DIAG] '{status_prop}' resolvido para '{status_prop_real}' para {reg.aluno}")
+
             prop_info = props.get(status_prop_real, {})
             ptype = prop_info.get("type")
 
+            if not prop_info:
+                _log(logger, f"Aviso: propriedade '{status_prop}' (resolvida: '{status_prop_real}') nao existe para {reg.aluno}. Pulando.")
+                ignorados += 1
+                continue
+
             if ptype == "select":
                 payload = {status_prop_real: {"select": {"name": "Lancada"}}}
+            elif ptype == "status":
+                payload = {status_prop_real: {"status": {"name": "Lancada"}}}
             elif ptype == "checkbox":
                 payload = {status_prop_real: {"checkbox": True}}
             elif ptype == "rich_text":
                 payload = {status_prop_real: {"rich_text": _make_rich_text("Lancada")}}
             else:
-                _log(logger, f"Aviso: propriedade de status nao encontrada/compativel para {reg.aluno}: {status_prop}")
+                disp = [k for k, v in props.items() if v.get("type") in {"select", "checkbox", "rich_text", "status"} and "status" in k.lower()]
+                _log(logger, f"Aviso: propriedade '{status_prop_real}' tem tipo '{ptype}' (nao suportado) para {reg.aluno}. Disponiveis: {disp}")
                 falhas += 1
                 continue
 
-            _safe_notion_call(
+            resp = _safe_notion_call(
                 lambda page_id=page_id, payload=payload: notion.pages.update(page_id=page_id, properties=payload)
             )
+
+            if atualizados < 3:
+                resp_status = resp.get("properties", {}).get(status_prop_real, {})
+                _log(logger, f"[STATUS-RESP] #{atualizados+1} {reg.aluno}: payload={payload}, resp_type={resp_status.get('type')}, resp_val={resp_status.get(resp_status.get('type', ''), {})}")
+
             atualizados += 1
         except Exception as exc:  # noqa: BLE001
             falhas += 1
             _log(logger, f"Aviso: falha ao atualizar status de lancamento ({reg.aluno}): {exc}")
 
-    _log(logger, f"Status de lancamento atualizado em {atualizados} nota(s). Falhas: {falhas}")
+    _log(logger, f"Status de lancamento atualizado em {atualizados} nota(s). Falhas: {falhas}. Ignorados: {ignorados}.")
+    if ignorados and not falhas:
+        _log(logger, "Dica: as propriedades de status podem nao existir no Notion. Verifique se existem colunas 'Status lancamento N' na database.")
 
 
 def _mark_failed_launch_status_for_notes(registros: List[RegistroNota], logger: Optional[LogFn]) -> None:
@@ -2283,6 +3898,8 @@ def _mark_failed_launch_status_for_notes(registros: List[RegistroNota], logger: 
 
             if ptype == "select":
                 payload = {status_prop_real: {"select": {"name": "Falha"}}}
+            elif ptype == "status":
+                payload = {status_prop_real: {"status": {"name": "Falha"}}}
             elif ptype == "checkbox":
                 payload = {status_prop_real: {"checkbox": False}}
             elif ptype == "rich_text":
@@ -2298,10 +3915,42 @@ def _mark_failed_launch_status_for_notes(registros: List[RegistroNota], logger: 
         except Exception:  # noqa: BLE001
             falhas += 1
 
-    _log(logger, f"Status de falha atualizado em {atualizados} nota(s). Falhas: {falhas}")
+    try:
+        _log(logger, f"Status de falha atualizado em {atualizados} nota(s). Falhas: {falhas}")
+    except Exception:
+        pass
 
 
-def _confirm_save(page, logger: Optional[LogFn]) -> None:
+def _confirm_save(page, logger: Optional[LogFn], data_realizacao: str = "") -> bool:
+    """Confirma o salvamento e verifica se foi bem-sucedido. Retorna True se salvou."""
+    # Preenche a data antes de confirmar: usa a data do Notion se disponivel, senao usa hoje
+    data_para_usar = ""
+    if data_realizacao:
+        dt = _parse_date(data_realizacao)
+        if dt:
+            data_para_usar = dt.strftime("%d/%m/%Y")
+    if not data_para_usar:
+        data_para_usar = datetime.now().strftime("%d/%m/%Y")
+
+    for scope in _iter_scopes(page):
+        date_input = _first_visible(
+            scope,
+            [
+                "input[name*='DATALANCAMENTO' i]",
+                "input[name*='DATALAN' i]",
+                "input[name*='_DATA' i]",
+                "input[id*='DATALANCAMENTO' i]",
+                "input[id*='DATALAN' i]",
+            ],
+        )
+        if date_input is not None:
+            try:
+                date_input.fill(data_para_usar, timeout=ACTION_TIMEOUT_MS)
+                _log(logger, f"Data preenchida: {data_para_usar}")
+            except Exception:  # noqa: BLE001
+                pass
+            break
+
     submit = _first_visible(
         page,
         [
@@ -2330,16 +3979,54 @@ def _confirm_save(page, logger: Optional[LogFn]) -> None:
                 break
     if submit is None:
         _log(logger, "Aviso: botao de confirmacao nao encontrado; seguindo para o proximo bloco.")
-        return
+        return False
 
     try:
         submit.click(timeout=ACTION_TIMEOUT_MS, no_wait_after=True)
     except TypeError:
         submit.click(timeout=ACTION_TIMEOUT_MS)
     try:
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(500)
     except Exception:  # noqa: BLE001
         pass
+
+    # Verificar se houve erro de validacao do ASP.NET
+    try:
+        error_indicators = page.locator(".validationSummary, .error, .erro, [id*='Error'], [id*='erro'], .alert-danger, .text-danger")
+        if error_indicators.count() > 0:
+            error_text = ""
+            for i in range(min(error_indicators.count(), 3)):
+                try:
+                    txt = error_indicators.nth(i).inner_text(timeout=500)
+                    if txt:
+                        error_text += txt.strip() + "; "
+                except Exception:
+                    pass
+            if error_text:
+                _log(logger, f"[SAVE-ERROR] Erro de validacao detectado: {error_text}")
+                return False
+    except Exception:
+        pass
+
+    # Verificar se a pagina retornou para a grade (indicando sucesso)
+    try:
+        page.wait_for_selector("table#GRIDAGENDA", timeout=5000)
+        _log(logger, "[SAVE-OK] Grade visivel apos salvamento.")
+        return True
+    except Exception:
+        pass
+
+    # Verificar se ha mensagem de sucesso
+    try:
+        success_indicators = page.locator(".success, .sucesso, .alert-success, .text-success, :has-text('Salvo com sucesso'), :has-text('Gravado')")
+        if success_indicators.count() > 0:
+            _log(logger, "[SAVE-OK] Mensagem de sucesso detectada.")
+            return True
+    except Exception:
+        pass
+
+    _log(logger, "[SAVE-UNKNOWN] Nao foi possivel confirmar salvamento. Continuando...")
+    return True  # Assumir sucesso se nao detectou erro explicito
 
 
 def _group_for_launch(registros: List[RegistroNota]):
@@ -2365,8 +4052,17 @@ def executar_lancamento(
     if _is_placeholder_env(cpf) or _is_placeholder_env(senha):
         raise LancamentoError("SGE_CPF/SGE_SENHA estao com placeholders. Atualize com valores reais.")
 
+    # Reseta caches de navegacao
+    global _current_context
+    _current_context = None
+    _student_page_cache.clear()
+
     registros = carregar_notas_notion(logger=logger, filtro=filtro)
-    registros = _filtrar_registros(registros, filtro)
+    _log(logger, f"Total de notas carregadas do Notion: {len(registros)}")
+    if registros:
+        for r in registros[:5]:
+            _log(logger, f"  [DEBUG] Aluno='{r.aluno}' Atividade='{r.atividade}' Data='{r.data_realizacao}' Status='{r.notion_status_prop}' Nota={r.nota}")
+    registros = _filtrar_registros(registros, filtro, logger=logger)
 
     if not registros:
         raise LancamentoError("Nenhuma nota encontrada para o filtro selecionado.")
@@ -2376,17 +4072,36 @@ def executar_lancamento(
     total_notas = len(registros)
     _log(logger, f"Blocos para lancamento: {total_blocos} | notas: {total_notas}")
 
+    if filtro and filtro.get("atividade"):
+        _log(logger, f"[ATALHO] Modo avaliacao unica: '{filtro['atividade']}' — processo muito mais rapido!")
+
+    # Prepara IA local (Ollama) SOMENTE quando IA esta habilitada
+    if ai_is_enabled():
+        _log(logger, "[Ollama] Verificando instalacao do Ollama e modelo de visao...")
+        _log(logger, "[Ollama] Nota: download pode levar varios minutos na primeira execucao.")
+        ollama_ok = ensure_ollama(logger=logger)
+        if ollama_ok:
+            os.environ["AI_PROVIDER"] = "ollama"
+            _log(logger, "[Ollama] Ollama disponivel. Usando IA local.")
+        else:
+            provider = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+            _log(logger, f"[Ollama] Ollama nao disponivel. Usando provider: {provider}")
+    else:
+        _log(logger, "[AI] Assistencia IA desabilitada. Pulando configuracao do Ollama.")
+
     if dry_run:
         _log(logger, "Dry-run habilitado: nenhum dado sera enviado ao SGE.")
         return {
             "blocos": total_blocos,
             "notas": total_notas,
             "notas_preenchidas": 0,
+            "ausentes": 0,
             "falhas": 0,
         }
 
     notas_ok = 0
     falhas = 0
+    ausentes = 0
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -2396,40 +4111,200 @@ def executar_lancamento(
 
         _login_sge(page, cpf=cpf, senha=senha, logger=logger)
 
+        # Selecao de escola e periodo (telas pos-login que aparecem antes do dashboard)
+        if _is_school_selection_page(page) and grouped:
+            escola_primeiro = next(iter(grouped.keys()))[0]
+            ctx_temp = ContextoTurma(escola=escola_primeiro, turno="", turma="", trimestre="")
+            _select_school(page, ctx_temp, logger=logger)
+
+        if _is_period_selection_page(page) and grouped:
+            trimestre_primeiro = next(iter(grouped.keys()))[3]
+            ctx_temp = ContextoTurma(escola="", turno="", turma="", trimestre=trimestre_primeiro)
+            _select_period(page, ctx_temp, logger=logger)
+
+        _notion_threads: List[threading.Thread] = []
         for idx, (key, itens) in enumerate(grouped.items(), start=1):
             escola, turno, turma, trimestre, atividade = key
             _log(logger, f"[{idx}/{total_blocos}] {escola} | {turno} | {turma} | {trimestre} | {atividade}")
+
+            # Verificacao de datas: compara a data da atividade no Notion com a data atual
+            datas_bloco = [r.data_realizacao for r in itens if r.data_realizacao]
+            data_mais_comum = ""
+            if datas_bloco:
+                data_mais_comum = Counter(datas_bloco).most_common(1)[0][0]
+                diff_dias = _date_diff_days(data_mais_comum)
+                if diff_dias is not None:
+                    if diff_dias > 0:
+                        _log(logger, f"[DATA] Atividade com data futura ({data_mais_comum}, {diff_dias} dia(s) a frente). Pulando bloco.")
+                        for reg in itens:
+                            falhas += 1
+                        t = threading.Thread(target=_mark_failed_launch_status_for_notes, args=(itens,), kwargs={"logger": logger}, daemon=True)
+                        t.start()
+                        _notion_threads.append(t)
+                        continue
+                    elif diff_dias < -90:
+                        _log(logger, f"[DATA] Atencao: atividade com data antiga ({data_mais_comum}, {abs(diff_dias)} dias atras). Prosseguindo...")
+                    else:
+                        _log(logger, f"[DATA] Data da atividade: {data_mais_comum} ({abs(diff_dias)} dia(s) atras)")
+            else:
+                _log(logger, "[DATA] Nenhuma data de realizacao definida no Notion para esta atividade.")
 
             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
             _select_context(page, contexto, logger=logger)
 
             # Fluxo hibrido assistido: abre o icone de avaliacao da linha da
             # turma/turno/trimestre antes de tentar localizar a atividade.
-            _open_assessment_for_context(page, contexto, logger=logger)
-            _select_activity(page, atividade, logger=logger)
+            avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+
+            # Apos clicar no icone, pode aparecer tela de confirmacao de trimestre.
+            # Se confirmou, volta pro dashboard e precisa clicar no icone de novo.
+            if _handle_assessment_period_page(page, contexto, logger=logger):
+                _log(logger, "Re-tentando abrir avaliacao apos confirmar periodo...")
+                avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+                # Segunda tela de periodo eh improvavel, mas verifica por seguranca
+                _handle_assessment_period_page(page, contexto, logger=logger)
+
+            if not avaliacao_abriu:
+                _log(logger, f"Aviso: nao foi possivel abrir icone de avaliacao para {atividade}. Tentando navegacao direta...")
+
+            if ai_is_enabled() and idx == 1:
+                _log(logger, f"[AI] Verificando tela antes de selecionar atividade...")
+                try:
+                    ai_screenshot = page.screenshot()
+                    ai_screen = analyze_screen(ai_screenshot, objective=f"encontrar e clicar na avaliacao '{atividade}'", logger=logger)
+                    suggested = ai_screen.get("suggested_selector", "")
+                    if suggested:
+                        _log(logger, f"[AI] Sugestao de navegacao: {ai_screen.get('next_step', '')[:80]}")
+                except Exception:
+                    pass
+
+            atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=logger)
+            if not atividade_encontrada:
+                _log(logger, f"Aviso: atividade '{atividade}' nao encontrada no SGE. Pulando bloco.")
+                for reg in itens:
+                    falhas += 1
+                t = threading.Thread(target=_mark_failed_launch_status_for_notes, args=(itens,), kwargs={"logger": logger}, daemon=True)
+                t.start()
+                _notion_threads.append(t)
+                continue
+
+            if data_sge and data_mais_comum and not _dates_match(data_sge, data_mais_comum):
+                _log(logger, f"[DATA] Validacao falhou: SGE {data_sge} ≠ Notion {data_mais_comum}. Pulando bloco.")
+                for reg in itens:
+                    falhas += 1
+                t = threading.Thread(target=_mark_failed_launch_status_for_notes, args=(itens,), kwargs={"logger": logger}, daemon=True)
+                t.start()
+                _notion_threads.append(t)
+                continue
+            if data_sge and data_mais_comum:
+                _log(logger, f"[DATA] Datas conferem: SGE {data_sge} = Notion {data_mais_comum}")
+            elif not data_sge:
+                _log(logger, f"[DATA] Data da atividade nao encontrada no SGE. Prosseguindo sem validacao de data.")
+
+            if posicao_grid > 0:
+                status_forcado = f"Status lancamento {posicao_grid}"
+                _log(logger, f"[STATUS] Atividade '{atividade}' esta na posicao {posicao_grid} da GRIDAGENDA. Forçando {status_forcado} para todos os registros do bloco.")
+                for reg in itens:
+                    reg.notion_status_prop = status_forcado
+
+            if AI_LEARN_MODE and idx == 1:
+                record_demonstration_step(idx, page, f"navegou para {escola}/{turno}/{turma}/{trimestre}/{atividade}", logger=logger)
 
             regs_ok_bloco: List[RegistroNota] = []
             regs_fail_bloco: List[RegistroNota] = []
+            regs_ausentes_bloco: List[RegistroNota] = []
+            novos_preenchimentos = 0
+            regs_ja_no_sge: List[RegistroNota] = []
+            coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger)
+            ai_calls_this_block = 0
+            MAX_AI_CALLS_PER_BLOCK = 3
             for reg in itens:
-                ok = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=logger)
-                if ok:
-                    notas_ok += 1
-                    regs_ok_bloco.append(reg)
+                existing = _read_existing_grade_for_student(page, reg.aluno, logger=logger, coluna_sge=coluna_sge)
+                if existing is not None:
+                    nota_texto = str(reg.nota).replace(".", ",")
+                    if _grade_value_matches_target(existing, nota_texto):
+                        _log(logger, f"  [SGE-JA] Nota '{existing}' ja existe no SGE para '{reg.aluno}'. Status vazio no Notion → marcando Lancada.")
+                        notas_ok += 1
+                        regs_ok_bloco.append(reg)
+                        regs_ja_no_sge.append(reg)
+                        continue
+                    _log(logger, f"  Nota existente '{existing}' difere da esperada '{nota_texto}' para '{reg.aluno}'. Atualizando...")
+
+                filled_suffix = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=logger, coluna_sge=coluna_sge)
+                if not filled_suffix and ai_is_enabled() and ai_calls_this_block < MAX_AI_CALLS_PER_BLOCK:
+                    _log(logger, f"[AI] Aluno '{reg.aluno}' nao encontrado. Tentando assistencia IA... (chamada {ai_calls_this_block+1}/{MAX_AI_CALLS_PER_BLOCK})")
+                    ai_calls_this_block += 1
+                    try:
+                        ai_screenshot = page.screenshot()
+                        ai_result = find_element_on_screen(ai_screenshot, f"campo de nota para o aluno {reg.aluno}", logger=logger)
+                        raw_selector = ai_result.get("selector", "")
+                        selector = _sanitize_ai_selector(raw_selector)
+                        if ai_result.get("found") and selector:
+                            loc = page.locator(selector)
+                            if loc.count() > 0:
+                                loc.first.fill(str(reg.nota).replace(".", ","))
+                                filled_suffix = "ai_fallback"
+                                _log(logger, f"[AI] Nota preenchida via IA para '{reg.aluno}'")
+                    except Exception as exc:
+                        _log(logger, f"[AI] Erro na assistencia: {exc}")
+                elif not filled_suffix and ai_is_enabled() and ai_calls_this_block >= MAX_AI_CALLS_PER_BLOCK:
+                    _log(logger, f"[AI] Limite de chamadas IA atingido no bloco ({MAX_AI_CALLS_PER_BLOCK}). Pulando IA para '{reg.aluno}'.")
+                if filled_suffix:
+                    nota_texto = str(reg.nota).replace(".", ",")
+                    if _verify_fill_just_made(page, reg.aluno, nota_texto, logger=logger, coluna_sge=coluna_sge, filled_suffix=filled_suffix):
+                        _log(logger, f"  [VERIFICADO] Nota {nota_texto} confirmada no campo para '{reg.aluno}'.")
+                        notas_ok += 1
+                        novos_preenchimentos += 1
+                        regs_ok_bloco.append(reg)
+                    else:
+                        _log(logger, f"  [FALHA-VERIFICACAO] Nota {nota_texto} NAO confirmada no campo para '{reg.aluno}'. Pode ser campo errado.")
+                        falhas += 1
+                        regs_fail_bloco.append(reg)
                 else:
-                    falhas += 1
-                    regs_fail_bloco.append(reg)
+                    _log(logger, f"  [AUSENTE] Aluno '{reg.aluno}' nao localizado na grade. Pulando...")
+                    ausentes += 1
+                    regs_ausentes_bloco.append(reg)
 
-            if regs_ok_bloco:
-                _confirm_save(page, logger=logger)
+            if novos_preenchimentos > 0:
+                _confirm_save(page, logger=logger, data_realizacao=data_mais_comum)
+                if AI_LEARN_MODE:
+                    record_demonstration_step(999, page, f"confirmou salvamento do bloco {idx}", logger=logger)
+            elif regs_ja_no_sge:
+                _log(logger, f"[SGE-JA] {len(regs_ja_no_sge)} nota(s) ja existiam no SGE. Apenas status marcado como Lancada.")
             else:
-                _log(logger, "Aviso: nenhum aluno preenchido no bloco; confirmacao foi ignorada.")
-            _update_launch_status_for_notes(regs_ok_bloco, logger=logger)
-            _mark_failed_launch_status_for_notes(regs_fail_bloco, logger=logger)
+                _log(logger, "Nenhum preenchimento novo neste bloco (todas notas ja estavam no SGE).")
+            t_ok = threading.Thread(target=_update_launch_status_for_notes, args=(regs_ok_bloco,), kwargs={"logger": logger}, daemon=True)
+            t_fail = threading.Thread(target=_mark_failed_launch_status_for_notes, args=(regs_fail_bloco,), kwargs={"logger": logger}, daemon=True)
+            t_ok.start()
+            t_fail.start()
+            _notion_threads.extend([t_ok, t_fail])
 
+            # Registro automatico de aprendizado
+            if novos_preenchimentos > 0:
+                _learning_store.registrar_sucesso(
+                    "preencher_notas",
+                    {"escola": escola, "turno": turno, "turma": turma, "trimestre": trimestre, "atividade": atividade}
+                )
+            if regs_ausentes_bloco:
+                _learning_store.registrar_falha(
+                    "encontrar_alunos",
+                    {"turma": turma, "atividade": atividade, "ausentes": len(regs_ausentes_bloco)}
+                )
+
+        for t in _notion_threads:
+            t.join(timeout=30)
         context.close()
         browser.close()
 
-    _log(logger, f"Finalizado. Notas preenchidas: {notas_ok} | Falhas: {falhas}")
+    _log(logger, f"Finalizado. Notas preenchidas: {notas_ok} | Ausentes: {ausentes} | Falhas: {falhas}")
+
+    if AI_LEARN_MODE and ai_is_available():
+        _log(logger, "[AI] Modo aprendizado ativo. Gerando plano de automacao...")
+        plan = learn_from_recording(logger=logger)
+        if plan:
+            _log(logger, f"[AI] Plano gerado: {plan.get('workflow_name', 'sem nome')} com {len(plan.get('steps', []))} passos.")
+        else:
+            _log(logger, "[AI] Nao foi possivel gerar plano.")
 
     if total_notas > 0 and notas_ok == 0:
         raise LancamentoError(
@@ -2440,6 +4315,7 @@ def executar_lancamento(
         "blocos": total_blocos,
         "notas": total_notas,
         "notas_preenchidas": notas_ok,
+        "ausentes": ausentes,
         "falhas": falhas,
     }
 
@@ -2453,10 +4329,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--notion-page-id", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--listar-contextos", action="store_true")
+    parser.add_argument("--lote", action="store_true", help="Modo lote: processa todas as escolas, turmas e trimestres do Notion")
+    parser.add_argument("--ai-assist", action="store_true", help="Ativa assistencia por IA para navegacao no portal")
+    parser.add_argument("--ai-learn", action="store_true", help="Ativa modo de aprendizado: grava acoes do usuario para gerar plano de automacao")
+    parser.add_argument("--gemini-api-key", default="", help="Chave API do Gemini (alternativa a env var GEMINI_API_KEY)")
     return parser.parse_args()
 
 
 def _build_filtro(args: argparse.Namespace) -> Dict[str, str]:
+    # No modo lote, nao aplica filtros — processa tudo que o Notion retornar
+    if getattr(args, "lote", False):
+        return {}
     filtro = {
         "escola": args.escola,
         "turno": args.turno,
@@ -2474,6 +4357,20 @@ def main() -> int:
     def logger(msg: str) -> None:
         print(msg)
         logs_execucao.append(msg)
+
+    if args.ai_assist or args.ai_learn:
+        if args.gemini_api_key:
+            os.environ["GEMINI_API_KEY"] = args.gemini_api_key
+        if args.ai_assist:
+            os.environ["AI_ASSIST"] = "1"
+        if args.ai_learn:
+            os.environ["AI_ASSIST"] = "1"
+            os.environ["AI_LEARN_MODE"] = "1"
+        logger(f"[AI] Modo {'aprendizado' if args.ai_learn else 'assistido'} ativado.")
+        if ai_is_available():
+            logger("[AI] IA configurada e disponivel.")
+        else:
+            logger("[AI] ATENCAO: IA nao disponivel. Defina GEMINI_API_KEY ou configure Ollama.")
 
     if not args.notion_page_id and _is_non_empty(args.escola) and _normalize(args.escola) not in {"todas", "todos"}:
         try:

@@ -92,6 +92,7 @@ jobs:
           ROOT_PAGE_ID: ${{ secrets.ROOT_PAGE_ID }}
           SGE_CPF: ${{ secrets.SGE_CPF }}
           SGE_SENHA: ${{ secrets.SGE_SENHA }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           MISSING=""
           if [ -z "$NOTION_TOKEN" ]; then MISSING="$MISSING NOTION_TOKEN"; fi
@@ -119,6 +120,7 @@ jobs:
           ROOT_PAGE_ID: ${{ secrets.ROOT_PAGE_ID }}
           SGE_CPF: ${{ secrets.SGE_CPF }}
           SGE_SENHA: ${{ secrets.SGE_SENHA }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SGE_LOGIN_URL: ${{ github.event.inputs.sge_login_url || secrets.SGE_LOGIN_URL }}
           HEADLESS: "1"
           SGE_DEBUG_LOGIN: "1"

@@ -14,8 +14,8 @@ ROOT_PAGE_ID = os.environ.get("ROOT_PAGE_ID", "")
 
 notion = Client(auth=NOTION_TOKEN)
 
-ARQUIVO_ALUNOS_XLSX = os.environ.get("ARQUIVO_ALUNOS_XLSX", "Notas Escolas - 2° Trimestre.xlsx")
-TRIMESTRE_IMPORTACAO_ALUNOS = os.environ.get("TRIMESTRE_IMPORTACAO_ALUNOS", "2º Trimestre")
+ARQUIVO_ALUNOS_XLSX = os.environ.get("ARQUIVO_ALUNOS_XLSX", "")
+TRIMESTRE_IMPORTACAO_ALUNOS = os.environ.get("TRIMESTRE_IMPORTACAO_ALUNOS", "")
 
 
 def _is_placeholder_value(value):
@@ -1363,6 +1363,10 @@ def criar_estrutura_completa():
     print(
         f"   {'✅ Criada' if sequencias_db_criada else '♻️ Atualizada'} database de Sequências Didáticas ({sequencias_db_id})"
     )
+    if not ARQUIVO_ALUNOS_XLSX:
+        raise ValueError("Variavel de ambiente ARQUIVO_ALUNOS_XLSX nao configurada. Defina o caminho da planilha de alunos.")
+    if not TRIMESTRE_IMPORTACAO_ALUNOS:
+        raise ValueError("Variavel de ambiente TRIMESTRE_IMPORTACAO_ALUNOS nao configurada. Defina o trimestre (ex: '1º Trimestre').")
     alunos_por_turma = carregar_alunos_da_planilha(ARQUIVO_ALUNOS_XLSX)
     estrutura_escolas = []
 

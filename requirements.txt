@@ -1,5 +1,10 @@
-notion-client
-openpyxl
-playwright
-streamlit
-python-dotenv
+flask>=3.0
+flask-sqlalchemy>=3.1
+sqlalchemy>=2.0
+bcrypt>=4.0
+pyjwt>=2.8
+cryptography>=42.0
+playwright>=1.40
+google-generativeai>=0.5
+openai>=1.30
+anthropic>=0.25

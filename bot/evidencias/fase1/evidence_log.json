@@ -1,0 +1,50 @@
+[
+  {
+    "phase": "fase1",
+    "task": "Criar repositório e estrutura inicial",
+    "status": "concluido",
+    "details": "Pastas: bot/core, bot/integrations, bot/licensing, bot/security, bot/audit, bot/api, bot/models, bot/utils, config, data, logs, tests, migrations, docs",
+    "evidence_file": "",
+    "timestamp": "2026-07-16T00:41:54.954280"
+  },
+  {
+    "phase": "fase1",
+    "task": "Configurar variáveis de ambiente",
+    "status": "concluido",
+    "details": "config/settings.py com SQLALCHEMY_DATABASE_URI, SECRET_KEY, PLANOS",
+    "evidence_file": "",
+    "timestamp": "2026-07-16T00:41:54.954280"
+  },
+  {
+    "phase": "fase1",
+    "task": "Criar banco e migrações",
+    "status": "concluido",
+    "details": "SQLAlchemy com models: User, License, AuditLog. SQLite local.",
+    "evidence_file": "",
+    "timestamp": "2026-07-16T00:41:54.972368"
+  },
+  {
+    "phase": "fase1",
+    "task": "Implementar autenticação",
+    "status": "concluido",
+    "details": "JWT auth, login, change-password, require_auth decorator",
+    "evidence_file": "",
+    "timestamp": "2026-07-16T00:41:54.976386"
+  },
+  {
+    "phase": "fase1",
+    "task": "Implementar perfis",
+    "status": "concluido",
+    "details": "admin (total), operador (execute/view), auditor (view/report)",
+    "evidence_file": "",
+    "timestamp": "2026-07-16T00:41:54.986129"
+  },
+  {
+    "phase": "fase1",
+    "task": "Subir aplicação local sem erros",
+    "status": "concluido",
+    "details": "Flask app com 11 rotas funcionais, seed admin criado",
+    "evidence_file": "",
+    "timestamp": "2026-07-16T00:41:54.986129"
+  }
+]

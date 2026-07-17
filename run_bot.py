@@ -60,6 +60,15 @@ def save_config(data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _find_python():
+    """Encontra o interpretador Python do sistema."""
+    import shutil
+    py = shutil.which("python3") or shutil.which("python")
+    if py:
+        return py
+    return sys.executable
+
+
 def check_playwright():
     try:
         from playwright.sync_api import sync_playwright
@@ -72,28 +81,32 @@ def check_playwright():
             return False
         p.stop()
         return True
-    except ImportError:
+    except (ImportError, Exception):
         return False
 
 
 def install_playwright():
     import subprocess
+    python = _find_python()
     print("[!] Playwright nao encontrado.")
+    print(f"[i] Usando Python: {python}")
     print("[i] Instalando playwright...")
     try:
-        subprocess.run([sys.executable, "-m", "pip", "install", "playwright", "--quiet"], check=True)
+        subprocess.run([python, "-m", "pip", "install", "playwright", "--quiet"], check=True)
         print("  [OK] playwright instalado")
     except Exception as e:
         print(f"  [ER] Falha ao instalar playwright: {e}")
+        print("[i] Tente manualmente: pip install playwright")
         input("\nPressione Enter para sair...")
         sys.exit(1)
 
     print("[i] Baixando Chromium (~180MB, primeira vez)...")
     try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        subprocess.run([python, "-m", "playwright", "install", "chromium"], check=True)
         print("  [OK] Chromium instalado")
     except Exception as e:
         print(f"  [ER] Falha ao baixar Chromium: {e}")
+        print("[i] Tente manualmente: python -m playwright install chromium")
         input("\nPressione Enter para sair...")
         sys.exit(1)
 

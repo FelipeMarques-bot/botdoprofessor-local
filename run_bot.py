@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-# Forcar codepage UTF-8 no Windows (resolve charmap do node.exe do playwright)
 if os.name == "nt":
     try:
         import ctypes
@@ -52,9 +51,12 @@ def clear():
 
 
 def banner():
-    print("=" * 50)
-    print("       BotDoProfessor - Automatize suas notas")
-    print("=" * 50)
+    print("=" * 56)
+    print("          BotDoProfessor — Automatize suas notas")
+    print("=" * 56)
+    print()
+    print("  Este programa lanca notas, planos de aula e")
+    print("  sequencias didaticas automaticamente no SGE.")
     print()
 
 
@@ -72,12 +74,9 @@ def save_config(data):
 
 
 def _find_python():
-    """Encontra o interpretador Python real do sistema (ignora stubs da Microsoft Store)."""
     import shutil
-    import stat
 
     def _is_valid_python(path):
-        """Verifica se o caminho aponta para um Python real (ignora WindowsApps stubs)."""
         if not path:
             return False
         lower = path.lower()
@@ -90,18 +89,15 @@ def _find_python():
         except Exception:
             return False
 
-    # 1. py launcher (mais confiavel no Windows)
     py_path = shutil.which("py")
     if py_path and _is_valid_python(py_path):
         return py_path
 
-    # 2. python3 / python — pular stubs da Store
     for name in ("python3", "python"):
         path = shutil.which(name)
         if _is_valid_python(path):
             return path
 
-    # 3. Buscar em locais comuns de instalacao (uv, python.org, etc.)
     uv_base = os.path.expandvars(r"%APPDATA%\uv\python")
     common_paths = [
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
@@ -123,8 +119,6 @@ def _find_python():
 
 
 def check_playwright():
-    """Verifica se Playwright + Chromium estao disponiveis."""
-    # Checar se o binario do Chromium existe no diretorio padrao
     ms_playwright = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
     if not ms_playwright.exists():
         ms_playwright = Path.home() / ".cache" / "ms-playwright"
@@ -135,12 +129,11 @@ def check_playwright():
                 if not chrome.exists():
                     chrome = d / "chrome-win" / "chrome.exe"
                 if not chrome.exists():
-                    chrome = d / "chrome-linux" / "chrome"  # Linux
+                    chrome = d / "chrome-linux" / "chrome"
                 if not chrome.exists():
-                    chrome = d / "chrome-mac" / "Chromium.app"  # Mac
+                    chrome = d / "chrome-mac" / "Chromium.app"
                 if chrome.exists():
                     return True
-    # Fallback: tentar importar e lancar (pode falhar no .exe por encoding)
     try:
         from playwright.sync_api import sync_playwright
         p = sync_playwright().start()
@@ -160,53 +153,55 @@ def install_playwright():
     is_frozen = getattr(sys, "frozen", False)
 
     if is_frozen:
-        # Dentro do .exe: o playwright ja esta bundled.
-        # Tenta instalar o Chromium usando o driver bundled.
-        print("[!] Playwright detectado, mas Chromium nao encontrado.")
-        print("[i] Baixando Chromium (~180MB, primeira vez)...")
+        print("[!] Componentes nao encontrados.")
+        print("[i] Baixando navegador Chromium (~180MB, primeira vez)...")
+        print("[i] Isso demora cerca de 2 minutos e so acontece uma vez.")
+        print()
         try:
-            # Dentro do .exe frozen, extrair driver path diretamente
             base = Path(sys._MEIPASS) / "playwright" / "driver"
             node_exe = base / "node.exe"
             cli_js = base / "package" / "cli.js"
             if not node_exe.exists():
                 raise FileNotFoundError(f"node.exe nao encontrado em {node_exe}")
-            print(f"[i] Driver: {node_exe}")
             subprocess.run([str(node_exe), str(cli_js), "install", "chromium"], check=True)
-            print("  [OK] Chromium instalado")
+            print()
+            print("  [OK] Navegador instalado com sucesso!")
             return
         except Exception as e:
-            print(f"  [ER] Falha ao baixar Chromium automaticamente: {e}")
-            print("[i] Instale manualmente:")
-            print("    1. pip install playwright")
-            print("    2. python -m playwright install chromium")
-            print(f"[i] Ou baixe o .exe novamente: {DOWNLOAD_URL}")
+            print(f"  [ER] Falha ao baixar navegador: {e}")
+            print()
+            print("  Para instalar manualmente:")
+            print("    1. Abra o Prompt de Comando (Windows+R, digite 'cmd', pressione Enter)")
+            print("    2. Digite: pip install playwright")
+            print("    3. Digite: python -m playwright install chromium")
+            print()
+            print(f"  Ou baixe o programa novamente: {DOWNLOAD_URL}")
             return
 
-    # Modo script: instala via Python do sistema
     python = _find_python()
-    print("[!] Playwright nao encontrado.")
+    print("[!] Componentes nao encontrados.")
     print(f"[i] Usando Python: {python}")
-    print("[i] Instalando playwright...")
+    print("[i] Instalando dependencias...")
+    print("[i] Isso demora cerca de 2 minutos e so acontece uma vez.")
+    print()
     try:
         subprocess.run([python, "-m", "pip", "install", "playwright", "--quiet"], check=True)
-        print("  [OK] playwright instalado")
+        print("  [OK] Dependencias instaladas")
     except Exception as e:
-        print(f"  [ER] Falha ao instalar playwright: {e}")
+        print(f"  [ER] Falha ao instalar dependencias: {e}")
         print("[i] Tente manualmente: pip install playwright")
         return
 
-    print("[i] Baixando Chromium (~180MB, primeira vez)...")
+    print("[i] Baixando navegador Chromium (~180MB)...")
     try:
         subprocess.run([python, "-m", "playwright", "install", "chromium"], check=True)
-        print("  [OK] Chromium instalado")
+        print("  [OK] Navegador instalado com sucesso!")
     except Exception as e:
-        print(f"  [ER] Falha ao baixar Chromium: {e}")
+        print(f"  [ER] Falha ao baixar navegador: {e}")
         print("[i] Tente manualmente: python -m playwright install chromium")
 
 
 def validate_license(license_key):
-    """Valida a licenca com o servidor."""
     try:
         import urllib.request
         import urllib.error
@@ -233,14 +228,20 @@ def get_license_key():
     config = load_config()
     saved_key = config.get("license_key", "")
     if saved_key:
-        print(f"[i] Licenca salva: {saved_key[:8]}...{saved_key[-4:]}")
-        use_saved = input("Usar licenca salva? (S/n): ").strip().lower()
+        masked = saved_key[:8] + "..." + saved_key[-4:]
+        print(f"[i] Chave salva: {masked}")
+        use_saved = input("  Usar esta chave? (S/n): ").strip().lower()
         if use_saved != "n":
             return saved_key
 
-    key = input("Chave de licenca: ").strip()
+    print()
+    print("  Cole sua chave de licenca abaixo.")
+    print("  (Voce recebeu esta chave por email apos o pagamento)")
+    print()
+    key = input("  Chave: ").strip()
     if not key:
-        print("[ER] Chave obrigatoria.")
+        print()
+        print("  [ER] Chave obrigatoria. Verifique o email que recebeu.")
         return get_license_key()
     return key
 
@@ -249,36 +250,56 @@ def get_sge_credentials():
     config = load_config()
     saved_cpf = config.get("cpf", "")
     if saved_cpf:
-        print(f"[i] CPF salvo: {saved_cpf[:3]}***{saved_cpf[-2:]}")
-        use_saved = input("Usar CPF salvo? (S/n): ").strip().lower()
+        masked = saved_cpf[:3] + "***" + saved_cpf[-2:]
+        print(f"[i] CPF salvo: {masked}")
+        use_saved = input("  Usar este CPF? (S/n): ").strip().lower()
         if use_saved != "n":
             return saved_cpf
 
-    cpf = input("CPF (apenas numeros): ").strip().replace(".", "").replace("-", "")
+    print()
+    print("  Informe o CPF que voce usa para acessar o SGE.")
+    print("  (So numeros, sem pontos ou traco)")
+    print()
+    cpf = input("  CPF: ").strip().replace(".", "").replace("-", "")
+    if not cpf or len(cpf) < 11:
+        print()
+        print("  [ER] CPF invalido. Digite 11 numeros.")
+        return get_sge_credentials()
     return cpf
 
 
 def get_context():
     config = load_config()
     print()
-    print("[i] Configuracao do lancamento")
-    print("-" * 40)
+    print("=" * 56)
+    print("  Configuracao do lancamento")
+    print("=" * 56)
+    print()
+    print("  Informe os dados da turma que voce vai lancar.")
+    print("  Pressione Enter para usar o valor entre colchetes [].")
+    print()
 
-    escola = input(f"Escola [{config.get('escola', '')}]: ").strip()
+    escola = input(f"  Escola [{config.get('escola', 'ex: Escola Municipal ABC')}]: ").strip()
     if not escola:
         escola = config.get("escola", "")
 
-    turno = input(f"Turno [{config.get('turno', 'Manha')}]: ").strip()
+    turno = input(f"  Turno [{config.get('turno', 'Manha')}]: ").strip()
     if not turno:
         turno = config.get("turno", "Manha")
 
-    turma = input(f"Turma [{config.get('turma', '')}]: ").strip()
+    turma = input(f"  Turma [{config.get('turma', 'ex: 5o Ano A')}]: ").strip()
     if not turma:
         turma = config.get("turma", "")
 
-    trimestre = input(f"Trimestre [{config.get('trimestre', '1o Trimestre')}]: ").strip()
+    trimestre = input(f"  Trimestre [{config.get('trimestre', '1o Trimestre')}]: ").strip()
     if not trimestre:
         trimestre = config.get("trimestre", "1o Trimestre")
+
+    print()
+    print(f"  Escola: {escola or '(nao informada)'}")
+    print(f"  Turno:  {turno}")
+    print(f"  Turma:  {turma or '(nao informada)'}")
+    print(f"  Periodo: {trimestre}")
 
     save_config({
         **config,
@@ -292,12 +313,10 @@ def get_context():
 
 
 def is_gsheets_url(url):
-    """Verifica se e uma URL do Google Sheets."""
     return bool(re.search(r"docs\.google\.com/spreadsheets", url))
 
 
 def download_gsheets_as_csv(url):
-    """Baixa uma planilha Google Sheets como CSV."""
     m = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
     if not m:
         print("[ER] Nao foi possivel extrair o ID da planilha.")
@@ -305,7 +324,7 @@ def download_gsheets_as_csv(url):
 
     sheet_id = m.group(1)
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    print(f"[i] Baixando planilha do Google Sheets...")
+    print("[i] Baixando planilha do Google Sheets...")
 
     try:
         tmp_dir = tempfile.mkdtemp(prefix="gsheets_")
@@ -315,15 +334,15 @@ def download_gsheets_as_csv(url):
             data = resp.read()
         with open(target, "wb") as f:
             f.write(data)
-        print(f"[OK] Planilha baixada: {len(data)} bytes")
+        print(f"[OK] Planilha baixada ({len(data)} bytes)")
         return target
     except Exception as e:
         print(f"[ER] Falha ao baixar: {e}")
+        print("[i] Verifique se a planilha esta compartilhada como 'Qualquer pessoa com o link'")
         return None
 
 
 def load_grades_from_file(filepath):
-    """Carrega notas de um arquivo CSV ou Excel."""
     ext = Path(filepath).suffix.lower()
     grades = []
 
@@ -364,41 +383,52 @@ def load_grades_from_file(filepath):
             return []
     else:
         print(f"[ER] Formato nao suportado: {ext}")
+        print("[i] Use CSV (.csv) ou Excel (.xlsx)")
         return []
 
     return grades
 
 
-def execute_grades(cpf, context):
+def print_grades_help():
     print()
-    print("[i] Modo: Lancamento de notas")
-    print("-" * 40)
-    print("  [1] Inserir notas manualmente")
-    print("  [2] Importar de arquivo (CSV/Excel)")
+    print("  FORMATO DA PLANILHA:")
+    print("  Crie uma planilha com duas colunas:")
+    print()
+    print("    Aluno         | Nota")
+    print("    Maria Silva   | 8.5")
+    print("    Joao Santos   | 7.0")
+    print("    Ana Oliveira  | 9.2")
+    print()
+    print("  Colunas aceitas:")
+    print("    - Aluno: 'Aluno' ou 'Nome'")
+    print("    - Nota:  'Nota', 'Valor' ou 'Media'")
+    print()
+    print("  Formatos aceitos:")
+    print("    - CSV separado por virgula ou ponto-e-virgula")
+    print("    - Excel (.xlsx)")
+    print("    - Google Sheets (cole o link da planilha)")
     print()
 
-    choice = input("Opcao: ").strip()
+
+def execute_grades(cpf, context):
+    print()
+    print("=" * 56)
+    print("  Modo: Lancamento de notas")
+    print("=" * 56)
+    print()
+    print("  [1] Importar de arquivo (recomendado)")
+    print("  [2] Digitar notas manualmente")
+    print()
+
+    choice = input("  Opcao: ").strip()
 
     grades = []
     if choice == "2":
-        filepath = input("Caminho do arquivo ou URL do Google Sheets: ").strip().strip('"')
-
-        if is_gsheets_url(filepath):
-            downloaded = download_gsheets_as_csv(filepath)
-            if not downloaded:
-                return
-            filepath = downloaded
-        elif not os.path.isfile(filepath):
-            print(f"[ER] Arquivo nao encontrado: {filepath}")
-            return
-
-        grades = load_grades_from_file(filepath)
-        if not grades:
-            print("[ER] Nenhuma nota encontrada no arquivo.")
-            return
-        print(f"[OK] {len(grades)} notas carregadas.")
-    else:
-        print("Digite as notas (aluno;nota). Linha vazia para finalizar:")
+        print()
+        print("  Digite as notas no formato: Nome do Aluno;Nota")
+        print("  Exemplo: Maria Silva;8.5")
+        print("  Pressione Enter em linha vazia para finalizar:")
+        print()
         while True:
             line = input("  > ").strip()
             if not line:
@@ -407,14 +437,49 @@ def execute_grades(cpf, context):
             if len(parts) >= 2:
                 grades.append({"aluno": parts[0].strip(), "nota": parts[1].strip()})
             else:
-                print("  [!] Formato: aluno;nota")
+                print("  [!] Formato: Nome do Aluno;Nota  (ex: Maria Silva;8.5)")
+    else:
+        print()
+        print("  Cole o caminho do arquivo ou o link do Google Sheets:")
+        print("  (Arraste o arquivo aqui ou cole o caminho completo)")
+        print()
+        filepath = input("  Arquivo: ").strip().strip('"')
+
+        if not filepath:
+            print("[ER] Nenhum arquivo informado.")
+            return
+
+        if is_gsheets_url(filepath):
+            downloaded = download_gsheets_as_csv(filepath)
+            if not downloaded:
+                return
+            filepath = downloaded
+        elif not os.path.isfile(filepath):
+            print(f"[ER] Arquivo nao encontrado: {filepath}")
+            print("[i] Verifique se o caminho esta correto.")
+            return
+
+        grades = load_grades_from_file(filepath)
+        if not grades:
+            print("[ER] Nenhuma nota encontrada no arquivo.")
+            print_grades_help()
+            return
+        print(f"[OK] {len(grades)} notas carregadas.")
 
     if not grades:
         print("[ER] Nenhuma nota para lancar.")
         return
 
     print()
-    print(f"[i] Lançando {len(grades)} notas...")
+    print(f"  Resumo: {len(grades)} notas serao lancadas.")
+    print()
+    confirm = input("  Confirmar lancamento? (S/n): ").strip().lower()
+    if confirm == "n":
+        print("  Lancamento cancelado.")
+        return
+
+    print()
+    print(f"[i] Lancando {len(grades)} notas...")
     print()
 
     from bot.core.sge_adapter import SGEAdapter
@@ -423,11 +488,11 @@ def execute_grades(cpf, context):
 
     adapter = SGEAdapter()
     try:
-        print("  Iniciando browser...")
+        print("  [1/4] Iniciando navegador...")
         adapter.start()
-        print("  [OK] Browser iniciado")
+        print("  [OK] Navegador iniciado")
 
-        print("  Fazendo login no SGE...")
+        print("  [2/4] Fazendo login no SGE...")
         if not adapter.login(cpf, ""):
             print("  [ER] Login falhou. Verifique o CPF.")
             return
@@ -440,10 +505,11 @@ def execute_grades(cpf, context):
             trimestre=context["trimestre"],
         )
 
-        print("  Navegando...")
+        print("  [3/4] Navegando ate a turma...")
         adapter.navigate_to(ctx)
         print("  [OK] Navegacao concluida")
 
+        print("  [4/4] Lancando notas...")
         engine = BotEngine(adapter, execution_id="cli-exec")
         result = engine.run(grades, context=ctx)
 
@@ -451,9 +517,9 @@ def execute_grades(cpf, context):
         print("=" * 40)
         print("  RESULTADO")
         print("=" * 40)
-        print(f"  Lançadas: {result.filled}")
-        print(f"  Falhas:   {result.failed}")
-        print(f"  Puladas:  {result.skipped}")
+        print(f"  Lancadas:  {result.filled}")
+        print(f"  Falhas:    {result.failed}")
+        print(f"  Puladas:   {result.skipped}")
 
         if result.failed > 0:
             print()
@@ -467,7 +533,7 @@ def execute_grades(cpf, context):
             save = input("  Salvar no SGE? (S/n): ").strip().lower()
             if save != "n":
                 adapter.save()
-                print("  [OK] Salvo com sucesso")
+                print("  [OK] Salvo com sucesso!")
 
     except Exception as e:
         print(f"  [ER] Erro: {e}")
@@ -478,39 +544,47 @@ def execute_grades(cpf, context):
 
 def execute_lesson_plan(cpf, context):
     print()
-    print("[i] Modo: Plano de Aula")
-    print("-" * 40)
+    print("=" * 56)
+    print("  Modo: Plano de Aula")
+    print("=" * 56)
+    print()
+    print("  Informe os dados do plano de aula que quer criar no SGE.")
+    print()
 
-    titulo = input("Titulo do plano: ").strip()
+    titulo = input("  Titulo do plano: ").strip()
     if not titulo:
         print("[ER] Titulo obrigatorio.")
         return
 
-    data_inicio = input("Data inicio (DD/MM/AAAA): ").strip()
-    data_fim = input("Data fim (DD/MM/AAAA): ").strip()
-    n_aulas = input("Numero de aulas [1]: ").strip()
+    data_inicio = input("  Data inicio (DD/MM/AAAA): ").strip()
+    data_fim = input("  Data fim (DD/MM/AAAA): ").strip()
+    n_aulas = input("  Numero de aulas [1]: ").strip()
     n_aulas = int(n_aulas) if n_aulas.isdigit() else 1
 
-    pdf_path = input("Caminho do PDF (vazio para pular): ").strip().strip('"')
+    print()
+    print("  Se tiver um PDF do plano de aula, informe o caminho abaixo.")
+    print("  Se nao tiver, pressione Enter para pular.")
+    print()
+    pdf_path = input("  Caminho do PDF (vazio para pular): ").strip().strip('"')
     if pdf_path and not os.path.isfile(pdf_path):
         print(f"[ER] Arquivo nao encontrado: {pdf_path}")
         pdf_path = ""
 
     print()
-    print(f"[i] Criando plano: {titulo}")
-    print(f"    Periodo: {data_inicio} a {data_fim}")
-    print(f"    Aulas: {n_aulas}")
+    print(f"  Criando plano: {titulo}")
+    print(f"  Periodo: {data_inicio} a {data_fim}")
+    print(f"  Aulas: {n_aulas}")
 
     from bot.core.sge_adapter import SGEAdapter
     from bot.core.portal_adapter import PortalContext, LessonPlan
 
     adapter = SGEAdapter()
     try:
-        print("  Iniciando browser...")
+        print("  [1/5] Iniciando navegador...")
         adapter.start()
-        print("  [OK] Browser iniciado")
+        print("  [OK] Navegador iniciado")
 
-        print("  Fazendo login no SGE...")
+        print("  [2/5] Fazendo login no SGE...")
         if not adapter.login(cpf, ""):
             print("  [ER] Login falhou. Verifique o CPF.")
             return
@@ -523,7 +597,7 @@ def execute_lesson_plan(cpf, context):
             trimestre=context["trimestre"],
         )
 
-        print("  Navegando para Plano de Aulas...")
+        print("  [3/5] Navegando para Plano de Aulas...")
         if not adapter.navigate_to_lesson_plan(ctx):
             print("  [ER] Nao foi possivel navegar para Plano de Aulas.")
             return
@@ -536,14 +610,14 @@ def execute_lesson_plan(cpf, context):
             n_aulas=n_aulas,
         )
 
-        print("  Criando planejamento...")
+        print("  [4/5] Criando planejamento...")
         if not adapter.create_lesson_plan(plan):
             print("  [ER] Falha ao criar planejamento.")
             return
         print("  [OK] Planejamento criado")
 
         if pdf_path:
-            print("  Enviando PDF...")
+            print("  [5/5] Enviando PDF...")
             if adapter.upload_lesson_plan_pdf(titulo, pdf_path):
                 print("  [OK] PDF enviado")
             else:
@@ -559,22 +633,6 @@ def execute_lesson_plan(cpf, context):
         adapter.stop()
 
 
-def start_dashboard():
-    """Inicia o dashboard Streamlit em background."""
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "streamlit", "run", "dashboard.py",
-             "--server.headless", "true", "--server.port", "8501"],
-            cwd=str(Path(__file__).parent),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        print("[OK] Dashboard aberto em http://localhost:8501")
-    except Exception:
-        print("[!!] Nao foi possivel abrir o dashboard automaticamente")
-
-
 def main():
     setup_logging()
     clear()
@@ -583,23 +641,34 @@ def main():
     if not check_playwright():
         install_playwright()
         if not check_playwright():
-            print("[ER] Playwright nao pudo ser instalado.")
-            print(f"[!] Baixe manualmente: {DOWNLOAD_URL}")
-            input("\nPressione Enter para sair...")
+            print("[ER] Nao foi possivel configurar os componentes.")
+            print()
+            print("  Solucoes possiveis:")
+            print(f"  1. Baixe o programa novamente: {DOWNLOAD_URL}")
+            print("  2. Verifique sua conexao com a internet")
+            print("  3. Entre em contato: labintelligenceappoiments@gmail.com")
+            print()
+            input("  Pressione Enter para sair...")
             sys.exit(1)
 
-    print("[OK] Playwright detectado")
-    print()
-    start_dashboard()
+    print("[OK] Componentes configurados")
     print()
 
     license_key = get_license_key()
+    print()
     print("[i] Validando licenca...")
     lic_result = validate_license(license_key)
 
     if not lic_result.get("valid"):
+        print()
         print(f"[ER] Licenca invalida: {lic_result.get('error', 'desconhecido')}")
-        input("\nPressione Enter para sair...")
+        print()
+        print("  Possiveis causas:")
+        print("  - Chave incorreta (verifique o email)")
+        print("  - Licenca expirada")
+        print("  - Servidor temporariamente indisponivel")
+        print()
+        input("  Pressione Enter para sair...")
         sys.exit(1)
 
     plan = lic_result.get("plan", "?")
@@ -612,12 +681,15 @@ def main():
     context = get_context()
 
     print()
-    print("[i] Tipo de lancamento:")
-    print("  [1] Notas")
-    print("  [2] Plano de Aula")
+    print("=" * 56)
+    print("  O que voce quer lancar?")
+    print("=" * 56)
+    print()
+    print("  [1] Notas de alunos")
+    print("  [2] Plano de aula")
     print()
 
-    choice = input("Opcao: ").strip()
+    choice = input("  Opcao: ").strip()
 
     if choice == "2":
         execute_lesson_plan(cpf, context)
@@ -625,11 +697,12 @@ def main():
         execute_grades(cpf, context)
 
     print()
-    print("=" * 50)
+    print("=" * 56)
     print("  Operacao concluida!")
-    print(f"  Logs: {CONFIG_DIR / 'logs' / 'bot.log'}")
-    print("=" * 50)
-    input("\nPressione Enter para sair...")
+    print(f"  Logs salvos em: {CONFIG_DIR / 'logs' / 'bot.log'}")
+    print("=" * 56)
+    print()
+    input("  Pressione Enter para sair...")
 
 
 if __name__ == "__main__":

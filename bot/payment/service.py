@@ -172,7 +172,7 @@ class PaymentService:
         )
 
     def _send_license_email(self, email: str, name: str, license_key: str, plan: str):
-        """Envia email com a chave de licenca."""
+        """Envia email com a chave de licenca e instrucoes completas."""
         smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
         smtp_port = int(os.environ.get("SMTP_PORT", "587"))
         smtp_user = os.environ.get("SMTP_USER", "")
@@ -186,31 +186,151 @@ class PaymentService:
         msg = MIMEMultipart()
         msg["From"] = smtp_user
         msg["To"] = email
-        msg["Subject"] = f"BotDoProfessor - Sua chave de licenca ({plan_info.get('label', plan)})"
+        msg["Subject"] = f"BotDoProfessor — Sua chave de licenca ({plan_info.get('label', plan)})"
 
         download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
+        success_url = "https://botdoprofessor.onrender.com/success?key=" + license_key
 
         html = f"""
         <html>
-        <body style="font-family:Arial,sans-serif;padding:20px">
-            <h2 style="color:#0f3460">BotDoProfessor</h2>
-            <p>Ola <b>{name}</b>,</p>
-            <p>Seu pagamento foi confirmado! Aqui esta sua chave de licenca:</p>
-            <div style="background:#f0f0f0;padding:16px;border-radius:8px;font-family:monospace;font-size:1.2em;text-align:center;margin:20px 0;border:2px dashed #ccc">
-                {license_key}
+        <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.6; padding: 20px; max-width: 600px; margin: 0 auto; }}
+            .header {{ background: #0f3460; color: white; padding: 24px; border-radius: 10px 10px 0 0; text-align: center; }}
+            .header h1 {{ margin: 0; font-size: 1.4em; }}
+            .content {{ padding: 24px; background: #ffffff; border: 1px solid #e2e8f0; }}
+            .key-box {{ background: #f0f9ff; border: 2px dashed #93c5fd; padding: 16px; border-radius: 8px; text-align: center; margin: 20px 0; }}
+            .key-box .label {{ font-size: 0.8em; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }}
+            .key-box .key {{ font-family: monospace; font-size: 1.3em; color: #1e40af; font-weight: bold; word-break: break-all; }}
+            .btn {{ display: inline-block; padding: 14px 32px; background: #e94560; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 16px 0; }}
+            .step {{ display: flex; gap: 12px; margin-bottom: 16px; align-items: flex-start; }}
+            .step-num {{ background: #0f3460; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.8em; flex-shrink: 0; }}
+            .step-text {{ flex: 1; }}
+            .step-text strong {{ color: #0c1b33; }}
+            .step-text {{ color: #475569; font-size: 0.92em; }}
+            .alert {{ background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px; margin: 16px 0; font-size: 0.88em; color: #92400e; }}
+            .csv-box {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin: 16px 0; font-size: 0.88em; }}
+            .csv-box code {{ background: #e2e8f0; padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }}
+            .footer {{ padding: 16px 24px; background: #f8fafc; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 10px 10px; text-align: center; font-size: 0.85em; color: #94a3b8; }}
+            .footer a {{ color: #e94560; text-decoration: none; }}
+        </style>
+        </head>
+        <body>
+        <div class="header">
+            <h1>BotDoProfessor</h1>
+        </div>
+        <div class="content">
+            <p>Ola <strong>{name}</strong>,</p>
+            <p>Seu pagamento foi confirmado! Aqui esta tudo que voce precisa para comecar:</p>
+
+            <div class="key-box">
+                <div class="label">Sua chave de licenca</div>
+                <div class="key">{license_key}</div>
             </div>
-            <p><b>Como usar:</b></p>
-            <ol>
-                <li>Baixe o programa: <a href="{download_url}">Clique aqui para baixar</a></li>
-                <li>Execute BotDoProfessor.exe</li>
-                <li>Cole a chave de licenca acima</li>
-                <li>Configure seu CPF e senha do SGE</li>
-                <li>Escolha o que deseja lancar (notas ou plano de aula)</li>
-            </ol>
-            <p style="color:#999;font-size:0.85em;margin-top:30px">
-                Duvidas? Responda este email.<br>
-                BotDoProfessor - Automatize suas notas
+
+            <p style="text-align:center">
+                <a href="{success_url}" class="btn">Ver instrucoes completas</a>
             </p>
+
+            <h3 style="color:#0c1b33;margin-top:24px">Como usar — passo a passo</h3>
+
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-text">
+                    <strong>Baixe o programa</strong><br>
+                    Clique no botao acima ou acesse: <a href="{download_url}">{download_url}</a><br>
+                    O arquivo BotDoProfessor.exe tem cerca de 140MB.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-text">
+                    <strong>Execute o arquivo</strong><br>
+                    Duplo-clique no BotDoProfessor.exe. O Windows pode mostrar um aviso de seguranca — clique em "Mais informacoes" e depois em "Executar mesmo assim". Isso e normal para programas baixados da internet.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-text">
+                    <strong>Aguarde a primeira configuracao</strong><br>
+                    Na primeira vez, o programa instala o navegador Chromium automaticamente (cerca de 180MB). Isso demora aproximadamente 2 minutos e so acontece uma vez.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">4</div>
+                <div class="step-text">
+                    <strong>Cole a chave de licenca</strong><br>
+                    Quando o programa pedir, cole a chave que aparece acima. Ela e salva automaticamente — nas proximas vezes nao precisa colar de novo.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">5</div>
+                <div class="step-text">
+                    <strong>Informe seu CPF</strong><br>
+                    Digite o CPF que voce usa para acessar o SGE (so numeros, sem pontos ou traco). O programa tambem salva isso automaticamente.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">6</div>
+                <div class="step-text">
+                    <strong>Configure escola, turma e trimestre</strong><br>
+                    O programa vai perguntar qual escola, turno, turma e trimestre. Voce pode apertar Enter para usar os valores padrao, ou digitar os dados corretos.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">7</div>
+                <div class="step-text">
+                    <strong>Escolha o tipo de lancamento</strong><br>
+                    Digite <code>1</code> para <strong>Notas</strong> ou <code>2</code> para <strong>Plano de Aula</strong>. Para notas, voce pode importar de uma planilha CSV/Excel ou colar o link do Google Sheets.
+                </div>
+            </div>
+
+            <h3 style="color:#0c1b33;margin-top:24px">Como preparar suas notas</h3>
+
+            <div class="csv-box">
+                <p><strong>Opcao 1 — Planilha CSV ou Excel:</strong></p>
+                <p>Crie uma planilha com duas colunas:</p>
+                <p>
+                    <code>Aluno</code> — nome completo do aluno (como aparece no SGE)<br>
+                    <code>Nota</code> — valor numerico (ex: 8.5, 7.0, 9.2)
+                </p>
+                <p style="margin-top:8px">
+                    <strong>Exemplo:</strong><br>
+                    <code>Aluno;Nota</code><br>
+                    <code>Maria Silva;8.5</code><br>
+                    <code>Joao Santos;7.0</code><br>
+                    <code>Ana Oliveira;9.2</code>
+                </p>
+                <p style="margin-top:8px">
+                    Salve como <code>.csv</code> (separado por virgula ou ponto-e-virgula) ou <code>.xlsx</code>.
+                </p>
+            </div>
+
+            <div class="csv-box">
+                <p><strong>Opcao 2 — Google Sheets:</strong></p>
+                <p>
+                    1. Crie uma planilha no Google Sheets com as colunas "Aluno" e "Nota"<br>
+                    2. Clique em "Compartilhar" no canto superior direito<br>
+                    3. Em "Quem tem acesso", selecione "Qualquer pessoa com o link"<br>
+                    4. Copie o link da planilha<br>
+                    5. Cole o link quando o programa pedir o caminho do arquivo
+                </p>
+            </div>
+
+            <div class="alert">
+                <strong>Dica:</strong> O programa lembra suas configuracoes. Na segunda vez que voce usar, basta digitar <code>1</code> ou <code>2</code> e ele ja sabe tudo.
+            </div>
+        </div>
+        <div class="footer">
+            Duvidas? Responda este email ou envie para <a href="mailto:labintelligenceappoiments@gmail.com">labintelligenceappoiments@gmail.com</a><br>
+            BotDoProfessor — Automatize suas notas
+        </div>
         </body>
         </html>
         """

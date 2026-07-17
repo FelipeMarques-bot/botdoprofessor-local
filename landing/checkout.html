@@ -6,12 +6,15 @@
     <title>Checkout — BotDoProfessor</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .checkout { background: white; border-radius: 16px; padding: 40px; max-width: 480px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.1); }
-        .checkout h1 { font-size: 1.5em; margin-bottom: 8px; }
-        .checkout .plan-name { color: #e94560; font-weight: bold; margin-bottom: 24px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .container { max-width: 520px; width: 100%; }
+        .checkout { background: white; border-radius: 16px; padding: 40px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); }
+        .checkout h1 { font-size: 1.5em; margin-bottom: 4px; }
+        .checkout .plan-name { color: #e94560; font-weight: bold; margin-bottom: 4px; font-size: 1.1em; }
+        .checkout .plan-desc { color: #64748b; font-size: 0.9em; margin-bottom: 24px; line-height: 1.5; }
         .checkout label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 0.9em; }
-        .checkout input, .checkout select { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; margin-bottom: 16px; }
+        .checkout label .hint { font-weight: 400; color: #94a3b8; font-size: 0.85em; }
+        .checkout input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; margin-bottom: 16px; }
         .checkout .pay-btn { width: 100%; padding: 14px; background: #009ee3; color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: bold; cursor: pointer; margin-top: 8px; }
         .checkout .pay-btn:hover { background: #0086cc; }
         .checkout .pay-btn:disabled { background: #ccc; cursor: not-allowed; }
@@ -21,57 +24,87 @@
         .checkout .back { display: block; text-align: center; margin-top: 16px; color: #666; text-decoration: none; font-size: 0.9em; }
         .loading { display: none; text-align: center; padding: 20px; }
         .error { color: #e94560; font-size: 0.9em; margin-bottom: 12px; display: none; }
+        .what-next {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 16px;
+            margin-top: 20px;
+        }
+        .what-next h4 { font-size: 0.85em; font-weight: 700; color: #334155; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .what-next ol { padding-left: 18px; font-size: 0.85em; color: #64748b; line-height: 1.7; }
+        .what-next li { margin-bottom: 4px; }
+        .security { text-align: center; margin-top: 16px; font-size: 0.8em; color: #94a3b8; }
+        .security span { color: #10b981; font-weight: 600; }
     </style>
 </head>
 <body>
-    <div class="checkout" id="checkout-form">
-        <h1>BotDoProfessor</h1>
-        <p class="plan-name" id="plan-label">Plano: Carregando...</p>
+    <div class="container">
+        <div class="checkout" id="checkout-form">
+            <h1>BotDoProfessor</h1>
+            <p class="plan-name" id="plan-label">Plano: Carregando...</p>
+            <p class="plan-desc">Pagamento unico via Mercado Pago. Apos a confirmacao, voce recebe a chave de licenca e o link para baixar o programa por email.</p>
 
-        <div class="error" id="error-msg"></div>
+            <div class="error" id="error-msg"></div>
 
-        <label for="name">Nome completo</label>
-        <input type="text" id="name" placeholder="Seu nome" required>
+            <label for="name">Nome completo</label>
+            <input type="text" id="name" placeholder="Seu nome completo" required>
 
-        <label for="email">Email (receberá a chave de licença)</label>
-        <input type="email" id="email" placeholder="seu@email.com" required>
+            <label for="email">Email <span class="hint">(recebera a chave e o link de download)</span></label>
+            <input type="email" id="email" placeholder="seu@email.com" required>
 
-        <label for="cpf">CPF (para o bot)</label>
-        <input type="text" id="cpf" placeholder="000.000.000-00" required>
+            <label for="cpf">CPF <span class="hint">(mesmo CPF que voce usa para acessar o SGE)</span></label>
+            <input type="text" id="cpf" placeholder="000.000.000-00" required>
 
-        <button class="pay-btn" id="pay-card" onclick="payWithCard()">
-            Pagar com cartao
-        </button>
+            <button class="pay-btn" id="pay-card" onclick="payWithCard()">
+                Pagar com cartao de credito
+            </button>
 
-        <div class="divider">— ou —</div>
+            <div class="divider">— ou —</div>
 
-        <button class="pay-btn" style="background:#32BCAD" id="pay-pix" onclick="payWithPix()">
-            Pagar com Pix
-        </button>
+            <button class="pay-btn" style="background:#32BCAD" id="pay-pix" onclick="payWithPix()">
+                Pagar com Pix
+            </button>
 
-        <a href="/" class="back">← Voltar</a>
-    </div>
+            <a href="/" class="back">Voltar aos planos</a>
+        </div>
 
-    <div class="checkout loading" id="loading">
-        <h2>Processando pagamento...</h2>
-        <p>Aguarde enquanto verificamos seu pagamento.</p>
+        <div class="checkout loading" id="loading">
+            <h2>Processando pagamento...</h2>
+            <p>Aguarde enquanto verificamos seu pagamento.</p>
+        </div>
+
+        <div class="what-next">
+            <h4>O que acontece apos o pagamento?</h4>
+            <ol>
+                <li>Voce recebe um email com a chave de licenca e o link para baixar o programa</li>
+                <li>Baixe o arquivo BotDoProfessor.exe (cerca de 140MB)</li>
+                <li>Execute o arquivo (duplo-clique) e siga as instrucoes na tela</li>
+                <li>Na primeira vez, o programa instala os componentes necessarios automaticamente</li>
+            </ol>
+        </div>
+
+        <div class="security">
+            Pagamento seguro via <span>Mercado Pago</span> | Seus dados nao saem do seu computador
+        </div>
     </div>
 
     <script>
         const params = new URLSearchParams(window.location.search);
         const plan = params.get('plan') || '1ano';
         const plans = {
-            '1ano': { label: '1 Ano — R$ 99,90', amount: 99.90 },
-            '2anos': { label: '2 Anos — R$ 169,83', amount: 169.83 },
-            '3anos': { label: '3 Anos — R$ 224,78', amount: 224.78 },
+            '1ano': { label: '1 Ano — R$ 99,90', amount: 99.90, desc: 'Acesso por 12 meses ao BotDoProfessor' },
+            '2anos': { label: '2 Anos — R$ 169,83', amount: 169.83, desc: 'Acesso por 24 meses. Economia de 15%.' },
+            '3anos': { label: '3 Anos — R$ 224,78', amount: 224.78, desc: 'Acesso por 36 meses. Economia de 25%.' },
         };
         const planInfo = plans[plan] || plans['1ano'];
         document.getElementById('plan-label').textContent = planInfo.label;
+        document.querySelector('.plan-desc').textContent = planInfo.desc + '. ' + document.querySelector('.plan-desc').textContent;
 
         function showError(msg) {
             const el = document.getElementById('error-msg');
             el.textContent = msg;
-            el.style.display = 'block';
+            el.style.display = msg ? 'block' : 'none';
         }
 
         function validateForm() {
@@ -113,14 +146,14 @@
                 } else if (data.error) {
                     showError(data.error);
                     document.getElementById('pay-card').disabled = false;
-                    document.getElementById('pay-card').textContent = 'Pagar com cartao';
+                    document.getElementById('pay-card').textContent = 'Pagar com cartao de credito';
                 } else {
                     window.location.href = data.init_point;
                 }
             } catch (e) {
                 showError('Erro ao criar pagamento. Tente novamente.');
                 document.getElementById('pay-card').disabled = false;
-                document.getElementById('pay-card').textContent = '💳 Pagar com cartão';
+                document.getElementById('pay-card').textContent = 'Pagar com cartao de credito';
             }
         }
 
@@ -148,12 +181,12 @@
                 } else if (data.qr_code_base64) {
                     document.getElementById('checkout-form').innerHTML = `
                         <h1>Pagamento via Pix</h1>
-                        <p style="margin:16px 0">Escaneie o QR Code abaixo ou copie a chave Pix:</p>
+                        <p style="margin:16px 0;color:#64748b">Escaneie o QR Code abaixo ou copie a chave Pix:</p>
                         <img src="data:image/png;base64,${data.qr_code_base64}" style="width:200px;display:block;margin:0 auto 16px">
                         <textarea readonly style="width:100%;height:60px;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:0.85em">${data.qr_code || ''}</textarea>
-                        <button onclick="navigator.clipboard.writeText('${data.qr_code || ''}')" style="width:100%;padding:10px;margin-top:8px;background:#32BCAD;color:white;border:none;border-radius:8px;cursor:pointer">Copiar chave Pix</button>
-                        <p style="margin-top:16px;color:#666;font-size:0.9em">Após o pagamento, a chave de licença será enviada para <b>${document.getElementById('email').value}</b></p>
-                        <a href="/" style="display:block;text-align:center;margin-top:16px;color:#666;text-decoration:none">← Voltar</a>
+                        <button onclick="navigator.clipboard.writeText('${data.qr_code || ''}')" style="width:100%;padding:10px;margin-top:8px;background:#32BCAD;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600">Copiar chave Pix</button>
+                        <p style="margin-top:16px;color:#64748b;font-size:0.9em;line-height:1.6">Apos o pagamento, a chave de licenca e o link de download serao enviados para <b>${document.getElementById('email').value}</b>. O email pode levar alguns minutos para chegar.</p>
+                        <a href="/" style="display:block;text-align:center;margin-top:16px;color:#666;text-decoration:none">Voltar ao inicio</a>
                     `;
                 } else if (data.error) {
                     showError(data.error);
@@ -163,7 +196,7 @@
             } catch (e) {
                 showError('Erro ao gerar Pix. Tente novamente.');
                 document.getElementById('pay-pix').disabled = false;
-                document.getElementById('pay-pix').textContent = '📱 Pagar com Pix';
+                document.getElementById('pay-pix').textContent = 'Pagar com Pix';
             }
         }
     </script>

@@ -17,6 +17,17 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+# Forcar codepage UTF-8 no Windows (resolve charmap do node.exe do playwright)
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
 
 CONFIG_DIR = Path.home() / ".bot_local"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -61,15 +72,75 @@ def save_config(data):
 
 
 def _find_python():
-    """Encontra o interpretador Python do sistema."""
+    """Encontra o interpretador Python real do sistema (ignora stubs da Microsoft Store)."""
     import shutil
-    py = shutil.which("python3") or shutil.which("python")
-    if py:
-        return py
+    import stat
+
+    def _is_valid_python(path):
+        """Verifica se o caminho aponta para um Python real (ignora WindowsApps stubs)."""
+        if not path:
+            return False
+        lower = path.lower()
+        if "windowsapps" in lower:
+            return False
+        if path.endswith("python3.exe") and "local" in lower and "microsoft" in lower:
+            return False
+        try:
+            return os.path.isfile(path) or os.access(path, os.X_OK)
+        except Exception:
+            return False
+
+    # 1. py launcher (mais confiavel no Windows)
+    py_path = shutil.which("py")
+    if py_path and _is_valid_python(py_path):
+        return py_path
+
+    # 2. python3 / python — pular stubs da Store
+    for name in ("python3", "python"):
+        path = shutil.which(name)
+        if _is_valid_python(path):
+            return path
+
+    # 3. Buscar em locais comuns de instalacao (uv, python.org, etc.)
+    uv_base = os.path.expandvars(r"%APPDATA%\uv\python")
+    common_paths = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python310\python.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
+        r"C:\Python311\python.exe",
+        r"C:\Python310\python.exe",
+        r"C:\Python312\python.exe",
+    ]
+    if os.path.isdir(uv_base):
+        import glob
+        for uv_py in sorted(glob.glob(os.path.join(uv_base, "cpython-3.*", "python.exe")), reverse=True):
+            common_paths.insert(0, uv_py)
+    for p in common_paths:
+        if os.path.isfile(p):
+            return p
+
     return sys.executable
 
 
 def check_playwright():
+    """Verifica se Playwright + Chromium estao disponiveis."""
+    # Checar se o binario do Chromium existe no diretorio padrao
+    ms_playwright = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
+    if not ms_playwright.exists():
+        ms_playwright = Path.home() / ".cache" / "ms-playwright"
+    if ms_playwright.exists():
+        for d in ms_playwright.iterdir():
+            if d.is_dir() and d.name.startswith("chromium-"):
+                chrome = d / "chrome-win64" / "chrome.exe"
+                if not chrome.exists():
+                    chrome = d / "chrome-win" / "chrome.exe"
+                if not chrome.exists():
+                    chrome = d / "chrome-linux" / "chrome"  # Linux
+                if not chrome.exists():
+                    chrome = d / "chrome-mac" / "Chromium.app"  # Mac
+                if chrome.exists():
+                    return True
+    # Fallback: tentar importar e lancar (pode falhar no .exe por encoding)
     try:
         from playwright.sync_api import sync_playwright
         p = sync_playwright().start()
@@ -86,7 +157,33 @@ def check_playwright():
 
 
 def install_playwright():
-    import subprocess
+    is_frozen = getattr(sys, "frozen", False)
+
+    if is_frozen:
+        # Dentro do .exe: o playwright ja esta bundled.
+        # Tenta instalar o Chromium usando o driver bundled.
+        print("[!] Playwright detectado, mas Chromium nao encontrado.")
+        print("[i] Baixando Chromium (~180MB, primeira vez)...")
+        try:
+            # Dentro do .exe frozen, extrair driver path diretamente
+            base = Path(sys._MEIPASS) / "playwright" / "driver"
+            node_exe = base / "node.exe"
+            cli_js = base / "package" / "cli.js"
+            if not node_exe.exists():
+                raise FileNotFoundError(f"node.exe nao encontrado em {node_exe}")
+            print(f"[i] Driver: {node_exe}")
+            subprocess.run([str(node_exe), str(cli_js), "install", "chromium"], check=True)
+            print("  [OK] Chromium instalado")
+            return
+        except Exception as e:
+            print(f"  [ER] Falha ao baixar Chromium automaticamente: {e}")
+            print("[i] Instale manualmente:")
+            print("    1. pip install playwright")
+            print("    2. python -m playwright install chromium")
+            print(f"[i] Ou baixe o .exe novamente: {DOWNLOAD_URL}")
+            return
+
+    # Modo script: instala via Python do sistema
     python = _find_python()
     print("[!] Playwright nao encontrado.")
     print(f"[i] Usando Python: {python}")
@@ -97,8 +194,7 @@ def install_playwright():
     except Exception as e:
         print(f"  [ER] Falha ao instalar playwright: {e}")
         print("[i] Tente manualmente: pip install playwright")
-        input("\nPressione Enter para sair...")
-        sys.exit(1)
+        return
 
     print("[i] Baixando Chromium (~180MB, primeira vez)...")
     try:
@@ -107,8 +203,6 @@ def install_playwright():
     except Exception as e:
         print(f"  [ER] Falha ao baixar Chromium: {e}")
         print("[i] Tente manualmente: python -m playwright install chromium")
-        input("\nPressione Enter para sair...")
-        sys.exit(1)
 
 
 def validate_license(license_key):

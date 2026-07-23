@@ -29,7 +29,16 @@ def api(method, path, data=None, auth=True):
         headers["Authorization"] = f"Bearer {st.session_state.token}"
     try:
         resp = requests.request(method, f"{API_URL}{path}", json=data, headers=headers, timeout=10)
-        return resp.status_code, resp.json()
+        status = resp.status_code
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"error": "Resposta invalida da API"}
+        if status == 401 and auth:
+            st.session_state.token = None
+            st.session_state.user = None
+            st.rerun()
+        return status, body
     except requests.ConnectionError:
         return 0, {"error": "API nao esta rodando. Execute: python cli.py serve"}
     except Exception as e:

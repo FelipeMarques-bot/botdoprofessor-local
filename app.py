@@ -56,8 +56,10 @@ def create_app():
         admin_user = os.environ.get("ADMIN_USER", "admin")
         admin_pass = os.environ.get("ADMIN_PASS", "admin123")
         user = User.query.filter_by(username=admin_user).first()
+        all_users = User.query.all()
+        users_list = [{"id": u.id, "username": u.username, "profile": u.profile, "active": u.active} for u in all_users]
         if not user:
-            return jsonify({"exists": False, "user": admin_user, "total_users": User.query.count()})
+            return jsonify({"exists": False, "user": admin_user, "total_users": len(all_users), "all_users": users_list})
         pw_ok = user.check_password(admin_pass)
         return jsonify({
             "exists": True,
@@ -68,6 +70,8 @@ def create_app():
             "password_ok": pw_ok,
             "token_version": user.token_version,
             "hash_prefix": user.password_hash[:20] if user.password_hash else None,
+            "total_users": len(all_users),
+            "all_users": users_list,
         })
 
     @app.route("/")

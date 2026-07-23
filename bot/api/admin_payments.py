@@ -203,6 +203,7 @@ def create_manual_subscription():
         return jsonify({"error": f"Plano invalido. Opcoes: {list(PLANOS.keys())}"}), 400
 
     import hashlib
+    from bot.core.license_service import LicenseService
     reference = hashlib.sha256(f"manual_{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
     license_key = LicenseService.generate_key()
 

@@ -4,6 +4,9 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from dotenv import load_dotenv
+load_dotenv(override=False)
+
 from flask import Flask, jsonify, request, send_from_directory
 from config.settings import SQLALCHEMY_DATABASE_URI, SECRET_KEY, DATA_DIR, LOGS_DIR
 from bot.models.database import db, init_db
@@ -11,6 +14,8 @@ from bot.models.user import User
 from bot.api.routes import auth_bp, license_bp, admin_bp, audit_bp
 from bot.payment.routes import payment_bp, webhook_bp
 from bot.api.lesson_plan_routes import lesson_plan_bp
+from bot.api.admin_payments import admin_payments_bp
+from bot.api.image_grades_routes import image_grades_bp
 from bot.security.auth import require_auth, require_permission
 from bot.security.errors import register_error_handlers
 from bot.ops.monitoring import BackupManager, HealthChecker
@@ -37,6 +42,8 @@ def create_app():
     app.register_blueprint(payment_bp)
     app.register_blueprint(webhook_bp)
     app.register_blueprint(lesson_plan_bp)
+    app.register_blueprint(admin_payments_bp)
+    app.register_blueprint(image_grades_bp)
 
     @app.route("/api/health")
     def health():
@@ -54,6 +61,10 @@ def create_app():
     @app.route("/success")
     def success():
         return send_from_directory(LANDING_DIR, "success.html")
+
+    @app.route("/admin")
+    def admin_portal():
+        return send_from_directory(LANDING_DIR, "admin.html")
 
     @app.route("/api/portals")
     @require_auth
@@ -97,19 +108,7 @@ def create_app():
         mgr = BackupManager()
         return jsonify({"backups": mgr.list_backups()})
 
-    with app.app_context():
-        _seed_admin()
-
     return app
-
-
-def _seed_admin():
-    if not User.query.filter_by(username="admin").first():
-        admin = User(username="admin", email="admin@botlocal.com", profile="admin")
-        admin.set_password("admin123")
-        db.session.add(admin)
-        db.session.commit()
-        print("[SEED] Usuario admin criado (admin / admin123)")
 
 
 if __name__ == "__main__":

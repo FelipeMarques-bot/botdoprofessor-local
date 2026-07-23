@@ -98,6 +98,30 @@ def change_password():
     return jsonify({"message": "Senha alterada com sucesso"})
 
 
+@auth_bp.route("/change-username", methods=["POST"])
+@require_auth
+def change_username():
+    data = request.get_json() or {}
+    password = data.get("password", "")
+    new_username = data.get("new_username", "").strip()
+
+    if not g.current_user.check_password(password):
+        return jsonify({"error": "Senha incorreta"}), 400
+
+    if not new_username or len(new_username) < 3:
+        return jsonify({"error": "Username deve ter no minimo 3 caracteres"}), 400
+
+    existing = User.query.filter_by(username=new_username).first()
+    if existing and existing.id != g.current_user.id:
+        return jsonify({"error": "Username ja existe"}), 400
+
+    old_username = g.current_user.username
+    g.current_user.username = new_username
+    db.session.commit()
+    AuditLog.log(g.current_user.id, "change_username", target=old_username, status="success")
+    return jsonify({"message": "Username alterado com sucesso", "new_username": new_username})
+
+
 @license_bp.route("/validate", methods=["GET"])
 @require_auth
 def validate_license():

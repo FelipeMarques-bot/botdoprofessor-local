@@ -28,6 +28,8 @@
         .topbar .user-tag{background:rgba(255,255,255,.12);padding:6px 14px;border-radius:8px;font-size:.82em;font-weight:500}
         .topbar .logout{background:rgba(233,69,96,.15);border:1px solid rgba(233,69,96,.3);color:#e94560;padding:6px 14px;border-radius:8px;font-size:.82em;font-weight:600;cursor:pointer;transition:all .2s}
         .topbar .logout:hover{background:#e94560;color:#fff}
+        .topbar .chg-pw{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;padding:6px 14px;border-radius:8px;font-size:.82em;font-weight:500;cursor:pointer;transition:all .2s}
+        .topbar .chg-pw:hover{background:rgba(255,255,255,.2)}
 
         .content{max-width:1200px;margin:0 auto;padding:28px 24px}
 
@@ -162,6 +164,7 @@
         <div class="brand">Bot<span>Do</span>Professor — Admin</div>
         <div class="right">
             <span class="user-tag" id="userTag"></span>
+            <button class="chg-pw" onclick="openChangePw()">Trocar senha</button>
             <button class="logout" onclick="doLogout()">Sair</button>
         </div>
     </div>
@@ -282,6 +285,29 @@
     </div>
 </div>
 
+<!-- CHANGE PASSWORD MODAL -->
+<div class="modal-overlay" id="pwModal">
+    <div class="modal" style="max-width:420px">
+        <div class="modal-header">
+            <h2>Trocar senha</h2>
+            <button class="modal-close" onclick="closeModal('pwModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <label>Senha atual</label>
+            <input type="password" id="pwOld" placeholder="Senha atual">
+            <label>Nova senha</label>
+            <input type="password" id="pwNew" placeholder="Minimo 6 caracteres">
+            <label>Confirmar nova senha</label>
+            <input type="password" id="pwConfirm" placeholder="Repita a nova senha">
+            <div id="pwError" style="color:#e94560;font-size:.85em;margin-top:10px;display:none"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-cancel" onclick="closeModal('pwModal')">Cancelar</button>
+            <button class="btn btn-primary" onclick="doChangePw()">Salvar</button>
+        </div>
+    </div>
+</div>
+
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
@@ -375,6 +401,40 @@ function doLogout() {
     localStorage.removeItem('admin_token');
     document.getElementById('loginScreen').style.display = 'flex';
     document.getElementById('dashboard').style.display = 'none';
+}
+
+function openChangePw() {
+    document.getElementById('pwOld').value = '';
+    document.getElementById('pwNew').value = '';
+    document.getElementById('pwConfirm').value = '';
+    document.getElementById('pwError').style.display = 'none';
+    document.getElementById('pwModal').classList.add('open');
+}
+
+async function doChangePw() {
+    const oldPw = document.getElementById('pwOld').value;
+    const newPw = document.getElementById('pwNew').value;
+    const confirmPw = document.getElementById('pwConfirm').value;
+    const errEl = document.getElementById('pwError');
+
+    if (!oldPw || !newPw || !confirmPw) {
+        errEl.textContent = 'Preencha todos os campos'; errEl.style.display='block'; return;
+    }
+    if (newPw.length < 6) {
+        errEl.textContent = 'Nova senha deve ter no minimo 6 caracteres'; errEl.style.display='block'; return;
+    }
+    if (newPw !== confirmPw) {
+        errEl.textContent = 'Senhas nao conferem'; errEl.style.display='block'; return;
+    }
+
+    try {
+        const d = await api('POST', '/api/auth/change-password', { old_password: oldPw, new_password: newPw });
+        if (d.error) { errEl.textContent = d.error; errEl.style.display='block'; return; }
+        toast('Senha alterada com sucesso!', 'success');
+        closeModal('pwModal');
+    } catch(e) {
+        errEl.textContent = e.message || 'Erro ao trocar senha'; errEl.style.display='block';
+    }
 }
 
 document.getElementById('loginPass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });

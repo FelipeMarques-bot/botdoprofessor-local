@@ -14,8 +14,10 @@ class User(db.Model):
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
+    token_version = db.Column(db.Integer, default=0)
 
     PROFILES = ("admin", "operador", "auditor")
+    INITIAL_ADMIN_USERNAMES = ("admin",)
 
     def set_password(self, password: str):
         self.password_hash = bcrypt.hashpw(
@@ -27,6 +29,15 @@ class User(db.Model):
             password.encode("utf-8"),
             self.password_hash.encode("utf-8"),
         )
+
+    @property
+    def is_protected(self) -> bool:
+        return self.profile == "admin" and self.id == 1
+
+    def invalidate_tokens(self):
+        self.token_version = (self.token_version + 1) % 10000
+        from bot.models.database import db as _db
+        _db.session.commit()
 
     def has_permission(self, action: str) -> bool:
         perms = {

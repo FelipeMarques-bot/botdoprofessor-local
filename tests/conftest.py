@@ -5,6 +5,14 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
+@pytest.fixture(autouse=True)
+def _clear_rate_limiter():
+    from bot.security.rate_limit import limiter
+    limiter._store.clear()
+    yield
+    limiter._store.clear()
+
+
 @pytest.fixture
 def app():
     os.environ["DATABASE_URL"] = "sqlite:///:memory:"

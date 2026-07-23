@@ -6,16 +6,26 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
+@pytest.fixture(autouse=True)
+def _clear_rate_limiter():
+    from bot.security.rate_limit import limiter
+    limiter._store.clear()
+    yield
+    limiter._store.clear()
+
+
 @pytest.fixture
 def app():
     os.environ["DATABASE_URL"] = "sqlite:///:memory:"
     os.environ["SECRET_KEY"] = "e2e-test-key-very-long-secure-string-here"
     from app import create_app
+    from bot.security.rate_limit import limiter
     app = create_app()
     app.config["TESTING"] = True
     with app.app_context():
         from bot.models.database import db
         db.create_all()
+        limiter._store.clear()
         yield app
         db.drop_all()
 

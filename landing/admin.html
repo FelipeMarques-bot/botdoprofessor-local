@@ -471,6 +471,10 @@ async function doChangePw() {
             if (d.error) { errEl.textContent = d.error; errEl.style.display='block'; return; }
             toast('Usuario alterado para: ' + d.new_username, 'success');
             document.getElementById('userTag').textContent = d.new_username;
+            if (d.token) {
+                token = d.token;
+                localStorage.setItem('admin_token', token);
+            }
         }
 
         if (newPw) {
@@ -479,7 +483,11 @@ async function doChangePw() {
             }
             const d2 = await api('POST', '/api/auth/change-password', { old_password: oldPw, new_password: newPw });
             if (d2.error) { errEl.textContent = d2.error; errEl.style.display='block'; return; }
-            toast('Senha alterada com sucesso!', 'success');
+            toast('Senha alterada com sucesso! Faca login novamente.', 'success');
+            if (d2.token) {
+                token = d2.token;
+                localStorage.setItem('admin_token', token);
+            }
         }
 
         closeModal('pwModal');

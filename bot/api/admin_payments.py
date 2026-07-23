@@ -388,6 +388,8 @@ def _send_license_email(email, name, license_key, plan):
     msg.attach(MIMEText(html, "html"))
 
     try:
+        import socket
+        socket.setdefaulttimeout(10)
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls()
         server.login(smtp_user, smtp_pass)

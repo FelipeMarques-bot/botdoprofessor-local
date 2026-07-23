@@ -183,6 +183,82 @@ def create_payment_request():
     return jsonify({"message": "Pagamento criado", "payment": payment.to_dict()}), 201
 
 
+@admin_payments_bp.route("/create-manual", methods=["POST"])
+@require_auth
+@require_permission("admin")
+def create_manual_subscription():
+    """Cria assinatura manual sem pagamento. Gera chave e envia email."""
+    data = request.get_json() or {}
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip()
+    cpf = data.get("cpf", "").strip()
+    plan = data.get("plan", "")
+    notes = data.get("notes", "Assinatura manual criada pelo admin")
+
+    if not all([name, email, cpf, plan]):
+        return jsonify({"error": "name, email, cpf e plan sao obrigatorios"}), 400
+
+    from config.settings import PLANOS
+    if plan not in PLANOS:
+        return jsonify({"error": f"Plano invalido. Opcoes: {list(PLANOS.keys())}"}), 400
+
+    import hashlib
+    reference = hashlib.sha256(f"manual_{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
+    license_key = LicenseService.generate_key()
+
+    payment = PaymentRequest(
+        name=name,
+        email=email,
+        cpf=cpf,
+        plan=plan,
+        amount=0,
+        payment_method="manual",
+        status="approved",
+        license_key=license_key,
+        reference=reference,
+        admin_notes=notes,
+        approved_at=datetime.utcnow(),
+    )
+    db.session.add(payment)
+    db.session.commit()
+
+    _send_license_email(email, name, license_key, plan)
+
+    return jsonify({
+        "message": "Assinatura criada com sucesso",
+        "license_key": license_key,
+        "payment": payment.to_dict(),
+    }), 201
+
+
+@admin_payments_bp.route("/<int:payment_id>/revoke", methods=["POST"])
+@require_auth
+@require_permission("admin")
+def revoke_subscription(payment_id):
+    """Revoga/exclui uma assinatura. Desativa a licenca associada."""
+    payment = PaymentRequest.query.get_or_404(payment_id)
+    data = request.get_json() or {}
+    reason = data.get("reason", "Revogado pelo admin")
+
+    if payment.status == "rejected":
+        return jsonify({"error": "Assinatura ja esta revogada"}), 400
+
+    payment.status = "rejected"
+    payment.admin_notes = f"{payment.admin_notes or ''}\n[REVOGADO] {reason}".strip()
+    db.session.commit()
+
+    if payment.license_key:
+        lic = License.query.filter_by(license_key=payment.license_key).first()
+        if lic:
+            lic.active = False
+            db.session.commit()
+
+    return jsonify({
+        "message": "Assinatura revogada",
+        "payment": payment.to_dict(),
+    })
+
+
 def _send_license_email(email, name, license_key, plan):
     smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))

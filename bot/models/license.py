@@ -7,7 +7,7 @@ class License(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     license_key = db.Column(db.String(64), unique=True, nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     plan = db.Column(db.String(20), nullable=False)
     days = db.Column(db.Integer, nullable=False)
     activated_at = db.Column(db.DateTime, default=datetime.utcnow)

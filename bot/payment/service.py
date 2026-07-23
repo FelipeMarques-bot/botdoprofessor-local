@@ -4,6 +4,8 @@ import hashlib
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
@@ -212,6 +214,14 @@ class PaymentService:
         from bot.core.license_service import LicenseService
         license_key = LicenseService.generate_key()
 
+        from bot.models.license import License
+        from bot.models.database import db
+        plan = payment_info.get("plan", "")
+        if plan:
+            lic = License.create(user_id=None, plan=plan, key=license_key)
+            db.session.add(lic)
+            db.session.commit()
+
         payment_info["license_key"] = license_key
         payment_info["status"] = "approved"
         payment_info["mp_payment_id"] = payment_data.get("id")
@@ -393,6 +403,22 @@ class PaymentService:
 
         msg.attach(MIMEText(html, "html"))
 
+        from config.settings import BASE_DIR
+        exe_path = BASE_DIR / "dist" / "BotDoProfessor.exe"
+        if exe_path.exists():
+            try:
+                with open(exe_path, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    "attachment; filename=BotDoProfessor.exe",
+                )
+                msg.attach(part)
+            except Exception as e:
+                print(f"[EMAIL ATTACH ERROR] {e}")
+
         try:
             server = smtplib.SMTP(smtp_host, smtp_port)
             server.starttls()
@@ -431,6 +457,14 @@ class PaymentService:
 
         from bot.core.license_service import LicenseService
         license_key = LicenseService.generate_key()
+
+        from bot.models.license import License
+        from bot.models.database import db
+        plan = data.get("plan", "")
+        if plan:
+            lic = License.create(user_id=None, plan=plan, key=license_key)
+            db.session.add(lic)
+            db.session.commit()
 
         data["license_key"] = license_key
         data["status"] = "approved"

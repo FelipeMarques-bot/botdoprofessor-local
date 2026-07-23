@@ -33,17 +33,21 @@ def require_auth(f):
         try:
             payload = decode_token(token)
         except jwt.ExpiredSignatureError:
+            print(f"[AUTH FAIL] Token expirado path={request.path} ip={request.remote_addr}")
             return jsonify({"error": "Token expirado"}), 401
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            print(f"[AUTH FAIL] Token invalido: {e} path={request.path} ip={request.remote_addr}")
             return jsonify({"error": "Token invalido"}), 401
 
         user = User.query.get(payload["user_id"])
         if not user or not user.active:
+            print(f"[AUTH FAIL] Usuario inativo ou nao encontrado: {payload.get('user_id')} path={request.path}")
             return jsonify({"error": "Usuario inativo"}), 401
 
         stored_version = getattr(user, "token_version", 0)
         token_version = payload.get("token_version", 0)
         if stored_version != token_version:
+            print(f"[AUTH FAIL] Token version mismatch: stored={stored_version} token={token_version} user={user.username} path={request.path}")
             AuditLog.log(user.id, "token_reused_after_invalidation",
                          status="denied", ip=request.remote_addr)
             return jsonify({"error": "Sessao invalidada. Faca login novamente."}), 401

@@ -111,7 +111,23 @@ def create_app():
     return app
 
 
+def _seed_initial_admin(app):
+    """Cria admin inicial apenas se nao houver nenhum usuario no banco."""
+    with app.app_context():
+        if User.query.count() == 0:
+            admin_user = os.environ.get("ADMIN_USER", "admin")
+            admin_pass = os.environ.get("ADMIN_PASS", "admin123")
+            admin_email = os.environ.get("ADMIN_EMAIL", "admin@botlocal.com")
+
+            admin = User(username=admin_user, email=admin_email, profile="admin")
+            admin.set_password(admin_pass)
+            db.session.add(admin)
+            db.session.commit()
+            print(f"[SEED] Admin criado: {admin_user} / {admin_pass}")
+
+
 if __name__ == "__main__":
     app = create_app()
+    _seed_initial_admin(app)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

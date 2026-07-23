@@ -188,7 +188,10 @@
                     <option value="3anos">3 Anos</option>
                 </select>
             </div>
-            <button class="btn-new" onclick="openNewModal()">+ Novo Pagamento</button>
+            <div style="display:flex;gap:10px">
+                <button class="btn-new" style="background:linear-gradient(135deg,#10b981,#059669)" onclick="openManualSub()">+ Assinatura Manual</button>
+                <button class="btn-new" onclick="openNewModal()">+ Novo Pagamento</button>
+            </div>
         </div>
 
         <div class="table-wrap">
@@ -259,6 +262,37 @@
         <div class="modal-footer">
             <button class="btn btn-cancel" onclick="closeModal('newModal')">Cancelar</button>
             <button class="btn btn-primary" onclick="createPayment()">Criar Pagamento</button>
+        </div>
+    </div>
+</div>
+
+<!-- MANUAL SUBSCRIPTION MODAL -->
+<div class="modal-overlay" id="manualSubModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>Criar Assinatura (Sem Pagamento)</h2>
+            <button class="modal-close" onclick="closeModal('manualSubModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p style="color:#64748b;font-size:.88em;margin-bottom:8px">Gera chave de licenca e envia email automaticamente. Nenhum pagamento sera registrado.</p>
+            <label>Nome completo</label>
+            <input type="text" id="msName" placeholder="Nome do cliente">
+            <label>Email</label>
+            <input type="email" id="msEmail" placeholder="cliente@email.com">
+            <label>CPF</label>
+            <input type="text" id="msCpf" placeholder="000.000.000-00">
+            <label>Plano</label>
+            <select id="msPlan">
+                <option value="1ano">1 Ano — R$ 99,90</option>
+                <option value="2anos">2 Anos — R$ 169,83</option>
+                <option value="3anos">3 Anos — R$ 224,78</option>
+            </select>
+            <label>Observacao (opcional)</label>
+            <textarea id="msNotes" placeholder="Motivo da assinatura manual..."></textarea>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-cancel" onclick="closeModal('manualSubModal')">Cancelar</button>
+            <button class="btn btn-success" onclick="createManualSub()">Criar e Enviar</button>
         </div>
     </div>
 </div>
@@ -555,6 +589,7 @@ async function viewDetail(id) {
         `;
         document.getElementById('detailFooter').innerHTML = `
             <button class="btn btn-cancel" onclick="closeModal('detailModal')">Fechar</button>
+            ${p.status === 'approved' ? `<button class="btn btn-danger" onclick="revokeSub(${p.id}, '${esc(p.name)}')">Revogar Assinatura</button>` : ''}
         `;
         openModal('detailModal');
     } catch(e) { toast('Erro ao carregar detalhes', 'error'); }
@@ -663,6 +698,52 @@ async function createPayment() {
     } catch(e) {
         toast('Erro ao criar pagamento', 'error');
     }
+}
+
+// MANUAL SUBSCRIPTION
+function openManualSub() {
+    document.getElementById('msName').value = '';
+    document.getElementById('msEmail').value = '';
+    document.getElementById('msCpf').value = '';
+    document.getElementById('msPlan').value = '1ano';
+    document.getElementById('msNotes').value = '';
+    openModal('manualSubModal');
+}
+
+async function createManualSub() {
+    const name = document.getElementById('msName').value.trim();
+    const email = document.getElementById('msEmail').value.trim();
+    const cpf = document.getElementById('msCpf').value.trim().replace(/\D/g,'');
+    const plan = document.getElementById('msPlan').value;
+    const notes = document.getElementById('msNotes').value.trim();
+
+    if (!name || !email || !cpf) {
+        toast('Preencha nome, email e CPF', 'error');
+        return;
+    }
+
+    try {
+        const d = await api('POST', '/api/admin/payments/create-manual', {
+            name, email, cpf, plan, notes
+        });
+        if (d.error) { toast(d.error, 'error'); return; }
+        toast('Assinatura criada! Chave: ' + d.license_key, 'success');
+        closeModal('manualSubModal');
+        loadAll();
+    } catch(e) { toast('Erro ao criar assinatura', 'error'); }
+}
+
+async function revokeSub(id, name) {
+    if (!confirm(`Revogar assinatura de ${name}? O acesso sera bloqueado imediatamente.`)) return;
+    const reason = prompt('Motivo da revogacao (obrigatorio):');
+    if (reason === null) return;
+    try {
+        const d = await api('POST', `/api/admin/payments/${id}/revoke`, { reason: reason || 'Revogado pelo admin' });
+        if (d.error) { toast(d.error, 'error'); return; }
+        toast('Assinatura revogada', 'success');
+        closeModal('detailModal');
+        loadAll();
+    } catch(e) { toast('Erro ao revogar', 'error'); }
 }
 
 // INIT

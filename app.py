@@ -50,6 +50,26 @@ def create_app():
         checker = HealthChecker()
         return jsonify(checker.full_check())
 
+    @app.route("/api/debug/admin-check")
+    def debug_admin_check():
+        import bcrypt
+        admin_user = os.environ.get("ADMIN_USER", "admin")
+        admin_pass = os.environ.get("ADMIN_PASS", "admin123")
+        user = User.query.filter_by(username=admin_user).first()
+        if not user:
+            return jsonify({"exists": False, "user": admin_user, "total_users": User.query.count()})
+        pw_ok = user.check_password(admin_pass)
+        return jsonify({
+            "exists": True,
+            "user": user.username,
+            "id": user.id,
+            "active": user.active,
+            "profile": user.profile,
+            "password_ok": pw_ok,
+            "token_version": user.token_version,
+            "hash_prefix": user.password_hash[:20] if user.password_hash else None,
+        })
+
     @app.route("/")
     def index():
         return send_from_directory(LANDING_DIR, "index.html")
@@ -112,18 +132,33 @@ def create_app():
 
 
 def _seed_initial_admin(app):
-    """Cria admin inicial apenas se nao houver nenhum usuario no banco."""
+    """Cria admin inicial. Se ja existe, garante que a senha esta correta."""
     with app.app_context():
-        if User.query.count() == 0:
-            admin_user = os.environ.get("ADMIN_USER", "admin")
-            admin_pass = os.environ.get("ADMIN_PASS", "admin123")
-            admin_email = os.environ.get("ADMIN_EMAIL", "admin@botlocal.com")
+        admin_user = os.environ.get("ADMIN_USER", "admin")
+        admin_pass = os.environ.get("ADMIN_PASS", "admin123")
+        admin_email = os.environ.get("ADMIN_EMAIL", "admin@botlocal.com")
 
-            admin = User(username=admin_user, email=admin_email, profile="admin")
-            admin.set_password(admin_pass)
-            db.session.add(admin)
-            db.session.commit()
-            print(f"[SEED] Admin criado: {admin_user} / {admin_pass}")
+        existing = User.query.filter_by(username=admin_user).first()
+        if existing:
+            if not existing.check_password(admin_pass):
+                existing.set_password(admin_pass)
+                db.session.commit()
+                print(f"[SEED] Senha do admin '{admin_user}' recalibrada")
+            else:
+                print(f"[SEED] Admin '{admin_user}' OK (id={existing.id})")
+        else:
+            if User.query.count() == 0:
+                admin = User(username=admin_user, email=admin_email, profile="admin")
+                admin.set_password(admin_pass)
+                db.session.add(admin)
+                db.session.commit()
+                print(f"[SEED] Admin criado: {admin_user} / {admin_pass}")
+            else:
+                admin = User(username=admin_user, email=admin_email, profile="admin")
+                admin.set_password(admin_pass)
+                db.session.add(admin)
+                db.session.commit()
+                print(f"[SEED] Admin criado (existiam outros usuarios): {admin_user}")
 
 
 if __name__ == "__main__":

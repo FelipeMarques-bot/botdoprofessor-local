@@ -79,7 +79,7 @@ def dashboard_page():
 
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Sistema", "Licenca", "Portais", "Backup"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Sistema", "Licenca", "Portais", "Backup", "Como Usar"])
 
     with tab1:
         st.subheader("Saude do Sistema")
@@ -155,6 +155,204 @@ def dashboard_page():
                     st.write(f"📦 {b['name']} — {b.get('created', '?')}")
             else:
                 st.info("Nenhum backup ainda")
+
+    with tab5:
+        st.subheader("Guia de Uso — BotDoProfessor")
+        st.caption("Guia completo para o usuario final. Leia com calma!")
+
+        st.markdown("---")
+        st.markdown("### O que e o BotDoProfessor?")
+        st.markdown("""
+        E um programa que **automatiza o lancamento de notas e planos de aula** no sistema SGE da sua escola.
+
+        Ele funciona assim:
+        1. Voce prepara uma planilha com os nomes dos alunos e as notas
+        2. O programa abre o navegador automaticamente
+        3. Ele entra no SGE com seus dados
+        4. Lanca as notas em cada aluno automaticamente
+        5. Voce so precisa acompanhar!
+
+        **O programa roda no seu computador** — nao precisa instalar nada no SGE.
+        """)
+
+        st.markdown("---")
+        st.markdown("### Como instalar o programa")
+
+        st.markdown("#### Passo 1: Baixar o programa")
+        st.markdown("""
+        - Acesse: **https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest**
+        - Clique em **"Baixar"** no arquivo **BotDoProfessor.exe**
+        - O arquivo (cerca de 140MB) sera salvo na pasta **Downloads** do seu computador
+        """)
+
+        st.markdown("#### Passo 2: Encontrar o arquivo")
+        st.markdown("""
+        - Abra a pasta **Downloads** (ou a pasta onde o navegador salvou)
+        - Procure por um arquivo chamado **BotDoProfessor.exe** com um icone de robo
+        """)
+
+        st.markdown("#### Passo 3: Executar o programa")
+        st.markdown("""
+        - **Duplo-clique** (clique duas vezes rapido) no arquivo BotDoProfessor.exe
+        """)
+
+        with st.expander("⚠️ Aviso de seguranca do Windows (clique para ver)", expanded=False):
+            st.markdown("""
+            O Windows pode mostrar uma tela dizendo **"O Windows protegeu seu computador"**.
+
+            Isso e **normal** para programas baixados da internet. Para continuar:
+
+            1. Clique em **"Mais informacoes"** (embaixo)
+            2. Clique em **"Executar mesmo assim"**
+
+            O programa e seguro — nao contem virus.
+            """)
+
+        st.markdown("#### Passo 4: Primeira configuracao")
+        st.markdown("""
+        Na primeira vez, o programa instala automaticamente o **navegador Chromium** (cerca de 180MB).
+
+        - Isso demora **aproximadamente 2 minutos**
+        - So acontece **uma unica vez**
+        - **Nao feche a janela** enquanto estiver baixando
+        - Aguarde ate ver a mensagem **"[OK] Navegador instalado com sucesso!"**
+        """)
+
+        st.markdown("#### Passo 5: Colar a chave de licenca")
+        st.markdown("""
+        O programa vai pedir sua chave de licenca.
+
+        1. **Volte para o email** que voce recebeu quando assinou
+        2. **Selecione a chave** (clique e arraste o mouse sobre ela)
+        3. **Copie** — pressione `Ctrl+C` ou clique com o botao direito e escolha "Copiar"
+        4. **Cole no programa** — pressione `Ctrl+V` ou clique com o botao direito e escolha "Colar"
+
+        A chave e salva automaticamente — **nas proximas vezes nao precisa colar de novo**.
+        """)
+
+        st.info("Dica: Se o programa nao aceitar a chave, verifique se nao copiou espacos extras antes ou depois.")
+
+        st.markdown("#### Passo 6: Informar o CPF")
+        st.markdown("""
+        Digite o CPF que voce usa para acessar o SGE.
+
+        - Digite **so numeros** — sem pontos, sem traco, sem espacos
+        - Exemplo: `12345678901` (11 numeros)
+        - O CPF tambem e salvo automaticamente
+        """)
+
+        st.markdown("#### Passo 7: Configurar escola, turma e trimestre")
+        st.markdown("""
+        O programa vai perguntar:
+
+        | Campo | O que digitar | Exemplo |
+        |-------|---------------|---------|
+        | Escola | Nome como aparece no SGE | Escola Municipal ABC |
+        | Turno | Manha, Tarde ou Noite | Manha |
+        | Turma | Serie e turma | 5o Ano A |
+        | Trimestre | Qual trimestre | 1o Trimestre |
+
+        Se nao souber, pressione **Enter** para usar o valor padrao.
+        Essas configuracoes sao salvas — na proxima vez nao precisa digitar tudo de novo.
+        """)
+
+        st.markdown("#### Passo 8: Escolher o tipo de lancamento")
+        st.markdown("""
+        - Digite **`1`** para **Lancar Notas**
+        - Digite **`2`** para **Lancar Plano de Aula**
+        """)
+
+        st.markdown("---")
+        st.markdown("### Como preparar suas notas")
+
+        st.markdown("#### Opcao 1: Planilha Excel (.xlsx)")
+        st.markdown("""
+        1. Abra o **Excel** (ou o WPS Office, LibreOffice, Google Sheets)
+        2. Crie uma planilha com **duas colunas**:
+
+        | Aluno | Nota |
+        |-------|------|
+        | Maria Silva | 8.5 |
+        | Joao Santos | 7.0 |
+        | Ana Oliveira | 9.2 |
+        | Pedro Costa | 6.0 |
+
+        3. Salve como **`.xlsx`** ou **`.csv`**
+        4. Coloque o arquivo na pasta **Documents** ou na **Area de Trabalho** para encontrar facilmente
+        """)
+
+        st.markdown("#### Opcao 2: Google Sheets (online)")
+        st.markdown("""
+        1. Acesse **sheets.google.com**
+        2. Crie uma nova planilha
+        3. Na primeira linha, digite: `Aluno` na coluna A e `Nota` na coluna B
+        4. Preencha com os nomes e notas dos alunos
+        5. Clique em **"Compartilhar"** (canto superior direito)
+        6. Em "Quem tem acesso", clique em **"Qualquer pessoa com o link"**
+        7. Clique em **"Copiar link"**
+        8. Cole o link quando o programa pedir o caminho do arquivo
+        """)
+
+        st.markdown("#### Opcao 3: Imagem / Foto")
+        st.markdown("""
+        Se voce tiver uma **foto ou print das notas** (por exemplo, uma foto de um caderno ou tela), o programa pode ler a imagem automaticamente e extrair as notas.
+
+        Basta informar o caminho da imagem quando o programa pedir.
+
+        *Nota: esta funcionalidade requer configuracao de IA (Gemini, GPT-4o ou Ollama).*
+        """)
+
+        st.markdown("---")
+        st.markdown("### Perguntas Frequentes")
+
+        with st.expander("O programa e seguro?", expanded=False):
+            st.markdown("""
+            Sim. O BotDoProfessor roda apenas no seu computador, nao envia seus dados para terceiros, e o codigo e aberto (pode ser verificado).
+            """)
+
+        with st.expander("Preciso de internet?", expanded=False):
+            st.markdown("""
+            Sim. O programa precisa de internet para conectar no SGE e lancar as notas.
+            """)
+
+        with st.expander("Funciona em qualquer escola?", expanded=False):
+            st.markdown("""
+            Funciona em escolas que usam o sistema **SGE**. Se a sua escola usa outro sistema, entre em contato conosco.
+            """)
+
+        with st.expander("Posso usar em mais de um computador?", expanded=False):
+            st.markdown("""
+            Sim, mas a chave de licenca esta vinculada a um numero limitado de maquinas. Se precisar trocar de computador, entre em contato.
+            """)
+
+        with st.expander("O programa lembra minhas configuracoes?", expanded=False):
+            st.markdown("""
+            Sim! Na segunda vez que voce usar, basta digitar `1` ou `2` e ele ja sabe a escola, turma, trimestre e CPF.
+            """)
+
+        with st.expander("Deu erro! O que faco?", expanded=False):
+            st.markdown("""
+            Verifique se:
+            - A chave foi colada corretamente (sem espacos extras)
+            - O CPF esta correto (11 numeros, sem pontos)
+            - A planilha tem as colunas "Aluno" e "Nota"
+            - Os nomes dos alunos estao iguais aos do SGE
+
+            Se nao resolver, envie um email para **labintelligenceappoiments@gmail.com**
+            """)
+
+        with st.expander("Como alterar minha senha?", expanded=False):
+            st.markdown("""
+            No painel administrativo, va em **Usuarios** e solicite a alteracao de senha junto ao administrador.
+            """)
+
+        st.markdown("---")
+        st.markdown("### Precisa de ajuda?")
+        st.markdown("""
+        - **Email:** labintelligenceappoiments@gmail.com
+        - **Responda o email** que voce recebeu com a chave de licenca
+        - **Guarde este email** — ele contem sua chave e todas as instrucoes
+        """)
 
     st.divider()
     st.subheader("Usuarios")

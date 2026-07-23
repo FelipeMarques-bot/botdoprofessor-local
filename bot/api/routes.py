@@ -61,6 +61,7 @@ def login():
     if not user or not user.check_password(password):
         AuditLog.log(None, "login_failed", target=username, status="denied",
                       ip=request.remote_addr)
+        print(f"[LOGIN FAIL] user={username} ip={request.remote_addr}")
         return jsonify({"error": "Credenciais invalidas"}), 401
 
     if not user.active:
@@ -71,6 +72,7 @@ def login():
 
     token = generate_token(user)
     AuditLog.log(user.id, "login", status="success", ip=request.remote_addr)
+    print(f"[LOGIN OK] user={username} id={user.id} token_version={user.token_version} ip={request.remote_addr}")
     return jsonify({"token": token, "user": user.to_dict()})
 
 

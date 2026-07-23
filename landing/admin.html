@@ -368,7 +368,7 @@ async function api(method, path, body) {
     if (body) opts.body = JSON.stringify(body);
     const resp = await fetch(API + path, opts);
     const data = await resp.json();
-    if (resp.status === 401) { doLogout(); throw new Error('Sessao expirada'); }
+    if (resp.status === 401) { doLogout(); throw new Error(data.error || 'Sessao expirada'); }
     if (resp.status === 429) {
         const msg = data.error || 'Muitas tentativas. Aguarde.';
         toast(msg, 'error');
@@ -790,7 +790,12 @@ if (token) {
         } else {
             doLogout();
         }
-    }).catch(() => doLogout());
+    }).catch(e => {
+        doLogout();
+        const errEl = document.getElementById('loginErr');
+        errEl.textContent = 'Sessao expirada. Faca login novamente.';
+        errEl.style.display = 'block';
+    });
 }
 </script>
 </body>

@@ -51,7 +51,7 @@ def public_validate_license():
 
 
 @auth_bp.route("/login", methods=["POST"])
-@rate_limit(max_attempts=5, window=300)
+@rate_limit(max_attempts=15, window=120)
 def login():
     data = request.get_json() or {}
     username = data.get("username", "")
@@ -83,7 +83,7 @@ def me():
 
 @auth_bp.route("/change-password", methods=["POST"])
 @require_auth
-@rate_limit(max_attempts=3, window=600)
+@rate_limit(max_attempts=5, window=300)
 def change_password():
     data = request.get_json() or {}
     old_pw = data.get("old_password", "")
@@ -108,7 +108,7 @@ def change_password():
 
 @auth_bp.route("/change-username", methods=["POST"])
 @require_auth
-@rate_limit(max_attempts=3, window=600)
+@rate_limit(max_attempts=5, window=300)
 def change_username():
     data = request.get_json() or {}
     password = data.get("password", "")

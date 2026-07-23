@@ -13,6 +13,7 @@ def generate_token(user: User) -> str:
         "user_id": user.id,
         "username": user.username,
         "profile": user.profile,
+        "token_version": getattr(user, "token_version", 0),
         "exp": datetime.utcnow() + timedelta(hours=24),
         "iat": datetime.utcnow(),
     }
@@ -39,6 +40,13 @@ def require_auth(f):
         user = User.query.get(payload["user_id"])
         if not user or not user.active:
             return jsonify({"error": "Usuario inativo"}), 401
+
+        stored_version = getattr(user, "token_version", 0)
+        token_version = payload.get("token_version", 0)
+        if stored_version != token_version:
+            AuditLog.log(user.id, "token_reused_after_invalidation",
+                         status="denied", ip=request.remote_addr)
+            return jsonify({"error": "Sessao invalidada. Faca login novamente."}), 401
 
         g.current_user = user
         return f(*args, **kwargs)

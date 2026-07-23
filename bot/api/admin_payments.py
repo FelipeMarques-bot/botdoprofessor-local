@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify, g
 from bot.models.database import db
 from bot.models.payment_request import PaymentRequest
 from bot.models.license import License
+from bot.models.audit import AuditLog
 from bot.security.auth import require_auth, require_permission
 
 admin_payments_bp = Blueprint("admin_payments", __name__, url_prefix="/api/admin/payments")
@@ -107,6 +108,11 @@ def approve_payment(payment_id):
     payment.admin_notes = data.get("notes", payment.admin_notes)
     db.session.commit()
 
+    AuditLog.log(g.current_user.id, "approve_payment",
+                  target=f"Payment #{payment_id} ({payment.name})",
+                  details=f"Plano: {payment.plan}, Chave: {license_key[:16]}...",
+                  status="success", ip=request.remote_addr)
+
     _send_license_email(
         email=payment.email,
         name=payment.name,
@@ -131,6 +137,10 @@ def reject_payment(payment_id):
     payment.status = "rejected"
     payment.admin_notes = data.get("notes", payment.admin_notes)
     db.session.commit()
+
+    AuditLog.log(g.current_user.id, "reject_payment",
+                  target=f"Payment #{payment_id} ({payment.name})",
+                  status="success", ip=request.remote_addr)
 
     return jsonify({"message": "Pagamento rejeitado", "payment": payment.to_dict()})
 
@@ -223,6 +233,10 @@ def create_manual_subscription():
     db.session.add(payment)
     db.session.commit()
 
+    AuditLog.log(g.current_user.id, "create_manual_subscription",
+                  target=f"{name} ({email})", details=f"Plano: {plan}",
+                  status="success", ip=request.remote_addr)
+
     _send_license_email(email, name, license_key, plan)
 
     return jsonify({
@@ -253,6 +267,11 @@ def revoke_subscription(payment_id):
         if lic:
             lic.active = False
             db.session.commit()
+
+    AuditLog.log(g.current_user.id, "revoke_subscription",
+                  target=f"Payment #{payment_id} ({payment.name})",
+                  details=f"Motivo: {reason}", status="success",
+                  ip=request.remote_addr)
 
     return jsonify({
         "message": "Assinatura revogada",

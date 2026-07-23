@@ -312,8 +312,114 @@ def get_context():
     return {"escola": escola, "turno": turno, "turma": turma, "trimestre": trimestre}
 
 
+def is_gdrive_url(url):
+    return bool(re.search(r"drive\.google\.com", url))
+
+
 def is_gsheets_url(url):
     return bool(re.search(r"docs\.google\.com/spreadsheets", url))
+
+
+def is_image_file(filepath):
+    ext = Path(filepath).suffix.lower()
+    return ext in (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff")
+
+
+def is_pdf_url(url):
+    return bool(re.search(r"(drive\.google\.com|\.pdf)", url, re.IGNORECASE))
+
+
+def download_pdf_from_url(url, name_hint="plano_aula.pdf"):
+    """Download PDF from URL (Google Drive or direct link)."""
+    import re as _re
+    dl_url = url
+    m = _re.search(
+        r"(?:drive\.google\.com/file/d/|drive\.google\.com/open\?id=|drive\.google\.com/uc\?id=)([a-zA-Z0-9_-]+)",
+        url,
+    )
+    if m:
+        dl_url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+
+    base_name = (name_hint or "plano_aula.pdf").strip()
+    if not base_name.lower().endswith(".pdf"):
+        base_name = f"{base_name}.pdf"
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", base_name)
+    tmp_dir = tempfile.mkdtemp(prefix="plano_aula_")
+    target = os.path.join(tmp_dir, safe_name)
+
+    print(f"[i] Baixando PDF de: {url[:80]}...")
+    req = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        data = resp.read()
+    with open(target, "wb") as f:
+        f.write(data)
+    print(f"[OK] PDF baixado ({len(data)} bytes)")
+    return target
+
+
+def extract_grades_from_photo(image_path):
+    """Extract grades from a photo using AI vision."""
+    from bot.utils.image_grade_extractor import extract_grades_from_image, is_available
+
+    if not os.environ.get("AI_PROVIDER"):
+        from ai_assist import _is_ollama_running, _find_ollama_exe, OLLAMA_MODEL
+        if _is_ollama_running():
+            os.environ["AI_PROVIDER"] = "ollama"
+            os.environ.setdefault("OLLAMA_MODEL", OLLAMA_MODEL)
+        else:
+            exe = _find_ollama_exe()
+            if exe:
+                os.environ["AI_PROVIDER"] = "ollama"
+                os.environ.setdefault("OLLAMA_MODEL", OLLAMA_MODEL)
+
+    if not is_available():
+        print("[ER] IA visual nao configurada.")
+        print()
+        print("  Para usar extração de notas por foto, configure:")
+        print("  - GEMINI_API_KEY (para Google Gemini)")
+        print("  - OPENAI_API_KEY (para GPT-4o)")
+        print("  - ANTHROPIC_API_KEY (para Claude)")
+        print("  - Ollama com modelo de visao (para uso local)")
+        print()
+        print("  Ou prepare uma planilha CSV/Excel com as notas.")
+        return []
+
+    print(f"[i] Lendo imagem: {image_path}")
+    try:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+    except Exception as e:
+        print(f"[ER] Falha ao ler imagem: {e}")
+        return []
+
+    print("[i] Enviando para analise de IA (pode levar 10-30 segundos)...")
+    result = extract_grades_from_image(image_bytes, logger=lambda m: print(f"  {m}"))
+
+    if result.get("error"):
+        print(f"[ER] {result['error']}")
+        return []
+
+    alunos = result.get("alunos", [])
+    confianca = result.get("confianca", "?")
+    total = result.get("total_encontrados", len(alunos))
+
+    if not alunos:
+        print("[ER] Nenhum aluno/nota encontrada na imagem.")
+        obs = result.get("observacoes", "")
+        if obs:
+            print(f"  Observacao: {obs}")
+        return []
+
+    print(f"[OK] {total} alunos encontrados (confianca: {confianca})")
+    print()
+    print("  Alunos encontrados:")
+    for i, a in enumerate(alunos[:10], 1):
+        print(f"    {i:2d}. {a['aluno']:<30s} | {a['nota']}")
+    if len(alunos) > 10:
+        print(f"    ... e mais {len(alunos) - 10} alunos")
+    print()
+
+    return [{"aluno": a["aluno"], "nota": a["nota"]} for a in alunos]
 
 
 def download_gsheets_as_csv(url):
@@ -407,6 +513,7 @@ def print_grades_help():
     print("    - CSV separado por virgula ou ponto-e-virgula")
     print("    - Excel (.xlsx)")
     print("    - Google Sheets (cole o link da planilha)")
+    print("    - Foto/imagem da lista de notas (JPG, PNG)")
     print()
 
 
@@ -418,6 +525,7 @@ def execute_grades(cpf, context):
     print()
     print("  [1] Importar de arquivo (recomendado)")
     print("  [2] Digitar notas manualmente")
+    print("  [3] Enviar foto/imagem da lista de notas")
     print()
 
     choice = input("  Opcao: ").strip()
@@ -438,6 +546,31 @@ def execute_grades(cpf, context):
                 grades.append({"aluno": parts[0].strip(), "nota": parts[1].strip()})
             else:
                 print("  [!] Formato: Nome do Aluno;Nota  (ex: Maria Silva;8.5)")
+    elif choice == "3":
+        print()
+        print("  Informe o caminho da foto/imagem da lista de notas.")
+        print("  Formatos aceitos: JPG, PNG, BMP, WEBP")
+        print("  (Arraste o arquivo aqui ou cole o caminho completo)")
+        print()
+        filepath = input("  Imagem: ").strip().strip('"')
+
+        if not filepath:
+            print("[ER] Nenhum arquivo informado.")
+            return
+
+        if not os.path.isfile(filepath):
+            print(f"[ER] Arquivo nao encontrado: {filepath}")
+            return
+
+        if not is_image_file(filepath):
+            print(f"[ER] Formato nao suportado: {Path(filepath).suffix}")
+            print("[i] Use JPG, PNG, BMP ou WEBP")
+            return
+
+        grades = extract_grades_from_photo(filepath)
+        if not grades:
+            return
+        print(f"[OK] {len(grades)} notas extraidas da imagem.")
     else:
         print()
         print("  Cole o caminho do arquivo ou o link do Google Sheets:")
@@ -562,18 +695,37 @@ def execute_lesson_plan(cpf, context):
     n_aulas = int(n_aulas) if n_aulas.isdigit() else 1
 
     print()
-    print("  Se tiver um PDF do plano de aula, informe o caminho abaixo.")
+    print("  Se tiver um PDF do plano de aula, informe o caminho ou URL abaixo.")
+    print("  Aceita: arquivo local, link do Google Drive, ou URL direta de PDF.")
     print("  Se nao tiver, pressione Enter para pular.")
     print()
-    pdf_path = input("  Caminho do PDF (vazio para pular): ").strip().strip('"')
-    if pdf_path and not os.path.isfile(pdf_path):
-        print(f"[ER] Arquivo nao encontrado: {pdf_path}")
-        pdf_path = ""
+    pdf_input = input("  Caminho/URL do PDF (vazio para pular): ").strip().strip('"')
+
+    pdf_path = ""
+    if pdf_input:
+        if pdf_input.startswith("http://") or pdf_input.startswith("https://"):
+            if is_gdrive_url(pdf_input) or is_pdf_url(pdf_input):
+                try:
+                    pdf_path = download_pdf_from_url(pdf_input, titulo)
+                except Exception as e:
+                    print(f"[ER] Falha ao baixar PDF: {e}")
+                    pdf_path = ""
+            else:
+                print("[ER] URL nao parece ser um link de PDF ou Google Drive.")
+                print("[i] Use links do tipo: https://drive.google.com/file/d/...")
+                pdf_path = ""
+        elif os.path.isfile(pdf_input):
+            pdf_path = pdf_input
+        else:
+            print(f"[ER] Arquivo nao encontrado: {pdf_input}")
+            pdf_path = ""
 
     print()
     print(f"  Criando plano: {titulo}")
     print(f"  Periodo: {data_inicio} a {data_fim}")
     print(f"  Aulas: {n_aulas}")
+    if pdf_path:
+        print(f"  PDF: {os.path.basename(pdf_path)}")
 
     from bot.core.sge_adapter import SGEAdapter
     from bot.core.portal_adapter import PortalContext, LessonPlan
@@ -633,6 +785,67 @@ def execute_lesson_plan(cpf, context):
         adapter.stop()
 
 
+def setup_ollama_if_needed():
+    """Verifica e instala Ollama + modelo de visao se necessario."""
+    print("=" * 56)
+    print("  Verificando IA local (Ollama)...")
+    print("=" * 56)
+    print()
+
+    from ai_assist import (
+        _find_ollama_exe, _is_ollama_running, _is_ollama_installed,
+        _is_model_available, setup_ollama, _get_available_ram_gb,
+        OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL,
+    )
+
+    os.environ.setdefault("AI_PROVIDER", "ollama")
+    os.environ.setdefault("OLLAMA_MODEL", OLLAMA_MODEL)
+    os.environ.setdefault("OLLAMA_FALLBACK_MODEL", OLLAMA_FALLBACK_MODEL)
+
+    if _is_ollama_running() and _is_model_available(OLLAMA_MODEL):
+        print("[OK] Ollama rodando com modelo de visao")
+        print()
+        return
+
+    avail_ram = _get_available_ram_gb()
+    print(f"[i] RAM disponivel: {avail_ram:.1f} GB")
+
+    if avail_ram < 4.0:
+        print("[!!] RAM insuficiente para IA local (minimo 4GB)")
+        print("[i] A extração de notas por foto nao estara disponivel.")
+        print("[i] Use planilhas CSV/Excel ou Google Sheets como alternativa.")
+        print()
+        return
+
+    print()
+    print("  Para usar a extracao de notas por foto, e necessario")
+    print("  instalar o Ollama (IA local, gratuito, roda no seu PC).")
+    print()
+    print("  Isso leva cerca de 3-5 minutos na primeira vez.")
+    print("  O modelo de visao tem ~1.5GB.")
+    print()
+
+    confirm = input("  Instalar Ollama e modelo de IA? (S/n): ").strip().lower()
+    if confirm == "n":
+        print("[i] Pulando instalacao. A extração por foto nao estara disponivel.")
+        print()
+        return
+
+    print()
+    success = setup_ollama(logger=lambda m: print(f"  {m}"))
+
+    if success:
+        print()
+        print("[OK] Ollama configurado com sucesso!")
+        print("[i] A extração de notas por foto estara disponivel.")
+    else:
+        print()
+        print("[!!] Falha na configuracao do Ollama.")
+        print("[i] A extração por foto nao estara disponivel.")
+        print("[i] Voce pode instalar manualmente depois: https://ollama.com")
+    print()
+
+
 def main():
     setup_logging()
     clear()
@@ -653,6 +866,8 @@ def main():
 
     print("[OK] Componentes configurados")
     print()
+
+    setup_ollama_if_needed()
 
     license_key = get_license_key()
     print()

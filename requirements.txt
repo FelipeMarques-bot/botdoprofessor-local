@@ -9,3 +9,4 @@ google-generativeai>=0.5
 openai>=1.30
 anthropic>=0.25
 mercadopago>=2.0
+python-dotenv>=1.0

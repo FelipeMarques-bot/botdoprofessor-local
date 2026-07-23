@@ -33,13 +33,15 @@ class PaymentService:
 
     def __init__(self):
         self._sdk = None
+        self._access_token = ""
         access_token = os.environ.get("MP_ACCESS_TOKEN", "")
+        self._access_token = access_token
         if access_token and mercadopago:
             self._sdk = mercadopago.SDK(access_token)
 
     def create_preference(self, plan: str, name: str, email: str, cpf: str,
                           payment_method: str = "card") -> Dict:
-        """Cria preferencia de pagamento no Mercado Pago."""
+        """Cria pagamento via Mercado Pago."""
         plan_info = self.PLANS.get(plan)
         if not plan_info:
             return {"error": "Plano desconhecido"}
@@ -47,6 +49,60 @@ class PaymentService:
         if not self._sdk:
             return self._create_manual_payment(plan, name, email, cpf, payment_method)
 
+        cpf_clean = cpf.replace(".", "").replace("-", "")
+        ext_ref = self._generate_external_ref(plan, email, cpf)
+
+        if payment_method == "pix":
+            return self._create_pix_payment(plan_info, name, email, cpf_clean, ext_ref)
+
+        return self._create_checkout_preference(plan, plan_info, name, email, cpf_clean, ext_ref)
+
+    def _create_pix_payment(self, plan_info, name, email, cpf, ext_ref):
+        """Cria pagamento Pix direto via API (sem checkout redirect)."""
+        try:
+            payment_data = {
+                "transaction_amount": plan_info["preco"],
+                "description": f"BotDoProfessor - Plano {plan_info['label']}",
+                "payment_method_id": "pix",
+                "payer": {
+                    "first_name": name.split()[0] if name else "Cliente",
+                    "last_name": " ".join(name.split()[1:]) if name and len(name.split()) > 1 else "BotDoProfessor",
+                    "email": email,
+                    "identification": {
+                        "type": "CPF",
+                        "number": cpf,
+                    },
+                },
+                "external_reference": ext_ref,
+            }
+
+            result = self._sdk.payment().create(payment_data)
+            response = result.get("response", {})
+            point_of_interaction = response.get("point_of_interaction", {})
+            transaction_data = point_of_interaction.get("transaction_data", {})
+            qr_code_base64 = transaction_data.get("qr_code_base64", "")
+            qr_code = transaction_data.get("ticket_url", "")
+            payment_id = response.get("id")
+
+            if not qr_code_base64 and not qr_code:
+                return {"error": "Nao foi possivel gerar QR Code Pix"}
+
+            self._save_payment_by_id(plan_info, name, email, cpf, ext_ref, "mercadopago_pix", payment_id)
+
+            self._create_db_payment_request(ext_ref, name, email, cpf, plan_info["preco"], "pix")
+
+            return {
+                "qr_code_base64": qr_code_base64,
+                "qr_code": qr_code,
+                "payment_id": payment_id,
+                "amount": plan_info["preco"],
+            }
+
+        except Exception as e:
+            return {"error": f"Erro ao criar pagamento Pix: {str(e)}"}
+
+    def _create_checkout_preference(self, plan, plan_info, name, email, cpf, ext_ref):
+        """Cria preferencia de checkout (cartao/redirect)."""
         try:
             preference_data = {
                 "items": [{
@@ -61,11 +117,15 @@ class PaymentService:
                     "email": email,
                     "identification": {
                         "type": "CPF",
-                        "number": cpf.replace(".", "").replace("-", ""),
+                        "number": cpf,
                     },
                 },
-                "payment_methods": {},
-                "external_reference": self._generate_external_ref(plan, email, cpf),
+                "payment_methods": {
+                    "excluded_payment_types": [
+                        {"id": "ticket"},
+                    ],
+                },
+                "external_reference": ext_ref,
                 "notification_url": f"{os.environ.get('APP_URL', 'http://localhost:5000')}/api/webhook/mercadopago",
                 "back_urls": {
                     "success": f"{os.environ.get('APP_URL', 'http://localhost:5000')}/success",
@@ -75,19 +135,13 @@ class PaymentService:
                 "auto_return": "approved",
             }
 
-            if payment_method == "pix":
-                preference_data["payment_methods"]["excluded_payment_types"] = [
-                    {"id": "credit_card"},
-                    {"id": "debit_card"},
-                    {"id": "ticket"},
-                ]
-            elif payment_method == "card":
-                preference_data["payment_methods"]["excluded_payment_types"] = [
-                    {"id": "ticket"},
-                ]
-
             result = self._sdk.preference().create(preference_data)
-            init_point = result.get("response", {}).get("init_point", "")
+            response = result.get("response", {})
+            is_test = self._access_token.startswith("TEST-")
+            if is_test:
+                init_point = response.get("sandbox_init_point") or response.get("init_point", "")
+            else:
+                init_point = response.get("init_point", "")
 
             self._save_payment(plan, email, cpf, name, "mercadopago", init_point)
 
@@ -105,6 +159,8 @@ class PaymentService:
 
         ref = self._generate_external_ref(plan, email, cpf)
         self._save_payment(plan, email, cpf, name, "manual_pix", ref, status="pending")
+
+        self._create_db_payment_request(plan, name, email, cpf, plan_info["preco"], "pix")
 
         return {
             "qr_code": pix_payload,
@@ -426,3 +482,39 @@ class PaymentService:
         ref = hashlib.sha256(f"{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
         with open(DATA_DIR / f"{ref}.json", "w", encoding="utf-8") as f:
             json.dump(info, f, indent=2, ensure_ascii=False)
+
+    def _save_payment_by_id(self, plan_info, name, email, cpf, ext_ref, method, mp_payment_id):
+        info = {
+            "plan": plan_info.get("label", ""),
+            "email": email,
+            "cpf": cpf,
+            "name": name,
+            "method": method,
+            "reference": ext_ref,
+            "mp_payment_id": mp_payment_id,
+            "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        with open(DATA_DIR / f"{ext_ref}.json", "w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _create_db_payment_request(plan, name, email, cpf, amount, payment_method):
+        try:
+            from flask import current_app
+            from bot.models.database import db
+            from bot.models.payment_request import PaymentRequest
+            if not current_app:
+                return
+            reference = hashlib.sha256(
+                f"{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()
+            ).hexdigest()[:16]
+            pr = PaymentRequest(
+                name=name, email=email, cpf=cpf, plan=plan,
+                amount=float(amount), payment_method=payment_method,
+                reference=reference, status="pending",
+            )
+            db.session.add(pr)
+            db.session.commit()
+        except Exception as e:
+            print(f"[DB WARN] Falha ao criar PaymentRequest: {e}")

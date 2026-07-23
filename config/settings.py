@@ -6,10 +6,14 @@ DATA_DIR = BASE_DIR / "data"
 LOGS_DIR = BASE_DIR / "logs"
 EVIDENCIAS_DIR = BASE_DIR / "evidencias"
 
-SQLALCHEMY_DATABASE_URI = os.environ.get(
-    "DATABASE_URL",
-    f"sqlite:///{DATA_DIR / 'bot_local.db'}"
-)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+_db_url = os.environ.get("DATABASE_URL", "")
+if not _db_url or _db_url.startswith("sqlite:///data/"):
+    SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATA_DIR / 'bot_local.db'}"
+else:
+    SQLALCHEMY_DATABASE_URI = _db_url
 SQLALCHEMY_TRACK_MODIFICATIONS = False
 SECRET_KEY = os.environ.get("SECRET_KEY", "bot-local-change-in-production")
 

@@ -3,6 +3,8 @@ import smtplib
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from flask import Blueprint, request, jsonify, g
 from bot.models.database import db
 from bot.models.payment_request import PaymentRequest
@@ -101,6 +103,13 @@ def approve_payment(payment_id):
 
     from bot.core.license_service import LicenseService
     license_key = data.get("license_key", LicenseService.generate_key())
+
+    lic = License.create(
+        user_id=g.current_user.id,
+        plan=payment.plan,
+        key=license_key,
+    )
+    db.session.add(lic)
 
     payment.status = "approved"
     payment.license_key = license_key
@@ -216,6 +225,13 @@ def create_manual_subscription():
     from bot.core.license_service import LicenseService
     reference = hashlib.sha256(f"manual_{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
     license_key = LicenseService.generate_key()
+
+    lic = License.create(
+        user_id=g.current_user.id,
+        plan=plan,
+        key=license_key,
+    )
+    db.session.add(lic)
 
     payment = PaymentRequest(
         name=name,
@@ -405,6 +421,22 @@ def _send_license_email(email, name, license_key, plan):
     """
 
     msg.attach(MIMEText(html, "html"))
+
+    from config.settings import BASE_DIR
+    exe_path = BASE_DIR / "dist" / "BotDoProfessor.exe"
+    if exe_path.exists():
+        try:
+            with open(exe_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename=BotDoProfessor.exe",
+            )
+            msg.attach(part)
+        except Exception as e:
+            print(f"[EMAIL ATTACH ERROR] {e}")
 
     try:
         import socket

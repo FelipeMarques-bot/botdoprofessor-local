@@ -244,9 +244,9 @@ class PaymentService:
         smtp_user = os.environ.get("SMTP_USER", "")
         smtp_pass = os.environ.get("SMTP_PASS", "")
 
-        if not smtp_user:
-            print(f"[EMAIL SKIP] Chave para {email}: {license_key}")
-            return
+        if not smtp_user or not smtp_pass:
+            print(f"[EMAIL SKIP] SMTP nao configurado (USER={'ok' if smtp_user else 'vazio'}, PASS={'ok' if smtp_pass else 'vazio'}). Chave para {email}: {license_key}")
+            return False
 
         plan_info = self.PLANS.get(plan, {})
         msg = MIMEMultipart()
@@ -529,8 +529,11 @@ class PaymentService:
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, email, msg.as_string())
             server.quit()
+            print(f"[EMAIL OK] Chave enviada para {email}")
+            return True
         except Exception as e:
-            print(f"[EMAIL ERROR] {e}")
+            print(f"[EMAIL ERROR] Falha ao enviar email para {email}: {e}")
+            return False
 
     def verify_manual_payment(self, reference: str) -> Dict:
         """Verifica se pagamento manual foi confirmado."""

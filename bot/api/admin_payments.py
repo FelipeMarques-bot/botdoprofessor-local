@@ -122,7 +122,7 @@ def approve_payment(payment_id):
                   details=f"Plano: {payment.plan}, Chave: {license_key[:16]}...",
                   status="success", ip=request.remote_addr)
 
-    _send_license_email(
+    email_sent = _send_license_email(
         email=payment.email,
         name=payment.name,
         license_key=license_key,
@@ -132,6 +132,7 @@ def approve_payment(payment_id):
     return jsonify({
         "message": "Pagamento aprovado e email enviado",
         "license_key": license_key,
+        "email_sent": email_sent,
         "payment": payment.to_dict(),
     })
 
@@ -233,12 +234,14 @@ def create_manual_subscription():
     )
     db.session.add(lic)
 
+    plan_amount = PLANOS[plan].get("preco", 0)
+
     payment = PaymentRequest(
         name=name,
         email=email,
         cpf=cpf,
         plan=plan,
-        amount=0,
+        amount=float(plan_amount),
         payment_method="manual",
         status="approved",
         license_key=license_key,
@@ -253,11 +256,12 @@ def create_manual_subscription():
                   target=f"{name} ({email})", details=f"Plano: {plan}",
                   status="success", ip=request.remote_addr)
 
-    _send_license_email(email, name, license_key, plan)
+    email_sent = _send_license_email(email, name, license_key, plan)
 
     return jsonify({
         "message": "Assinatura criada com sucesso",
         "license_key": license_key,
+        "email_sent": email_sent,
         "payment": payment.to_dict(),
     }), 201
 
@@ -301,9 +305,9 @@ def _send_license_email(email, name, license_key, plan):
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_PASS", "")
 
-    if not smtp_user:
-        print(f"[EMAIL SKIP] Chave para {email}: {license_key}")
-        return
+    if not smtp_user or not smtp_pass:
+        print(f"[EMAIL SKIP] SMTP nao configurado (USER={'ok' if smtp_user else 'vazio'}, PASS={'ok' if smtp_pass else 'vazio'}). Chave para {email}: {license_key}")
+        return False
 
     from config.settings import PLANOS
     plan_info = PLANOS.get(plan, {})
@@ -591,5 +595,7 @@ def _send_license_email(email, name, license_key, plan):
         server.sendmail(smtp_user, email, msg.as_string())
         server.quit()
         print(f"[EMAIL OK] Chave enviada para {email}")
+        return True
     except Exception as e:
-        print(f"[EMAIL ERROR] {e}")
+        print(f"[EMAIL ERROR] Falha ao enviar email para {email}: {e}")
+        return False

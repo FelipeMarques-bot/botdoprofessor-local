@@ -127,18 +127,11 @@ def _seed_initial_admin(app):
             else:
                 print(f"[SEED] Admin '{admin_user}' OK (id={existing.id})")
         else:
-            if User.query.count() == 0:
-                admin = User(username=admin_user, email=admin_email, profile="admin")
-                admin.set_password(admin_pass)
-                db.session.add(admin)
-                db.session.commit()
-                print(f"[SEED] Admin criado: {admin_user} / {admin_pass}")
-            else:
-                admin = User(username=admin_user, email=admin_email, profile="admin")
-                admin.set_password(admin_pass)
-                db.session.add(admin)
-                db.session.commit()
-                print(f"[SEED] Admin criado (existiam outros usuarios): {admin_user}")
+            admin = User(username=admin_user, email=admin_email, profile="admin")
+            admin.set_password(admin_pass)
+            db.session.add(admin)
+            db.session.commit()
+            print(f"[SEED] Admin criado: {admin_user} / {admin_pass}")
 
 
 if __name__ == "__main__":

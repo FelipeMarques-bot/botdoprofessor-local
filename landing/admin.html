@@ -176,8 +176,8 @@
         <div class="toolbar">
             <div class="filters">
                 <select id="filterStatus" onchange="loadPayments()">
-                    <option value="">Todos os status</option>
-                    <option value="pending" selected>Pendente</option>
+                    <option value="" selected>Todos os status</option>
+                    <option value="pending">Pendente</option>
                     <option value="contacted">Contatado</option>
                     <option value="approved">Aprovado</option>
                     <option value="rejected">Rejeitado</option>
@@ -674,15 +674,26 @@ async function confirmApprove() {
             return;
         }
         document.getElementById('approveResult').style.display = 'block';
-        document.getElementById('approveResult').innerHTML = `
-            <div class="license-box">
-                <div class="lbl">Chave de licenca gerada</div>
-                <div class="key">${esc(result.license_key)}</div>
-            </div>
-            <p style="color:#059669;font-size:.9em;margin-top:12px;text-align:center">Email enviado com sucesso!</p>
-        `;
+        if (result.email_sent === false) {
+            document.getElementById('approveResult').innerHTML = `
+                <div class="license-box">
+                    <div class="lbl">Chave de licenca gerada</div>
+                    <div class="key">${esc(result.license_key)}</div>
+                </div>
+                <p style="color:#f59e0b;font-size:.9em;margin-top:12px;text-align:center">Pagamento aprovado, mas o email NAO foi enviado. Verifique as configuracoes SMTP no .env (SMTP_PASS vazio).</p>
+            `;
+            toast('Aprovado, mas email nao enviado. Verifique SMTP.', 'error');
+        } else {
+            document.getElementById('approveResult').innerHTML = `
+                <div class="license-box">
+                    <div class="lbl">Chave de licenca gerada</div>
+                    <div class="key">${esc(result.license_key)}</div>
+                </div>
+                <p style="color:#059669;font-size:.9em;margin-top:12px;text-align:center">Email enviado com sucesso!</p>
+            `;
+            toast('Pagamento aprovado e email enviado!', 'success');
+        }
         btn.textContent = 'Aprovado!';
-        toast('Pagamento aprovado e email enviado!', 'success');
         loadAll();
     } catch(e) {
         toast('Erro ao aprovar', 'error');
@@ -759,7 +770,11 @@ async function createManualSub() {
             name, email, cpf, plan, notes
         });
         if (d.error) { toast(d.error, 'error'); return; }
-        toast('Assinatura criada! Chave: ' + d.license_key, 'success');
+        if (d.email_sent === false) {
+            toast('Assinatura criada, mas o email NAO foi enviado. Verifique as configuracoes SMTP no .env (SMTP_PASS vazio). Chave: ' + d.license_key, 'error');
+        } else {
+            toast('Assinatura criada e email enviado! Chave: ' + d.license_key, 'success');
+        }
         closeModal('manualSubModal');
         loadAll();
     } catch(e) { toast('Erro ao criar assinatura', 'error'); }

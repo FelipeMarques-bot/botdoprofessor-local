@@ -245,7 +245,7 @@ class PaymentService:
         smtp_pass = os.environ.get("SMTP_PASS", "")
 
         if not smtp_user or not smtp_pass:
-            print(f"[EMAIL SKIP] SMTP nao configurado (USER={'ok' if smtp_user else 'vazio'}, PASS={'ok' if smtp_pass else 'vazio'}). Chave para {email}: {license_key}")
+            print(f"[EMAIL SKIP] SMTP nao configurado (USER={'ok' if smtp_user else 'vazio'}, PASS={'ok' if smtp_pass else 'vazio'}). Chave para {email}: {license_key}", flush=True)
             return False
 
         plan_info = self.PLANS.get(plan, {})
@@ -521,7 +521,7 @@ class PaymentService:
                 )
                 msg.attach(part)
             except Exception as e:
-                print(f"[EMAIL ATTACH ERROR] {e}")
+                print(f"[EMAIL ATTACH ERROR] {e}", flush=True)
 
         try:
             server = smtplib.SMTP(smtp_host, smtp_port)
@@ -529,10 +529,10 @@ class PaymentService:
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, email, msg.as_string())
             server.quit()
-            print(f"[EMAIL OK] Chave enviada para {email}")
+            print(f"[EMAIL OK] Chave enviada para {email}", flush=True)
             return True
         except Exception as e:
-            print(f"[EMAIL ERROR] Falha ao enviar email para {email}: {e}")
+            print(f"[EMAIL ERROR] Falha ao enviar email para {email}: {e}", flush=True)
             return False
 
     def verify_manual_payment(self, reference: str) -> Dict:

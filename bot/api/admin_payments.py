@@ -1,10 +1,5 @@
 import os
-import smtplib
 from datetime import datetime
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
 from flask import Blueprint, request, jsonify, g
 from bot.models.database import db
 from bot.models.payment_request import PaymentRequest
@@ -300,23 +295,9 @@ def revoke_subscription(payment_id):
 
 
 def _send_license_email(email, name, license_key, plan):
-    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASS", "")
-
-    if not smtp_user or not smtp_pass:
-        print(f"[EMAIL SKIP] SMTP nao configurado (USER={'ok' if smtp_user else 'vazio'}, PASS={'ok' if smtp_pass else 'vazio'}). Chave para {email}: {license_key}", flush=True)
-        return False
-
     from config.settings import PLANOS
     plan_info = PLANOS.get(plan, {})
     plan_label = plan_info.get("label", plan)
-
-    msg = MIMEMultipart()
-    msg["From"] = smtp_user
-    msg["To"] = email
-    msg["Subject"] = f"BotDoProfessor — Sua chave de licenca ({plan_label})"
 
     download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
 
@@ -568,34 +549,7 @@ def _send_license_email(email, name, license_key, plan):
     </html>
     """
 
-    msg.attach(MIMEText(html, "html"))
+    subject = f"BotDoProfessor — Sua chave de licenca ({plan_label})"
 
-    from config.settings import BASE_DIR
-    exe_path = BASE_DIR / "dist" / "BotDoProfessor.exe"
-    if exe_path.exists():
-        try:
-            with open(exe_path, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition",
-                f"attachment; filename=BotDoProfessor.exe",
-            )
-            msg.attach(part)
-        except Exception as e:
-            print(f"[EMAIL ATTACH ERROR] {e}", flush=True)
-
-    try:
-        import socket
-        socket.setdefaulttimeout(10)
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.sendmail(smtp_user, email, msg.as_string())
-        server.quit()
-        print(f"[EMAIL OK] Chave enviada para {email}", flush=True)
-        return True
-    except Exception as e:
-        print(f"[EMAIL ERROR] Falha ao enviar email para {email}: {e}", flush=True)
-        return False
+    from bot.utils.email_sender import send_email
+    return send_email(email, subject, html)

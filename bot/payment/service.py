@@ -336,7 +336,7 @@ class PaymentService:
                 <div class="step-num">5</div>
                 <div class="step-text">
                     <strong>Configure e use</strong><br>
-                    No painel visual que abriu no navegador, preencha a URL do portal, CPF e senha. Escolha a origem das notas (Notion, Excel, CSV ou Google Sheets) e clique em <strong>"EXECUTAR LANCAMENTO"</strong>.
+                    No painel visual que abriu no navegador, preencha a URL do portal, CPF e senha. Escolha a origem das notas (Notion, Excel, CSV, Google Sheets ou Imagem/Foto) e clique em <strong>"EXECUTAR LANCAMENTO"</strong>.
                 </div>
             </div>
 

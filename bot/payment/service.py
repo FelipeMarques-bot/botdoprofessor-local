@@ -307,7 +307,7 @@ class PaymentService:
                 <div class="step-text">
                     <strong>Baixe o programa</strong><br>
                     Clique no link abaixo para baixar:<br>
-                    <a href="{download_url}/download/v1.1.0/BotDoProfessor-Streamlit.zip">Baixar BotDoProfessor-Streamlit.zip</a><br><br>
+                    <a href="https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/download/v1.1.0/BotDoProfessor-Streamlit.zip">Baixar BotDoProfessor-Streamlit.zip</a><br><br>
                     O arquivo e bem pequeno. sera salvo na pasta <strong>Downloads</strong>.
                 </div>
             </div>

@@ -23,12 +23,19 @@ echo.
 echo Gerando .exe...
 python -m PyInstaller ^
     --onefile ^
-    --windowed ^
     --name "BotDoProfessor" ^
     --add-data "painel.py;." ^
+    --add-data "lancar_notas_sge.py;." ^
+    --add-data "lancar_sequencia_didatica_sge.py;." ^
+    --add-data "leitor_planilhas.py;." ^
+    --add-data "ai_assist.py;." ^
+    --add-data "status_store.py;." ^
     --hidden-import "streamlit" ^
     --hidden-import "playwright" ^
-    painel.py
+    --hidden-import "playwright.sync_api" ^
+    --hidden-import "openpyxl" ^
+    --hidden-import "pandas" ^
+    launcher.py
 
 echo.
 if exist dist\BotDoProfessor.exe (

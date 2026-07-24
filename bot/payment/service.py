@@ -1,11 +1,6 @@
 import os
 import json
 import hashlib
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
@@ -238,24 +233,12 @@ class PaymentService:
         )
 
     def _send_license_email(self, email: str, name: str, license_key: str, plan: str):
-        """Envia email com a chave de licenca e instrucoes completas."""
-        smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-        smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-        smtp_user = os.environ.get("SMTP_USER", "")
-        smtp_pass = os.environ.get("SMTP_PASS", "")
-
-        if not smtp_user or not smtp_pass:
-            print(f"[EMAIL SKIP] SMTP nao configurado (USER={'ok' if smtp_user else 'vazio'}, PASS={'ok' if smtp_pass else 'vazio'}). Chave para {email}: {license_key}", flush=True)
-            return False
-
-        plan_info = self.PLANS.get(plan, {})
-        msg = MIMEMultipart()
-        msg["From"] = smtp_user
-        msg["To"] = email
-        msg["Subject"] = f"BotDoProfessor — Sua chave de licenca ({plan_info.get('label', plan)})"
+        """Envia email com a chave de licenca via Brevo API (fallback SMTP)."""
+        from config.settings import PLANOS
+        plan_info = PLANOS.get(plan, self.PLANS.get(plan, {}))
+        plan_label = plan_info.get("label", plan)
 
         download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
-        success_url = "https://botdoprofessor.onrender.com/success?key=" + license_key
 
         html = f"""
         <html>
@@ -303,7 +286,7 @@ class PaymentService:
             </div>
 
             <p style="text-align:center">
-                <a href="{success_url}" class="btn">Ver instrucoes completas</a>
+                <a href="{download_url}" class="btn">Baixar o programa</a>
             </p>
 
             <div class="section">
@@ -463,7 +446,7 @@ class PaymentService:
                 </p>
 
                 <p style="color:#475569;font-size:0.92em;margin-top:12px">
-                    <strong>Preciso de internet?</strong><br>
+                    <strong>Precisa de internet?</strong><br>
                     Sim. O programa precisa de internet para conectar no SGE e lancar as notas.
                 </p>
 
@@ -505,35 +488,10 @@ class PaymentService:
         </html>
         """
 
-        msg.attach(MIMEText(html, "html"))
+        subject = f"BotDoProfessor — Sua chave de licenca ({plan_label})"
 
-        from config.settings import BASE_DIR
-        exe_path = BASE_DIR / "dist" / "BotDoProfessor.exe"
-        if exe_path.exists():
-            try:
-                with open(exe_path, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    "attachment; filename=BotDoProfessor.exe",
-                )
-                msg.attach(part)
-            except Exception as e:
-                print(f"[EMAIL ATTACH ERROR] {e}", flush=True)
-
-        try:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, email, msg.as_string())
-            server.quit()
-            print(f"[EMAIL OK] Chave enviada para {email}", flush=True)
-            return True
-        except Exception as e:
-            print(f"[EMAIL ERROR] Falha ao enviar email para {email}: {e}", flush=True)
-            return False
+        from bot.utils.email_sender import send_email
+        return send_email(email, subject, html)
 
     def verify_manual_payment(self, reference: str) -> Dict:
         """Verifica se pagamento manual foi confirmado."""

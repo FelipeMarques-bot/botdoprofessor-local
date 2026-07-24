@@ -285,10 +285,6 @@ class PaymentService:
                 <div class="hint">Esta chave e pessoal e intransferivel. Guarde este email.</div>
             </div>
 
-            <p style="text-align:center">
-                <a href="{download_url}" class="btn">Baixar o programa</a>
-            </p>
-
             <div class="section">
                 <h3>PRIMEIRO: O que e o BotDoProfessor?</h3>
                 <p style="color:#475569;font-size:0.92em">
@@ -301,94 +297,46 @@ class PaymentService:
             <div class="step">
                 <div class="step-num">1</div>
                 <div class="step-text">
-                    <strong>Baixe o programa</strong><br>
-                    Clique no botao acima ou copie e cole este link no seu navegador:<br>
-                    <a href="{download_url}">{download_url}</a><br><br>
-                    O arquivo <strong>BotDoProfessor.exe</strong> tem cerca de 140MB. Ele sera salvo na pasta <strong>Downloads</strong> do seu computador.
+                    <strong>Instale o Python (se ainda nao tem)</strong><br>
+                    Acesse <a href="https://www.python.org/downloads/">python.org/downloads</a> e baixe a versao mais recente. Durante a instalacao, marque a opcao <strong>"Add Python to PATH"</strong> (embaixo) e clique em "Install Now".
                 </div>
             </div>
 
             <div class="step">
                 <div class="step-num">2</div>
                 <div class="step-text">
-                    <strong>Encontre o arquivo baixado</strong><br>
-                    Abra a pasta <strong>Downloads</strong> (ou a pasta onde o navegador salvou). Procure por um arquivo chamado <strong>BotDoProfessor.exe</strong> com um icone de robo.
+                    <strong>Baixe o programa</strong><br>
+                    Clique no link abaixo para baixar:<br>
+                    <a href="{download_url}/download/v1.1.0/BotDoProfessor-Streamlit.zip">Baixar BotDoProfessor-Streamlit.zip</a><br><br>
+                    O arquivo e bem pequeno. sera salvo na pasta <strong>Downloads</strong>.
                 </div>
             </div>
 
             <div class="step">
                 <div class="step-num">3</div>
                 <div class="step-text">
-                    <strong>Execute o programa</strong><br>
-                    Duplo-clique (clique duas vezes rapido) no arquivo <strong>BotDoProfessor.exe</strong>.
+                    <strong>Extraia os arquivos</strong><br>
+                    Abra a pasta <strong>Downloads</strong>, clique com o botao direito no arquivo <strong>BotDoProfessor-Streamlit.zip</strong> e escolha <strong>"Extrair Tudo"</strong>. Abra a pasta extraida.
                 </div>
-            </div>
-
-            <div class="warn">
-                <strong>Aviso de seguranca do Windows:</strong> O Windows pode mostrar uma tela dizendo "O Windows protegeu seu computador". Isso e <strong>normal</strong> para programas baixados da internet. Para continuar:<br><br>
-                1. Clique em <strong>"Mais informacoes"</strong> (embaixo)<br>
-                2. Clique em <strong>"Executar mesmo assim"</strong><br><br>
-                <em>O programa e seguro — nao contem virus.</em>
             </div>
 
             <div class="step">
                 <div class="step-num">4</div>
                 <div class="step-text">
-                    <strong>Aguarde a primeira configuracao</strong><br>
-                    Na primeira vez que voce abre o programa, ele instala automaticamente o navegador Chromium (cerca de 180MB). Isso demora <strong>aproximadamente 2 minutos</strong> e so acontece <strong>uma unica vez</strong>. Voce vera mensagens como:<br><br>
-                    <code>[i] Baixando navegador Chromium (~180MB, primeira vez)...</code><br>
-                    <code>[OK] Navegador instalado com sucesso!</code><br><br>
-                    <strong>Nao feche a janela</strong> enquanto estiver baixando. Aguarde ate ver a mensagem de sucesso.
+                    <strong>Clique duas vezes em iniciar.bat</strong><br>
+                    Na primeira vez, ele instala tudo automaticamente: dependencias, navegador Chromium e IA local (~3 minutos). <strong>Nao feche a janela</strong> enquanto estiver instalando. Quando terminar, o navegador vai abrir sozinho com o painel visual.
                 </div>
+            </div>
+
+            <div class="tip">
+                <strong>Nas proximas vezes:</strong> basta clicar em <strong>iniciar.bat</strong> de novo — ja fica instantaneo!
             </div>
 
             <div class="step">
                 <div class="step-num">5</div>
                 <div class="step-text">
-                    <strong>Cole a chave de licenca</strong><br>
-                    O programa vai pedir sua chave de licenca. <strong>Volte para este email</strong>, selecione a chave que aparece la em cima (clique e arraste o mouse sobre ela), copie (pressione <code>Ctrl+C</code> ou clique com o botao direito e escolha "Copiar"), e cole no programa (pressione <code>Ctrl+V</code> ou clique com o botao direito e escolha "Colar").<br><br>
-                    A chave e salva automaticamente — <strong>nas proximas vezes nao precisa colar de novo</strong>.
-                </div>
-            </div>
-
-            <div class="tip">
-                <strong>Dica:</strong> Se voce copiar a chave e o programa nao aceitar, verifique se nao copiou espacos extras antes ou depois da chave. A chave deve ser colada exatamente como aparece no email.
-            </div>
-
-            <div class="step">
-                <div class="step-num">6</div>
-                <div class="step-text">
-                    <strong>Informe seu CPF</strong><br>
-                    Digite o CPF que voce usa para acessar o SGE. Digite <strong>so numeros</strong>, sem pontos, sem traco, sem espacos. Exemplo:<br><br>
-                    <code>12345678901</code> (11 numeros)<br><br>
-                    O CPF tambem e salvo automaticamente.
-                </div>
-            </div>
-
-            <div class="step">
-                <div class="step-num">7</div>
-                <div class="step-text">
-                    <strong>Configure escola, turma e trimestre</strong><br>
-                    O programa vai perguntar:<br>
-                    <ul>
-                        <li><strong>Escola:</strong> Digite o nome da escola como aparece no SGE</li>
-                        <li><strong>Turno:</strong> Manha, Tarde ou Noite</li>
-                        <li><strong>Turma:</strong> Ex: "5o Ano A", "9o Ano B"</li>
-                        <li><strong>Trimestre:</strong> Ex: "1o Trimestre", "2o Trimestre"</li>
-                    </ul>
-                    Se nao souber, pressione <strong>Enter</strong> para usar o valor padrao. Essas configuracoes sao salvas — na proxima vez nao precisa digitar tudo de novo.
-                </div>
-            </div>
-
-            <div class="step">
-                <div class="step-num">8</div>
-                <div class="step-text">
-                    <strong>Escolha o tipo de lancamento</strong><br>
-                    O programa vai perguntar o que voce quer lancar:<br>
-                    <ul>
-                        <li>Digite <code>1</code> para <strong>Lancar Notas</strong></li>
-                        <li>Digite <code>2</code> para <strong>Lancar Plano de Aula</strong></li>
-                    </ul>
+                    <strong>Configure e use</strong><br>
+                    No painel visual que abriu no navegador, preencha a URL do portal, CPF e senha. Escolha a origem das notas (Notion, Excel, CSV ou Google Sheets) e clique em <strong>"EXECUTAR LANCAMENTO"</strong>.
                 </div>
             </div>
 

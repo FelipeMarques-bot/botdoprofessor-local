@@ -70,3 +70,7 @@ echo.
 
 start "" http://localhost:8501
 "%USERPROFILE%\.bot_local\venv\Scripts\python.exe" -m streamlit run "%~dp0painel.py" --server.headless true --server.port 8501 --browser.gatherUsageStats false
+
+echo.
+echo [!] O programa foi encerrado.
+pause

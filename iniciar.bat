@@ -9,31 +9,67 @@ echo   BotDoProfessor - Instalacao Automatica
 echo =============================================
 echo.
 
+REM === Verificar/Instalar Python automaticamente ===
+where python >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [i] Python nao encontrado. Baixando e instalando...
+    echo.
+
+    set "PYTHON_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+    set "PYTHON_INSTALLER=%TEMP%\python-installer.exe"
+
+    echo [i] Baixando Python 3.11.9 (~25MB)...
+    powershell -Command "Invoke-WebRequest -Uri '%PYTHON_INSTALLER_URL%' -OutFile '%PYTHON_INSTALLER%'" 2>nul
+    if not exist "%PYTHON_INSTALLER%" (
+        powershell -Command "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_INSTALLer%'" 2>nul
+    )
+
+    if not exist "%PYTHON_INSTALLER%" (
+        echo.
+        echo [ERRO] Nao foi possivel baixar o Python.
+        echo        Baixe manualmente: https://www.python.org/downloads/
+        echo        MARQUE: [x] Add python.exe to PATH
+        echo.
+        pause
+        exit /b 1
+    )
+
+    echo [i] Instalando Python (silencioso)...
+    "%PYTHON_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
+    if %errorlevel% neq 0 (
+        echo.
+        echo [ERRO] Falha na instalacao do Python.
+        echo        Baixe manualmente: https://www.python.org/downloads/
+        echo        MARQUE: [x] Add python.exe to PATH
+        echo.
+        pause
+        exit /b 1
+    )
+
+    del "%PYTHON_INSTALLER%" >nul 2>nul
+
+    REM Atualizar PATH para esta sessao
+    set "PATH=%PATH%;%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts"
+
+    echo [OK] Python instalado com sucesso!
+    echo.
+)
+
+REM === Verificar Python novamente ===
 where python >nul 2>nul
 if %errorlevel% neq 0 (
     echo.
-    echo =============================================
-    echo   [ERRO] Python nao encontrado!
-    echo =============================================
-    echo.
-    echo   Voce precisa instalar o Python primeiro.
-    echo.
-    echo   Passo 1: Acesse https://www.python.org/downloads/
-    echo   Passo 2: Clique em "Download Python 3.x.x"
-    echo   Passo 3: NA INSTALACAO, marque a opcao:
-    echo            [x] Add python.exe to PATH
-    echo   Passo 4: Clique em "Install Now"
-    echo   Passo 5: Depois de instalar, volte aqui e
-    echo             clique duas vezes em "iniciar.bat" novamente.
-    echo.
-    echo =============================================
+    echo [ERRO] Python ainda nao esta disponivel.
+    echo        Feche e abra esta janela novamente apos a instalacao.
     echo.
     pause
     exit /b 1
 )
 
-echo [OK] Python encontrado
+for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYVER=%%i
+echo [OK] %PYVER% encontrado
 
+REM === Criar ambiente virtual ===
 if not exist "%USERPROFILE%\.bot_local\venv" (
     echo.
     echo [i] Criando ambiente virtual...
@@ -41,7 +77,6 @@ if not exist "%USERPROFILE%\.bot_local\venv" (
     if %errorlevel% neq 0 (
         echo.
         echo [ERRO] Falha ao criar ambiente virtual.
-        echo        Verifique se o Python esta instalado corretamente.
         echo.
         pause
         exit /b 1
@@ -49,12 +84,11 @@ if not exist "%USERPROFILE%\.bot_local\venv" (
     echo [OK] Ambiente virtual criado
 
     echo.
-    echo [i] Instalando dependencias (pode demorar 2-3 minutos)...
+    echo [i] Instalando dependencias (2-3 minutos na primeira vez)...
     "%USERPROFILE%\.bot_local\venv\Scripts\pip.exe" install --quiet streamlit playwright openpyxl pandas requests python-dotenv google-generativeai openai anthropic
     if %errorlevel% neq 0 (
         echo.
-        echo [ERRO] Falha ao instalar dependencias.
-        echo        Verifique sua conexao com a internet.
+        echo [ERRO] Falha ao instalar dependencias. Verifique a internet.
         echo.
         pause
         exit /b 1
@@ -65,10 +99,7 @@ if not exist "%USERPROFILE%\.bot_local\venv" (
     echo [i] Baixando navegador Chromium (~180MB, primeira vez)...
     "%USERPROFILE%\.bot_local\venv\Scripts\python.exe" -m playwright install chromium
     if %errorlevel% neq 0 (
-        echo.
-        echo [AVISO] Falha ao baixar Chromium.
-        echo         Tente novamente depois.
-        echo.
+        echo [AVISO] Falha ao baixar Chromium. Tente depois.
     ) else (
         echo [OK] Navegador instalado!
     )

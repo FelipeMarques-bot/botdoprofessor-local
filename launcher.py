@@ -489,7 +489,47 @@ def main():
             )
             sys.exit(1)
 
-        if not VENV_DIR.exists():
+        venv_valid = VENV_DIR.exists() and VENV_PYTHON.exists()
+
+        if venv_valid and VENV_PYTHON.exists():
+            try:
+                result = subprocess.run(
+                    [str(VENV_PYTHON), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=NO_WINDOW,
+                )
+                venv_version = result.stdout.strip()
+                sys_result = subprocess.run(
+                    [python, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=NO_WINDOW,
+                )
+                sys_version = sys_result.stdout.strip()
+                log(f"Venv: Python {venv_version}, Sistema: Python {sys_version}")
+                if venv_version != sys_version:
+                    log(f"CONFLITO! Deletando venv {venv_version} e recriando com {sys_version}")
+                    venv_valid = False
+                    try:
+                        import stat
+                        def _remove_readonly(func, path, _excinfo):
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                        shutil.rmtree(str(VENV_DIR), onerror=_remove_readonly)
+                        log("Venv deletado com sucesso")
+                    except Exception as e:
+                        log(f"Falha ao deletar venv: {e}")
+                        try:
+                            subprocess.run(
+                                ["cmd", "/c", "rmdir", "/s", "/q", str(VENV_DIR)],
+                                capture_output=True, timeout=30, creationflags=NO_WINDOW,
+                            )
+                            log("Venv deletado via rmdir")
+                        except Exception as e2:
+                            log(f"Falha ao deletar via rmdir: {e2}")
+            except Exception as e:
+                log(f"Erro ao verificar versao: {e}")
+
+        if not venv_valid:
             splash.update("Configurando ambiente...", "Criando virtual environment (1/4)")
             splash.set_progress(0.1)
             if not create_venv(python):
@@ -513,46 +553,6 @@ def main():
             threading.Thread(target=setup_ollama_background, daemon=True).start()
 
             log("Configuracao concluida")
-        else:
-            log("Ambiente ja configurado")
-            if VENV_PYTHON.exists():
-                try:
-                    result = subprocess.run(
-                        [str(VENV_PYTHON), "-c", "import sys; print(sys.version[:4])"],
-                        capture_output=True, text=True, timeout=10,
-                        creationflags=NO_WINDOW,
-                    )
-                    venv_version = result.stdout.strip()
-                    sys_version = subprocess.run(
-                        [python, "-c", "import sys; print(sys.version[:4])"],
-                        capture_output=True, text=True, timeout=10,
-                        creationflags=NO_WINDOW,
-                    ).stdout.strip()
-                    log(f"Venv Python: {venv_version}, Sistema: {sys_version}")
-                    if venv_version != sys_version:
-                        log(f"Versao divergente! Recriando venv ({venv_version} -> {sys_version})")
-                        shutil.rmtree(str(VENV_DIR), ignore_errors=True)
-                        splash.update("Reconfigurando ambiente...", "Versao do Python mudou, recriando (1/4)")
-                        splash.set_progress(0.1)
-                        if not create_venv(python):
-                            splash.close()
-                            show_error_box("BotDoProfessor", "Falha ao recriar ambiente virtual.")
-                            sys.exit(1)
-                        splash.update("Instalando dependencias...", "Baixando pacotes necessarios (2/4)")
-                        splash.set_progress(0.2)
-                        if not install_requirements(VENV_PIP):
-                            splash.close()
-                            show_error_box("BotDoProfessor", "Falha ao instalar dependencias.")
-                            sys.exit(1)
-                        splash.update("Instalando navegador...", "Chromium (3/4)")
-                        splash.set_progress(0.6)
-                        install_playwright_chromium(str(VENV_PYTHON))
-                        splash.update("Configurando IA local...", "4/4")
-                        splash.set_progress(0.8)
-                        threading.Thread(target=setup_ollama_background, daemon=True).start()
-                        log("Reconfiguracao concluida")
-                except Exception as e:
-                    log(f"Erro ao verificar versao: {e}")
 
         painel_path = get_painel_path()
         if not painel_path:

@@ -285,70 +285,83 @@ class PaymentService:
                 <div class="hint">Esta chave e pessoal e intransferivel. Guarde este email.</div>
             </div>
 
-            <div class="section">
-                <h3>PRIMEIRO: O que e o BotDoProfessor?</h3>
-                <p style="color:#475569;font-size:0.92em">
-                    E um programa que automatiza o lancamento de <strong>notas</strong> e <strong>planos de aula</strong> no sistema SGE da sua escola. Ele abre o navegador, entra no SGE com seus dados e faz o lancamento automaticamente — voce so precisa preparar uma planilha com as notas.
-                </p>
-            </div>
-
-            <h3 style="color:#0c1b33;margin-top:28px">Como instalar e usar — passo a passo</h3>
+            <h3 style="color:#0c1b33;margin-top:28px">Como usar — passo a passo</h3>
 
             <div class="step">
                 <div class="step-num">1</div>
                 <div class="step-text">
-                    <strong>Instale o Python (se ainda nao tem)</strong><br>
-                    Acesse <a href="https://www.python.org/downloads/">python.org/downloads</a> e baixe a versao mais recente. Durante a instalacao, marque a opcao <strong>"Add Python to PATH"</strong> (embaixo) e clique em "Install Now".
+                    <strong>Baixe o programa</strong><br>
+                    Clique no link abaixo para baixar o BotDoProfessor.exe (arquivo unico, sem necessidade de instalacao adicional):<br>
+                    <a href="https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest" class="btn">Baixar BotDoProfessor.exe</a>
                 </div>
             </div>
 
             <div class="step">
                 <div class="step-num">2</div>
                 <div class="step-text">
-                    <strong>Baixe o programa</strong><br>
-                    Clique no link abaixo para baixar:<br>
-                    <a href="https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/download/v1.1.0/BotDoProfessor-Streamlit.zip">Baixar BotDoProfessor-Streamlit.zip</a><br><br>
-                    O arquivo e bem pequeno. sera salvo na pasta <strong>Downloads</strong>.
+                    <strong>Execute o programa</strong><br>
+                    Duplo-clique no arquivo <strong>BotDoProfessor.exe</strong> que voce baixou. Na primeira vez, o Windows pode mostrar um aviso de seguranca — clique em <strong>"Mais informacoes"</strong> e depois em <strong>"Executar mesmo assim"</strong>. Isso e normal.
                 </div>
             </div>
 
             <div class="step">
                 <div class="step-num">3</div>
                 <div class="step-text">
-                    <strong>Extraia os arquivos</strong><br>
-                    Abra a pasta <strong>Downloads</strong>, clique com o botao direito no arquivo <strong>BotDoProfessor-Streamlit.zip</strong> e escolha <strong>"Extrair Tudo"</strong>. Abra a pasta extraida.
+                    <strong>Aguarde a configuracao inicial</strong><br>
+                    Na primeira execucao, o programa configura tudo automaticamente (navegador, dependencias e IA local). Isso demora cerca de <strong>2 a 3 minutos</strong> e so acontece uma vez. <strong>Nao feche a janela</strong> enquanto estiver instalando.
                 </div>
             </div>
 
             <div class="step">
                 <div class="step-num">4</div>
                 <div class="step-text">
-                    <strong>Clique duas vezes em iniciar.bat</strong><br>
-                    Na primeira vez, ele instala tudo automaticamente: dependencias, navegador Chromium e IA local (~3 minutos). <strong>Nao feche a janela</strong> enquanto estiver instalando. Quando terminar, o navegador vai abrir sozinho com o painel visual.
+                    <strong>Cole sua chave de licenca</strong><br>
+                    Quando o programa pedir, cole a chave que aparece acima. Ela e salva automaticamente — nas proximas vezes nao precisa colar de novo.
                 </div>
-            </div>
-
-            <div class="tip">
-                <strong>Nas proximas vezes:</strong> basta clicar em <strong>iniciar.bat</strong> de novo — ja fica instantaneo!
             </div>
 
             <div class="step">
                 <div class="step-num">5</div>
                 <div class="step-text">
-                    <strong>Configure e use</strong><br>
-                    No painel visual que abriu no navegador, preencha a URL do portal, CPF e senha. Escolha a origem das notas (Notion, Excel, CSV, Google Sheets ou Imagem/Foto) e clique em <strong>"EXECUTAR LANCAMENTO"</strong>.
+                    <strong>Informe seu CPF</strong><br>
+                    Digite o CPF que voce usa para acessar o SGE (so numeros, sem pontos). O programa salva automaticamente.
                 </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">6</div>
+                <div class="step-text">
+                    <strong>Configure escola, turma e trimestre</strong><br>
+                    O programa vai perguntar qual escola, turno, turma e trimestre. Voce pode apertar Enter para usar os valores padrao, ou digitar os dados corretos. Essas configuracoes sao salvas para as proximas vezes.
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-num">7</div>
+                <div class="step-text">
+                    <strong>Escolha o tipo de lancamento</strong><br>
+                    Digite <code>1</code> para lancar <strong>Notas</strong> ou <code>2</code> para <strong>Plano de Aula</strong>. Para notas, voce pode importar de uma planilha Excel, CSV, Google Sheets, Notion, ou ate uma foto da lista de notas.
+                </div>
+            </div>
+
+            <div class="tip">
+                <strong>Nas proximas vezes:</strong> basta clicar em <strong>BotDoProfessor.exe</strong> de novo — ja fica instantaneo, com todas as configuracoes salvas!
             </div>
 
             <div class="section">
                 <h3>COMO PREPARAR SUAS NOTAS</h3>
                 <p style="color:#475569;font-size:0.92em;margin-bottom:12px">
-                    Para lancar notas, voce precisa de uma planilha com os nomes dos alunos e as notas. Existem tres opcoes:
+                    Para lancar notas, voce tem quatro opcoes:
                 </p>
 
                 <div class="csv-box">
-                    <p><strong>Opcao 1 — Planilha Excel (.xlsx):</strong></p>
-                    <p>Abra o Excel e crie uma planilha com duas colunas:</p>
+                    <p><strong>Opcao 1 — Notion:</strong></p>
+                    <p>Se voce ja usa o Notion para registrar notas, basta colar a URL da sua base de Notion quando o programa pedir. O programa extrai os dados automaticamente.</p>
+                </div>
+
+                <div class="csv-box">
+                    <p><strong>Opcao 2 — Planilha Excel ou CSV (.xlsx / .csv):</strong></p>
+                    <p>Crie uma planilha com duas colunas:</p>
                     <p>
                         <code>Aluno</code> — nome completo do aluno (como aparece no SGE)<br>
                         <code>Nota</code> — valor numerico (ex: 8.5, 7.0, 9.2)
@@ -362,26 +375,23 @@ class PaymentService:
                         <code>Pedro Costa;6.0</code>
                     </p>
                     <p style="margin-top:10px">
-                        Salve como <code>.xlsx</code> ou <code>.csv</code>. Coloque o arquivo na pasta <strong>Documents</strong> ou na <strong>Area de Trabalho</strong> para encontrar facilmente.
+                        Salve como <code>.xlsx</code> ou <code>.csv</code> e informe o caminho do arquivo quando o programa pedir.
                     </p>
                 </div>
 
                 <div class="csv-box">
-                    <p><strong>Opcao 2 — Google Sheets (online):</strong></p>
+                    <p><strong>Opcao 3 — Google Sheets (online):</strong></p>
                     <p>1. Acesse <a href="https://sheets.google.com">sheets.google.com</a></p>
-                    <p>2. Crie uma nova planilha</p>
-                    <p>3. Na primeira linha, digite: <code>Aluno</code> na coluna A e <code>Nota</code> na coluna B</p>
-                    <p>4. Preencha com os nomes e notas dos alunos</p>
-                    <p>5. Clique em <strong>"Compartilhar"</strong> (canto superior direito)</p>
-                    <p>6. Em "Quem tem acesso", clique em <strong>"Qualquer pessoa com o link"</strong></p>
-                    <p>7. Clique em <strong>"Copiar link"</strong></p>
-                    <p>8. Cole o link quando o programa pedir o caminho do arquivo</p>
+                    <p>2. Crie uma nova planilha com colunas <code>Aluno</code> e <code>Nota</code></p>
+                    <p>3. Clique em <strong>"Compartilhar"</strong> (canto superior direito)</p>
+                    <p>4. Em "Quem tem acesso", clique em <strong>"Qualquer pessoa com o link"</strong></p>
+                    <p>5. Clique em <strong>"Copiar link"</strong></p>
+                    <p>6. Cole o link quando o programa pedir o caminho do arquivo</p>
                 </div>
 
                 <div class="csv-box">
-                    <p><strong>Opcao 3 — Imagem / Foto:</strong></p>
-                    <p>Se voce tiver uma foto ou print das notas (por exemplo, uma foto de um caderno ou tela), o programa pode ler a imagem automaticamente e extrair as notas. Basta informar o caminho da imagem quando o programa pedir.</p>
-                    <p style="margin-top:8px"><em>Nota: esta funcionalidade requer configuracao de IA (Gemini, GPT-4o ou Ollama).</em></p>
+                    <p><strong>Opcao 4 — Imagem / Foto:</strong></p>
+                    <p>Se voce tiver uma foto ou print das notas (caderno, quadro, planilha impressa), o programa le a imagem automaticamente e extrai as notas usando inteligencia artificial. Basta informar o caminho da imagem quando o programa pedir.</p>
                 </div>
             </div>
 
@@ -390,12 +400,12 @@ class PaymentService:
 
                 <p style="color:#475569;font-size:0.92em">
                     <strong>O programa e seguro?</strong><br>
-                    Sim. O BotDoProfessor roda apenas no seu computador, nao envia seus dados para terceiros, e o codigo e aberto (pode ser verificado).
+                    Sim. Suas credenciais (CPF) ficam criptografadas no seu computador. Nenhum dado e enviado para servidores externos. O pagamento e processado pelo Mercado Pago, plataforma segura e certificada.
                 </p>
 
                 <p style="color:#475569;font-size:0.92em;margin-top:12px">
-                    <strong>Precisa de internet?</strong><br>
-                    Sim. O programa precisa de internet para conectar no SGE e lancar as notas.
+                    <strong>Preciso de internet?</strong><br>
+                    Sim. O programa precisa de internet para conectar no SGE e lancar as notas. Mantenha a conexao ativa durante o lancamento.
                 </p>
 
                 <p style="color:#475569;font-size:0.92em;margin-top:12px">
@@ -410,7 +420,7 @@ class PaymentService:
 
                 <p style="color:#475569;font-size:0.92em;margin-top:12px">
                     <strong>O programa lembra minhas configuracoes?</strong><br>
-                    Sim! Na segunda vez que voce usar, basta digitar <code>1</code> ou <code>2</code> e ele ja sabe a escola, turma, trimestre e CPF.
+                    Sim! Na segunda vez que voce usar, basta abrir o programa novamente — ele ja sabe a escola, turma, trimestre e CPF.
                 </p>
 
                 <p style="color:#475569;font-size:0.92em;margin-top:12px">

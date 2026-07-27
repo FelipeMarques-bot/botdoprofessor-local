@@ -161,19 +161,12 @@ def _is_valid_python(path):
 
 
 def find_system_python():
-    py = shutil.which("py")
-    if py and _is_valid_python(py):
-        return py
-    for name in ("python3", "python"):
-        path = shutil.which(name)
-        if _is_valid_python(path):
-            return path
-    uv_base = os.path.expandvars(r"%APPDATA%\uv\python")
-    if os.path.isdir(uv_base):
-        import glob
-        for uv_py in sorted(glob.glob(os.path.join(uv_base, "cpython-3.*", "python.exe")), reverse=True):
-            if _is_valid_python(uv_py):
-                return uv_py
+    """Encontra Python 3.10+ instalado no sistema.
+    Prioriza instalacoes diretas ( Programs\Python ) sobre o py launcher,
+    pois o py pode retornar uma versao diferente da instalada.
+    """
+    candidates = []
+
     common_paths = [
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
@@ -184,7 +177,27 @@ def find_system_python():
     ]
     for p in common_paths:
         if os.path.isfile(p):
-            return p
+            candidates.append(p)
+
+    uv_base = os.path.expandvars(r"%APPDATA%\uv\python")
+    if os.path.isdir(uv_base):
+        import glob
+        for uv_py in sorted(glob.glob(os.path.join(uv_base, "cpython-3.*", "python.exe")), reverse=True):
+            if _is_valid_python(uv_py):
+                candidates.append(uv_py)
+
+    for name in ("python3", "python"):
+        path = shutil.which(name)
+        if _is_valid_python(path) and path not in candidates:
+            candidates.append(path)
+
+    py = shutil.which("py")
+    if py and _is_valid_python(py) and py not in candidates:
+        candidates.append(py)
+
+    if candidates:
+        return candidates[0]
+
     return None
 
 
@@ -416,13 +429,25 @@ def wait_for_streamlit(proc, port=8501, timeout=90, splash=None):
 
 
 def show_error_box(title, message):
+    log(f"ERRO: {title} — {message}")
+    error_file = Path.home() / "Desktop" / "BotDoProfessor_erro.txt"
+    try:
+        with open(error_file, "w", encoding="utf-8") as f:
+            f.write(f"BotDoProfessor — Log de Erro\n")
+            f.write(f"Data: {time.strftime('%d/%m/%Y %H:%M:%S')}\n")
+            f.write(f"{'='*50}\n\n")
+            f.write(message)
+            f.write(f"\n\n{'='*50}\n")
+            f.write(f"Log completo: {LOG_FILE}\n")
+        log(f"Erro salvo em: {error_file}")
+    except Exception:
+        pass
     if os.name == "nt":
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
         except Exception:
             pass
-    log(f"ERRO: {title} — {message}")
 
 
 def _set_utf8():
@@ -490,6 +515,44 @@ def main():
             log("Configuracao concluida")
         else:
             log("Ambiente ja configurado")
+            if VENV_PYTHON.exists():
+                try:
+                    result = subprocess.run(
+                        [str(VENV_PYTHON), "-c", "import sys; print(sys.version[:4])"],
+                        capture_output=True, text=True, timeout=10,
+                        creationflags=NO_WINDOW,
+                    )
+                    venv_version = result.stdout.strip()
+                    sys_version = subprocess.run(
+                        [python, "-c", "import sys; print(sys.version[:4])"],
+                        capture_output=True, text=True, timeout=10,
+                        creationflags=NO_WINDOW,
+                    ).stdout.strip()
+                    log(f"Venv Python: {venv_version}, Sistema: {sys_version}")
+                    if venv_version != sys_version:
+                        log(f"Versao divergente! Recriando venv ({venv_version} -> {sys_version})")
+                        shutil.rmtree(str(VENV_DIR), ignore_errors=True)
+                        splash.update("Reconfigurando ambiente...", "Versao do Python mudou, recriando (1/4)")
+                        splash.set_progress(0.1)
+                        if not create_venv(python):
+                            splash.close()
+                            show_error_box("BotDoProfessor", "Falha ao recriar ambiente virtual.")
+                            sys.exit(1)
+                        splash.update("Instalando dependencias...", "Baixando pacotes necessarios (2/4)")
+                        splash.set_progress(0.2)
+                        if not install_requirements(VENV_PIP):
+                            splash.close()
+                            show_error_box("BotDoProfessor", "Falha ao instalar dependencias.")
+                            sys.exit(1)
+                        splash.update("Instalando navegador...", "Chromium (3/4)")
+                        splash.set_progress(0.6)
+                        install_playwright_chromium(str(VENV_PYTHON))
+                        splash.update("Configurando IA local...", "4/4")
+                        splash.set_progress(0.8)
+                        threading.Thread(target=setup_ollama_background, daemon=True).start()
+                        log("Reconfiguracao concluida")
+                except Exception as e:
+                    log(f"Erro ao verificar versao: {e}")
 
         painel_path = get_painel_path()
         if not painel_path:
@@ -514,6 +577,11 @@ def main():
 
         port = 8501
         streamlit_log = open(str(LOG_DIR / "streamlit.log"), "w", encoding="utf-8")
+        clean_env = os.environ.copy()
+        clean_env.pop("PYTHONPATH", None)
+        clean_env.pop("PYTHONHOME", None)
+        clean_env.pop("PYTHONNOUSERSITE", None)
+        clean_env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc = subprocess.Popen(
             [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
              "--server.headless", "true",
@@ -522,6 +590,7 @@ def main():
             cwd=str(APP_DIR),
             stdout=streamlit_log,
             stderr=streamlit_log,
+            env=clean_env,
         )
 
         splash.update("Aguardando painel...", "Verificando se o servidor esta pronto")

@@ -211,7 +211,7 @@ with st.sidebar:
         "Provedor IA",
         options=ai_provider_options,
         format_func=lambda x: {
-            "local": "Local (Ollama - modelo de visao)",
+            "local": "Local (Ollama - minicpm-v4.6) [RECOMENDADO]",
             "gemini": "Google Gemini (API Key)",
             "openai": "OpenAI GPT-4o (API Key)",
             "anthropic": "Anthropic Claude (API Key)",
@@ -222,9 +222,35 @@ with st.sidebar:
     st.session_state.ai_provider = ai_provider
 
     # Campo de API key dinamico conforme provider
-    if ai_provider == "gemini":
+    if ai_provider == "local":
+        st.info(
+            "**IA Local (Recomendada)** - Nao precisa de API key!\n\n"
+            "O modelo `minicpm-v4.6` e baixado automaticamente na primeira execucao (~1.6GB).\n\n"
+            "**O que faz:**\n"
+            "- Analisa screenshots quando o bot falha\n"
+            "- Sugere seletores CSS alternativos\n"
+            "- Redescobre portais automaticamente\n"
+            "- Aprende com cada execucao\n\n"
+            "**Requisitos:** RAM minima 4GB, processador com 4+ cores"
+        )
+        ollama_model = st.selectbox(
+            "Modelo Ollama",
+            options=["openbmb/minicpm-v4.6", "llava:7b", "llava:13b", "bakllava"],
+            index=0,
+            key="ollama_model_select",
+        )
+        st.session_state.ollama_model = ollama_model
+    elif ai_provider == "gemini":
+        st.markdown(
+            "**Como obter a API Key do Google Gemini:**\n\n"
+            "1. Acesse https://aistudio.google.com/apikey\n"
+            "2. Clique em **Create API Key**\n"
+            "3. Copie a chave (comeca com `AIza...`)\n"
+            "4. Cole abaixo\n\n"
+            "**Gratuito:** 15 requests/min, 1500 requests/dia"
+        )
         gemini_key = st.text_input(
-            "Gemini API Key (obrigatoria para IA Web)",
+            "Gemini API Key (obrigatoria)",
             value=st.session_state.get("gemini_key", ""),
             key="gemini_key_input",
             type="password",
@@ -237,8 +263,16 @@ with st.sidebar:
         )
         st.session_state.gemini_model = gemini_model
     elif ai_provider == "openai":
+        st.markdown(
+            "**Como obter a API Key da OpenAI:**\n\n"
+            "1. Acesse https://platform.openai.com/api-keys\n"
+            "2. Clique em **Create new secret key**\n"
+            "3. Copie a chave (comeca com `sk-...`)\n"
+            "4. Cole abaixo\n\n"
+            "**Pago:** $2.50 por 1M tokens de input (GPT-4o-mini)"
+        )
         openai_key = st.text_input(
-            "OpenAI API Key (obrigatoria para IA Web)",
+            "OpenAI API Key (obrigatoria)",
             value=st.session_state.get("openai_key", ""),
             key="openai_key_input",
             type="password",
@@ -251,8 +285,16 @@ with st.sidebar:
         )
         st.session_state.openai_model = openai_model
     elif ai_provider == "anthropic":
+        st.markdown(
+            "**Como obter a API Key da Anthropic:**\n\n"
+            "1. Acesse https://console.anthropic.com/settings/keys\n"
+            "2. Clique em **Create Key**\n"
+            "3. Copie a chave (comeca com `sk-ant-...`)\n"
+            "4. Cole abaixo\n\n"
+            "**Pago:** $3 por 1M tokens de input (Claude Sonnet)"
+        )
         anthropic_key = st.text_input(
-            "Anthropic API Key (obrigatoria para IA Web)",
+            "Anthropic API Key (obrigatoria)",
             value=st.session_state.get("anthropic_key", ""),
             key="anthropic_key_input",
             type="password",
@@ -264,18 +306,6 @@ with st.sidebar:
             key="anthropic_model_input",
         )
         st.session_state.anthropic_model = anthropic_model
-    elif ai_provider == "local":
-        ollama_model = st.selectbox(
-            "Modelo Ollama",
-            options=["llama3.2-vision", "llava", "llava:7b", "llava:13b", "bakllava"],
-            index=0,
-            key="ollama_model_select",
-        )
-        st.session_state.ollama_model = ollama_model
-        st.info(
-            "Auto-setup ativo: se o Ollama nao estiver instalado, sera baixado "
-            "e configurado automaticamente ao executar."
-        )
 
     with st.expander("Origem dos Dados", expanded=True):
         st.markdown("**De onde vao os dados das notas?**")

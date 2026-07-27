@@ -126,6 +126,20 @@ class SGEAdapter(PortalAdapter):
             self.memory.record_success("login", self._base_url)
         else:
             self.memory.record_failure("login", self._base_url, "Dashboard nao detectado")
+            ai_result = self._ai_analyze_failure("login", "Dashboard nao detectado", f"url={self._base_url}")
+            if ai_result and ai_result.get("suggested_fixes"):
+                for fix in ai_result["suggested_fixes"]:
+                    sel = fix.get("selector", "")
+                    if sel:
+                        try:
+                            page.locator(sel).first.click(timeout=5000)
+                            page.wait_for_load_state("networkidle", timeout=10000)
+                            self._logged_in = self._detect_dashboard(page)
+                            if self._logged_in:
+                                self.memory.record_success("login", f"ai_fix={sel}")
+                                return True
+                        except Exception:
+                            continue
         return self._logged_in
 
     def _detect_dashboard(self, page: Page) -> bool:
@@ -319,10 +333,10 @@ class SGEAdapter(PortalAdapter):
                 return True
             else:
                 self.memory.record_failure("fill_grade", aluno, f"result={result}")
-                return False
+                return self._try_fill_with_ai(aluno, nota, coluna)
         except Exception as e:
             self.memory.record_failure("fill_grade", aluno, str(e))
-            return False
+            return self._try_fill_with_ai(aluno, nota, coluna)
 
     def save(self) -> bool:
         p = self.page
@@ -343,9 +357,27 @@ class SGEAdapter(PortalAdapter):
                     self.memory.record_success("save", sel)
                     return True
             self.memory.record_failure("save", "no_button", "Botao de salvar nao encontrado")
+            alt_sel = self._ai_adapt_selector("Salvar", "click", "Botao nao encontrado")
+            if alt_sel:
+                try:
+                    p.locator(alt_sel).first.click(timeout=self.ACTION_TIMEOUT)
+                    p.wait_for_timeout(2000)
+                    self.memory.record_success("save", f"ai_selector={alt_sel}")
+                    return True
+                except Exception:
+                    pass
             return False
         except Exception as e:
             self.memory.record_failure("save", "error", str(e))
+            alt_sel = self._ai_adapt_selector("Salvar", "click", str(e))
+            if alt_sel:
+                try:
+                    p.locator(alt_sel).first.click(timeout=self.ACTION_TIMEOUT)
+                    p.wait_for_timeout(2000)
+                    self.memory.record_success("save", f"ai_selector={alt_sel}")
+                    return True
+                except Exception:
+                    pass
             return False
 
     def is_logged_in(self) -> bool:
@@ -386,6 +418,103 @@ class SGEAdapter(PortalAdapter):
             return 0.0
         intersection = a_tokens & b_tokens
         return len(intersection) / max(len(a_tokens), len(b_tokens))
+
+    # ------------------------------------------------------------------ #
+    #  Reforco IA — Fallback automatico quando operacoes falham           #
+    # ------------------------------------------------------------------ #
+
+    def _take_screenshot(self) -> Optional[bytes]:
+        """Tira screenshot da pagina atual para analise da IA."""
+        try:
+            if self._page:
+                return self._page.screenshot()
+        except Exception:
+            pass
+        return None
+
+    def _ai_analyze_failure(self, operation: str, error: str, context: str = "") -> Optional[Dict]:
+        """Usa IA para analisar uma falha e sugerir correcao."""
+        try:
+            from ai_assist import is_available, analyze_portal_failure
+            if not is_available():
+                return None
+            screenshot = self._take_screenshot()
+            if not screenshot:
+                return None
+            return analyze_portal_failure(
+                screenshot, error, operation, context, logger=None
+            )
+        except ImportError:
+            return None
+
+    def _ai_adapt_selector(self, original_selector: str, action: str, error: str) -> Optional[str]:
+        """Usa IA para encontrar um selector alternativo quando o original falha."""
+        try:
+            from ai_assist import is_available, adapt_selector
+            if not is_available():
+                return None
+            screenshot = self._take_screenshot()
+            if not screenshot:
+                return None
+            result = adapt_selector(original_selector, action, error, screenshot, logger=None)
+            alternatives = result.get("alternatives", [])
+            for alt in alternatives:
+                sel = alt.get("selector", "")
+                if sel:
+                    return sel
+        except ImportError:
+            pass
+        return None
+
+    def _ai_discover_portal(self) -> Optional[Dict]:
+        """Usa IA para redescobrir a estrutura do portal a partir do screenshot."""
+        try:
+            from ai_assist import is_available, discover_portal_from_screenshot
+            if not is_available():
+                return None
+            screenshot = self._take_screenshot()
+            if not screenshot:
+                return None
+            return discover_portal_from_screenshot(screenshot, logger=None)
+        except ImportError:
+            return None
+
+    def _try_fill_with_ai(self, aluno: str, nota: str, coluna: str = "") -> bool:
+        """Fallback: quando fill_grade falha, IA tenta encontrar o input correto."""
+        try:
+            from ai_assist import is_available, adapt_selector
+            if not is_available():
+                return False
+            screenshot = self._take_screenshot()
+            if not screenshot:
+                return False
+            result = adapt_selector(
+                "_ALUMATNOM_", "fill",
+                f"Aluno '{aluno}' nao encontrado na grade",
+                screenshot, logger=None
+            )
+            for alt in result.get("alternatives", []):
+                sel = alt.get("selector", "")
+                if not sel:
+                    continue
+                try:
+                    p = self.page
+                    loc = p.locator(sel)
+                    if loc.count() > 0:
+                        for i in range(loc.count()):
+                            text = loc.nth(i).text_content() or ""
+                            if self._name_similarity(aluno, text.strip()) > 0.5:
+                                input_sel = alt.get("selector", "").replace("text", "input")
+                                input_loc = p.locator(input_sel)
+                                if input_loc.count() > i:
+                                    input_loc.nth(i).fill(nota)
+                                    self.memory.record_success("fill_grade", f"ai_selector={sel}")
+                                    return True
+                except Exception:
+                    continue
+        except ImportError:
+            pass
+        return False
 
     # ------------------------------------------------------------------ #
     #  Helpers internos — Plano de Aula                                    #

@@ -958,3 +958,194 @@ def execute_learned_step(
     except Exception as exc:
         _log(logger, f"[AI] Erro executando passo: {exc}")
         return False
+
+
+# =====================================================================
+#  REFORCO IA — Analise de Falhas e Descoberta Automatica de Portais
+# =====================================================================
+
+_PORTAL_FAILURE_ANALYSIS_PROMPT = """
+Voce e um especialista em automacao de navegadores web para portais escolares brasileiros.
+
+O bot falhou ao executar uma operacao neste portal. Analise o screenshot e o erro.reportado.
+
+Erro: {error}
+Operacao: {operation}
+Contexto: {context}
+
+Analise a tela e retorne APENAS um JSON valido:
+{{
+  "diagnosis": "descricao curta do que parece estar errado",
+  "current_screen": "o que esta visivel na tela agora",
+  "suggested_fixes": [
+    {{
+      "action": "click/fill/select/navigate",
+      "selector": "novo seletor CSS sugerido",
+      "description": "o que este seletor faz",
+      "confidence": 0.8
+    }}
+  ],
+  "alternative_selectors": ["sel1", "sel2", "sel3"],
+  "needs_rediscovery": true/false (se o fluxo inteiro parece ter mudado),
+  "screenshot_analysis": "descricao detalhada dos elementos visiveis na tela"
+}}
+
+Seja especifico nos seletores CSS. Use name, id, class, text content.
+Se a tela nao corresponde ao esperado, indique qual tela esta sendo mostrada.
+"""
+
+
+def analyze_portal_failure(
+    screenshot_bytes: bytes,
+    error: str,
+    operation: str = "",
+    context: str = "",
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Analisa uma falha do bot usando IA e sugere correcoes.
+
+    Chamado quando o bot falha em clicar, preencher ou navegar.
+    A IA analisa o screenshot e sugere novos seletores ou acoes.
+    """
+    if not is_available():
+        return {"diagnosis": "IA nao disponivel", "suggested_fixes": [], "needs_rediscovery": False}
+
+    prompt = _PORTAL_FAILURE_ANALYSIS_PROMPT.format(
+        error=error,
+        operation=operation or "desconhecida",
+        context=context or "nenhum",
+    )
+
+    try:
+        text = _call_ai(prompt, screenshot_bytes)
+        result = _safe_json_parse(text, {
+            "diagnosis": "Resposta nao-JSON",
+            "suggested_fixes": [],
+            "needs_rediscovery": False,
+        })
+        _log(logger, f"[AI-Falha] Diagnostico: {result.get('diagnosis', '')[:100]}")
+        if result.get("needs_rediscovery"):
+            _log(logger, "[AI-Falha] IA sugere redescoberta completa do portal")
+        return result
+    except Exception as exc:
+        _log(logger, f"[AI-Falha] Erro ao analisar falha: {exc}")
+        return {"diagnosis": str(exc), "suggested_fixes": [], "needs_rediscovery": False}
+
+
+_PORTAL_DISCOVERY_PROMPT = """
+Voce e um especialista em automacao de portais escolares brasileiros.
+
+Analise este screenshot de um portal de professores e retorne um JSON com a estrutura completa
+necessaria para automatizar o lancamento de notas.
+
+Retorne APENAS o JSON, sem markdown, sem explicacao:
+{{
+  "portal_name": "nome do portal",
+  "url": "url base se visivel",
+  "auth_flow": {{
+    "username_field": "CSS selector do campo de usuario/CPF",
+    "password_field": "CSS selector do campo de senha",
+    "submit": {{"selector": "CSS selector do botao de login"}}
+  }},
+  "navigation": {{
+    "steps": [
+      {{"action": "select", "selector": "CSS do select", "field": "escola"}},
+      {{"action": "select", "selector": "CSS do select", "field": "turma"}},
+      {{"action": "select", "selector": "CSS do select", "field": "trimestre"}}
+    ]
+  }},
+  "grade_flow": {{
+    "student_name_selector": "CSS dos nomes dos alunos",
+    "grade_input_selector": "CSS dos inputs de nota",
+    "assessment_selector": "CSS para selecionar avaliacao",
+    "save_selector": "CSS do botao salvar",
+    "pagination_selector": "CSS da paginacao"
+  }},
+  "columns": {{
+    "1": "nome da coluna posicao 1",
+    "2": "nome da coluna posicao 2"
+  }},
+  "confidence": 0.8,
+  "notes": "observacoes sobre o portal"
+}}
+
+Se nao conseguir identificar algo, use string vazia "".
+Se nao houver paginacao, deixe pagination_selector vazio.
+O campo confidence deve ser entre 0 e 1.
+"""
+
+
+def discover_portal_from_screenshot(
+    screenshot_bytes: bytes,
+    logger: Optional[LogFn] = None,
+) -> Optional[Dict[str, Any]]:
+    """Analisa screenshot de um portal e descobre a estrutura automaticamente.
+
+    Retorna dict com selectors, fluxo de navegacao, etc.
+    Usado quando o portal e novo e nao tem adapter known.
+    """
+    if not is_available():
+        _log(logger, "[AI-Descoberta] IA nao disponivel para descoberta")
+        return None
+
+    try:
+        text = _call_ai(_PORTAL_DISCOVERY_PROMPT, screenshot_bytes)
+        config = _safe_json_parse(text, None)
+        if config:
+            _log(logger, f"[AI-Descoberta] Portal descoberto: {config.get('portal_name', 'desconhecido')}")
+            _log(logger, f"[AI-Descoberta] Confianca: {config.get('confidence', 0)}")
+        return config
+    except Exception as exc:
+        _log(logger, f"[AI-Descoberta] Erro: {exc}")
+        return None
+
+
+_ADAPT_SELECTOR_PROMPT = """
+O seletor CSS "{original_selector}" parou de funcionar nesta pagina web.
+
+Acao que estava sendo tentada: {action}
+Erro obtido: {error}
+
+Analise a tela (screenshot) e sugira 3 seletores CSS alternativos que poderiam funcionar.
+Retorne APENAS um JSON valido:
+{{
+  "alternatives": [
+    {{"selector": "novo_selector_1", "reason": "motivo"},
+    {{"selector": "novo_selector_2", "reason": "motivo"},
+    {{"selector": "novo_selector_2", "reason": "motivo"}
+  ],
+  "page_changed": true/false (se a pagina parece ter mudado completamente)
+}}
+"""
+
+
+def adapt_selector(
+    original_selector: str,
+    action: str,
+    error: str,
+    screenshot_bytes: bytes,
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Quando um selector falha, a IA sugere alternativas baseado no screenshot.
+
+    Usado pelo custom_adapter e sge_adapter como fallback automatico.
+    """
+    if not is_available():
+        return {"alternatives": [], "page_changed": False}
+
+    prompt = _ADAPT_SELECTOR_PROMPT.format(
+        original_selector=original_selector,
+        action=action,
+        error=error,
+    )
+
+    try:
+        text = _call_ai(prompt, screenshot_bytes)
+        result = _safe_json_parse(text, {"alternatives": [], "page_changed": False})
+        alts = result.get("alternatives", [])
+        if alts:
+            _log(logger, f"[AI-Adapt] {len(alts)} seletores alternativos encontrados")
+        return result
+    except Exception as exc:
+        _log(logger, f"[AI-Adapt] Erro: {exc}")
+        return {"alternatives": [], "page_changed": False}

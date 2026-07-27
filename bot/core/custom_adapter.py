@@ -1,4 +1,7 @@
-from typing import Optional, List, Dict
+import base64
+import json
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 from bot.core.portal_adapter import PortalAdapter, PortalContext
 from bot.core.portal_memory import PortalMemory
 
@@ -9,7 +12,11 @@ except ImportError:
 
 
 class CustomPortalAdapter(PortalAdapter):
-    """Adapter generico para portais desconhecidos, usando estrutura JSON descoberta."""
+    """Adapter generico para portais desconhecidos, usando estrutura JSON descoberta.
+
+    Inclui fallback com IA: quando selectors falham, a IA analisa o screenshot
+    e sugere novos seletores automaticamente.
+    """
 
     def __init__(self, portal_name: str, portal_config: dict):
         self._portal_name = portal_name
@@ -48,6 +55,93 @@ class CustomPortalAdapter(PortalAdapter):
             self.start()
         return self._page
 
+    def _take_screenshot(self) -> Optional[bytes]:
+        """Tira screenshot da pagina atual para analise da IA."""
+        try:
+            return self.page.screenshot()
+        except Exception:
+            return None
+
+    def _try_ai_fallback(self, operation: str, error: str, context: str = "") -> Optional[Dict[str, Any]]:
+        """Tenta usar IA para analisar a falha e sugerir correcao."""
+        try:
+            from ai_assist import is_available, analyze_portal_failure
+            if not is_available():
+                return None
+            screenshot = self._take_screenshot()
+            if not screenshot:
+                return None
+            return analyze_portal_failure(
+                screenshot, error, operation, context, logger=None
+            )
+        except ImportError:
+            return None
+
+    def _try_ai_discover(self) -> Optional[Dict[str, Any]]:
+        """Tenta usar IA para redescobrir o portal a partir do screenshot atual."""
+        try:
+            from ai_assist import is_available, discover_portal_from_screenshot
+            if not is_available():
+                return None
+            screenshot = self._take_screenshot()
+            if not screenshot:
+                return None
+            return discover_portal_from_screenshot(screenshot, logger=None)
+        except ImportError:
+            return None
+
+    def _apply_ai_fixes(self, fixes: List[Dict[str, Any]], action_type: str) -> bool:
+        """Aplica correcoes sugeridas pela IA."""
+        p = self.page
+        for fix in fixes:
+            selector = fix.get("selector", "")
+            action = fix.get("action", action_type)
+            if not selector:
+                continue
+            try:
+                loc = p.locator(selector)
+                if loc.count() == 0:
+                    continue
+                if action == "click":
+                    loc.first.click(timeout=5000)
+                    p.wait_for_timeout(500)
+                    return True
+                elif action == "fill":
+                    return True
+                elif action == "select":
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _update_config_from_ai(self, ai_config: Dict[str, Any]):
+        """Atualiza a configuracao do portal com dados descobertos pela IA."""
+        if not ai_config:
+            return
+        auth = ai_config.get("auth_flow", {})
+        if auth:
+            self._config.setdefault("auth_flow", {})
+            for key, val in auth.items():
+                if val:
+                    self._config["auth_flow"][key] = val
+
+        nav = ai_config.get("navigation", {})
+        if nav:
+            self._config["navigation"] = nav
+
+        grade = ai_config.get("grade_flow", {})
+        if grade:
+            self._config.setdefault("grade_flow", {})
+            for key, val in grade.items():
+                if val:
+                    self._config["grade_flow"][key] = val
+
+        columns = ai_config.get("columns", {})
+        if columns:
+            self._config["columns"] = columns
+
+        self.memory.record_navigation("ai_discovered", json.dumps(ai_config, ensure_ascii=False))
+
     def login(self, cpf: str, senha: str) -> bool:
         p = self.page
         url = self._config.get("url", "")
@@ -75,6 +169,17 @@ class CustomPortalAdapter(PortalAdapter):
                 p.locator(submit["selector"]).first.click(timeout=5000)
         except Exception as e:
             self.memory.record_failure("login", url, str(e))
+
+            ai_result = self._try_ai_fallback("login", str(e), f"url={url}")
+            if ai_result and ai_result.get("suggested_fixes"):
+                if self._apply_ai_fixes(ai_result["suggested_fixes"], "click"):
+                    self._logged_in = True
+                    return True
+            if ai_result and ai_result.get("needs_rediscovery"):
+                new_config = self._try_ai_discover()
+                if new_config:
+                    self._update_config_from_ai(new_config)
+                    return self.login(cpf, senha)
             return False
 
         try:
@@ -103,7 +208,14 @@ class CustomPortalAdapter(PortalAdapter):
                     p.locator(selector).first.fill(str(value))
                 elif action == "wait":
                     p.wait_for_timeout(int(step.get("ms", 2000)))
-            except Exception:
+            except Exception as e:
+                ai_result = self._try_ai_fallback(
+                    "navigate", str(e),
+                    f"field={step.get('field', '')}, value={value}"
+                )
+                if ai_result and ai_result.get("suggested_fixes"):
+                    self._apply_ai_fixes(ai_result["suggested_fixes"], action)
+                    continue
                 continue
         return True
 
@@ -121,8 +233,14 @@ class CustomPortalAdapter(PortalAdapter):
                 if atividade.lower() in text.lower():
                     els.nth(i).click(timeout=5000)
                     return {"found": True, "text": text.strip()}
-        except Exception:
-            pass
+        except Exception as e:
+            ai_result = self._try_ai_fallback(
+                "find_assessment", str(e),
+                f"atividade={atividade}"
+            )
+            if ai_result and ai_result.get("suggested_fixes"):
+                if self._apply_ai_fixes(ai_result["suggested_fixes"], "click"):
+                    return {"found": True, "text": "(via IA)"}
         return None
 
     def detect_columns(self) -> Dict[str, str]:
@@ -150,8 +268,14 @@ class CustomPortalAdapter(PortalAdapter):
                     if input_els.count() > i:
                         grade = input_els.nth(i).input_value() or ""
                 grades.append({"aluno": name, "nota": grade.strip()})
-        except Exception:
-            pass
+        except Exception as e:
+            ai_result = self._try_ai_fallback("read_grades", str(e))
+            if ai_result and ai_result.get("suggested_fixes"):
+                for fix in ai_result["suggested_fixes"]:
+                    sel = fix.get("selector", "")
+                    if sel:
+                        self._config.setdefault("grade_flow", {})["student_name_selector"] = sel
+                        return self.read_grades()
         return grades
 
     def fill_grade(self, aluno: str, nota: str, coluna: str = "") -> bool:
@@ -173,6 +297,23 @@ class CustomPortalAdapter(PortalAdapter):
                         return True
         except Exception as e:
             self.memory.record_failure("fill_grade", aluno, str(e))
+            ai_result = self._try_ai_fallback(
+                "fill_grade", str(e),
+                f"aluno={aluno}, nota={nota}"
+            )
+            if ai_result and ai_result.get("suggested_fixes"):
+                for fix in ai_result["suggested_fixes"]:
+                    sel = fix.get("selector", "")
+                    if sel:
+                        try:
+                            loc = p.locator(sel)
+                            if loc.count() > 0:
+                                loc.first.fill(nota)
+                                self._config.setdefault("grade_flow", {})["grade_input_selector"] = sel
+                                self.memory.record_success("fill_grade", f"ai_selector={sel}")
+                                return True
+                        except Exception:
+                            continue
         return False
 
     def save(self) -> bool:
@@ -189,6 +330,11 @@ class CustomPortalAdapter(PortalAdapter):
                 return True
         except Exception as e:
             self.memory.record_failure("save", save_sel, str(e))
+            ai_result = self._try_ai_fallback("save", str(e))
+            if ai_result and ai_result.get("suggested_fixes"):
+                if self._apply_ai_fixes(ai_result["suggested_fixes"], "click"):
+                    self.memory.record_success("save", "ai_fix")
+                    return True
         return False
 
     def is_logged_in(self) -> bool:

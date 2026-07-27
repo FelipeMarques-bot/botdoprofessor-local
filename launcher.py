@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""BotDoProfessor — Launcher.
+"""BotDoProfessor — Launcher completo.
 
-Bootstrap: cria venv, instala dependencias, inicia Streamlit e abre o navegador.
+Versao embedded: NAO depende de Python instalado no sistema.
+Cria venv, instala dependencias, configura IA local, inicia painel.
 Compilar com PyInstaller: pyinstaller --onefile --name BotDoProfessor launcher.py
 """
 
@@ -13,11 +14,22 @@ import subprocess
 import tempfile
 import time
 import webbrowser
+import urllib.request
+import urllib.error
+import zipfile
+import json
 from pathlib import Path
 
 APP_DIR = Path.home() / ".bot_local"
 VENV_DIR = APP_DIR / "venv"
+OLLAMA_DIR = APP_DIR / "ollama"
+OLLAMA_EXE = OLLAMA_DIR / "ollama.exe"
+CONFIG_FILE = APP_DIR / "config.json"
 DOWNLOAD_URL = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
+
+OLLAMA_MODEL = "openbmb/minicpm-v4.6"
+OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+OLLAMA_PULL_TIMEOUT = 1800
 
 if os.name == "nt":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
@@ -72,12 +84,12 @@ def find_system_python():
                 return uv_py
 
     common_paths = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python310\python.exe"),
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
+        r"C:\Python312\python.exe",
         r"C:\Python311\python.exe",
         r"C:\Python310\python.exe",
-        r"C:\Python312\python.exe",
     ]
     for p in common_paths:
         if os.path.isfile(p):
@@ -161,47 +173,187 @@ def install_playwright_chromium():
         print("  Tente manualmente: python -m playwright install chromium")
 
 
-def setup_ollama_if_needed():
-    """Verifica e instala Ollama + modelo de visao se necessario."""
+def _find_ollama_exe():
+    """Encontra executavel do Ollama."""
+    if OLLAMA_EXE.exists():
+        return str(OLLAMA_EXE)
+
+    system_ollama = shutil.which("ollama")
+    if system_ollama:
+        return system_ollama
+
+    local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+    if local_app.exists():
+        return str(local_app)
+
+    return None
+
+
+def _is_ollama_running():
+    """Verifica se o servico Ollama esta rodando."""
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _is_model_available(model_name):
+    """Verifica se um modelo ja foi baixado."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5) as resp:
+            data = json.loads(resp.read())
+            models = data.get("models", [])
+            return any(model_name in m.get("name", "") for m in models)
+    except Exception:
+        return False
+
+
+def _get_available_ram_gb():
+    """Retorna RAM disponivel em GB."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        c_ulonglong = ctypes.c_ulonglong
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", c_ulonglong),
+                ("ullAvailPhys", c_ulonglong),
+                ("ullTotalPageFile", c_ulonglong),
+                ("ullAvailPageFile", c_ulonglong),
+                ("ullTotalVirtual", c_ulonglong),
+                ("ullAvailVirtual", c_ulonglong),
+                ("ullAvailExtendedVirtual", c_ulonglong),
+            ]
+        mem = MEMORYSTATUSEX()
+        mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+        return mem.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        return 8.0
+
+
+def setup_ollama():
+    """Baixa e instala Ollama + modelo minicpm-v4.6 automaticamente."""
+    print()
+    print("=" * 56)
+    print("  Configuracao de IA Local (Ollama)")
+    print("=" * 56)
+    print()
+
+    if _is_ollama_running() and _is_model_available(OLLAMA_MODEL):
+        print("[OK] Ollama rodando com modelo minicpm-v4.6")
+        return True
+
+    exe = _find_ollama_exe()
+
+    if not exe:
+        print("[i] Ollama nao encontrado. Baixando instalador (~100MB)...")
+        print("  [i] Isso leva 1-2 minutos.")
+
+        installer_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+        try:
+            print("  [i] Baixando de ollama.com...")
+            urllib.request.urlretrieve(OLLAMA_INSTALLER_URL, installer_path)
+            print("  [OK] Instalador baixado.")
+        except Exception as exc:
+            print(f"  [ER] Falha ao baixar Ollama: {exc}")
+            print("  [i] Instale manualmente: https://ollama.com/download")
+            return False
+
+        print("  [i] Instalando Ollama (pode pedir permissao de admin)...")
+        try:
+            subprocess.run([installer_path, "/SILENT"], check=True, timeout=120)
+            print("  [OK] Ollama instalado!")
+            time.sleep(3)
+        except Exception as exc:
+            print(f"  [ER] Falha na instalacao: {exc}")
+            return False
+
+        exe = _find_ollama_exe()
+        if not exe:
+            print("[ER] Ollama instalado mas executavel nao encontrado.")
+            return False
+
+    if not _is_ollama_running():
+        print("[i] Iniciando servico do Ollama...")
+        try:
+            subprocess.Popen([exe, "serve"], creationflags=subprocess.DETACHED_PROCESS)
+            time.sleep(3)
+            for _ in range(15):
+                if _is_ollama_running():
+                    break
+                time.sleep(2)
+        except Exception:
+            pass
+
+    if not _is_ollama_running():
+        print("[ER] Servico do Ollama nao iniciou.")
+        print("  [i] Tente iniciar manualmente: ollama serve")
+        return False
+
+    print("[OK] Ollama rodando!")
+
+    avail_ram = _get_available_ram_gb()
+    print(f"[i] RAM disponivel: {avail_ram:.1f} GB")
+
+    if not _is_model_available(OLLAMA_MODEL):
+        print()
+        print(f"[i] Baixando modelo {OLLAMA_MODEL} (~1.6GB)...")
+        print("  [i] Isso leva 3-8 minutos dependendo da internet.")
+        print("  [i] O modelo e necessario para IA analisar portais quando o bot falhar.")
+        print()
+        try:
+            result = subprocess.run([exe, "pull", OLLAMA_MODEL], timeout=OLLAMA_PULL_TIMEOUT)
+            if result.returncode == 0:
+                print(f"  [OK] Modelo {OLLAMA_MODEL} baixado!")
+            else:
+                print(f"  [ER] Erro ao baixar modelo (codigo {result.returncode}).")
+                print(f"  [i] Tente manualmente: ollama pull {OLLAMA_MODEL}")
+        except subprocess.TimeoutExpired:
+            print(f"  [ER] Timeout baixando modelo apos {OLLAMA_PULL_TIMEOUT}s.")
+            print(f"  [i] Tente manualmente: ollama pull {OLLAMA_MODEL}")
+        except Exception as exc:
+            print(f"  [ER] {exc}")
+    else:
+        print(f"[OK] Modelo {OLLAMA_MODEL} ja disponivel")
+
+    return True
+
+
+def ensure_ollama():
+    """Garante que Ollama esteja instalado e rodando com modelo."""
     try:
         sys.path.insert(0, str(get_bundled_dir()))
-        from ai_assist import (
-            _find_ollama_exe, _is_ollama_running, _is_ollama_installed,
-            _is_model_available, _get_available_ram_gb,
-            OLLAMA_MODEL,
-        )
-
-        os.environ.setdefault("AI_PROVIDER", "ollama")
-        os.environ.setdefault("OLLAMA_MODEL", OLLAMA_MODEL)
-
-        if _is_ollama_running() and _is_model_available(OLLAMA_MODEL):
-            print("[OK] Ollama rodando com modelo de visao")
-            return
-
-        avail_ram = _get_available_ram_gb()
-        if avail_ram < 4.0:
-            print(f"[i] RAM disponivel: {avail_ram:.1f} GB — IA local requer 4GB+")
-            print("[i] A extracao por foto nao estara disponivel.")
-            print("[i] Use planilhas CSV/Excel ou Google Sheets como alternativa.")
-            return
-
-        print()
-        print("  IA local (Ollama) pode ser instalada para extrair notas por foto.")
-        print("  Isso leva 3-5 minutos e baixa ~1.5GB.")
-        print("  Voce pode instalar depois pelo painel.")
-        print()
-
-        from ai_assist import setup_ollama
-        print("[i] Instalando Ollama...")
-        success = setup_ollama(logger=lambda m: print(f"  {m}"))
-        if success:
-            print("[OK] Ollama configurado!")
-        else:
-            print("[i] Ollama nao instalado agora. Instale depois pelo painel.")
+        from ai_assist import OLLAMA_AUTO_SETUP
+        if not OLLAMA_AUTO_SETUP:
+            return _is_ollama_running()
     except ImportError:
-        print("[i] Modulo de IA nao disponivel. Ignorando Ollama.")
-    except Exception as e:
-        print(f"[i] Verificacao de Ollama: {e}")
+        pass
+    return setup_ollama()
+
+
+def load_config():
+    """Carrega configuracao salva."""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_config(config):
+    """Salva configuracao."""
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
 
 
 def wait_for_streamlit(port=8501, timeout=30):
@@ -229,6 +381,9 @@ def main():
     print("  Este programa lanca notas, planos de aula e")
     print("  sequencias didaticas automaticamente no SGE.")
     print()
+    print("  Funciona SEM precisar instalar Python.")
+    print("  Tudo configurado automaticamente na primeira vez.")
+    print()
 
     python = find_system_python()
     if not python:
@@ -250,7 +405,11 @@ def main():
         print()
         install_playwright_chromium()
         print()
-        setup_ollama_if_needed()
+
+        config = load_config()
+        if config.get("ai_provider", "local") == "local":
+            setup_ollama()
+
         print()
         print("=" * 56)
         print("  [OK] Tudo configurado! Iniciando o painel...")

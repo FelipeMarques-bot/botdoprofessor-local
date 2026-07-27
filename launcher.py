@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """BotDoProfessor — Launcher embarcado.
 
-Funciona SEM Python instalado no sistema.
-Baixa Python portatil, cria venv, instala deps, inicia painel no navegador.
-Tudo silencioso — sem janela de terminal.
+Mostra splash screen com progresso, configura tudo silenciosamente,
+e abre o navegador automaticamente.
 """
 
 import os
@@ -17,6 +16,7 @@ import threading
 import zipfile
 import urllib.request
 import urllib.error
+import webbrowser
 from pathlib import Path
 
 APP_DIR = Path.home() / ".bot_local"
@@ -43,7 +43,6 @@ else:
 
 
 def log(msg):
-    """Escreve no log file (silencioso)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -52,21 +51,99 @@ def log(msg):
         pass
 
 
-def _hide_console():
-    """Esconde a janela do console no Windows."""
-    if os.name == "nt":
+class SplashScreen:
+    """Janela de progresso minimalista com tkinter."""
+
+    def __init__(self):
+        self.root = None
+        self.label_status = None
+        self.label_detail = None
+        self._closed = False
+        self._init_tk()
+
+    def _init_tk(self):
         try:
-            import ctypes
-            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-            if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 0)
+            import tkinter as tk
+            self.root = tk.Tk()
+            self.root.title("BotDoProfessor")
+            self.root.overrideredirect(True)
+            self.root.attributes("-topmost", True)
+
+            w, h = 420, 220
+            sx = self.root.winfo_screenwidth()
+            sy = self.root.winfo_screenheight()
+            self.root.geometry(f"{w}x{h}+{(sx-w)//2}+{(sy-h)//2}")
+
+            self.root.configure(bg="#0f3460")
+
+            tk.Label(
+                self.root, text="BotDoProfessor",
+                font=("Segoe UI", 18, "bold"), fg="white", bg="#0f3460",
+            ).pack(pady=(28, 4))
+
+            tk.Label(
+                self.root, text="Automatize suas notas no SGE",
+                font=("Segoe UI", 10), fg="#94a3b8", bg="#0f3460",
+            ).pack()
+
+            self.label_status = tk.Label(
+                self.root, text="Iniciando...",
+                font=("Segoe UI", 11, "bold"), fg="white", bg="#0f3460",
+            )
+            self.label_status.pack(pady=(24, 4))
+
+            self.label_detail = tk.Label(
+                self.root, text="Aguarde, isso pode levar alguns minutos na primeira vez",
+                font=("Segoe UI", 9), fg="#94a3b8", bg="#0f3460",
+                wraplength=360,
+            )
+            self.label_detail.pack()
+
+            self._progress_bar = tk.Frame(self.root, bg="#1b2a4a", height=4)
+            self._progress_bar.pack(fill="x", padx=40, pady=(16, 0))
+            self._progress_bar.pack_propagate(False)
+            self._progress_fill = tk.Frame(self._progress_bar, bg="#e94560", width=0)
+            self._progress_fill.pack(side="left", fill="y")
+
+            self.root.update()
+        except Exception as e:
+            log(f"Falha ao criar splash: {e}")
+            self.root = None
+
+    def update(self, status, detail=""):
+        if self._closed:
+            return
+        try:
+            if self.label_status:
+                self.label_status.config(text=status)
+            if self.label_detail:
+                self.label_detail.config(text=detail or "Aguarde...")
+            if self.root:
+                self.root.update()
         except Exception:
             pass
 
+    def set_progress(self, fraction):
+        if self._closed:
+            return
+        try:
+            if self._progress_fill and self._progress_bar:
+                w = int(self._progress_bar.winfo_width() * min(fraction, 1.0))
+                self._progress_fill.config(width=w)
+                if self.root:
+                    self.root.update()
+        except Exception:
+            pass
 
-def _set_utf8():
-    os.environ.setdefault("PYTHONUTF8", "1")
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.root:
+                self.root.destroy()
+        except Exception:
+            pass
 
 
 def _is_valid_python(path):
@@ -84,13 +161,11 @@ def _is_valid_python(path):
 
 
 def find_system_python():
-    """Encontra Python 3.11+ instalado no sistema."""
-    import shutil as _shutil
-    py = _shutil.which("py")
+    py = shutil.which("py")
     if py and _is_valid_python(py):
         return py
     for name in ("python3", "python"):
-        path = _shutil.which(name)
+        path = shutil.which(name)
         if _is_valid_python(path):
             return path
     uv_base = os.path.expandvars(r"%APPDATA%\uv\python")
@@ -113,15 +188,14 @@ def find_system_python():
     return None
 
 
-def download_portable_python():
-    """Baixa Python portavel embutido (~11MB)."""
+def download_portable_python(splash):
     log("Baixando Python portavel...")
     PORTABLE_PYTHON_DIR.mkdir(parents=True, exist_ok=True)
-
     if PORTABLE_PYTHON.exists():
         log("Python portavel ja existe")
         return True
 
+    splash.update("Baixando Python...", "Arquivo de ~11MB, rapido na primeira vez")
     zip_path = os.path.join(tempfile.gettempdir(), f"python-{PYTHON_VERSION}-embed.zip")
     try:
         urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
@@ -130,12 +204,11 @@ def download_portable_python():
         log(f"Falha ao baixar Python: {e}")
         return False
 
-    log("Extraindo Python portavel...")
+    splash.update("Extraindo Python...", "Isso leva poucos segundos")
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(str(PORTABLE_PYTHON_DIR))
         os.remove(zip_path)
-        log("Extraido com sucesso")
     except Exception as e:
         log(f"Falha ao extrair: {e}")
         return False
@@ -146,7 +219,7 @@ def download_portable_python():
         content = content.replace("#import site", "import site")
         pth_file.write_text(content, encoding="utf-8")
 
-    log("Configurando pip...")
+    splash.update("Configurando pip...", "Preparando gerenciador de pacotes")
     try:
         get_pip_path = os.path.join(tempfile.gettempdir(), "get-pip.py")
         urllib.request.urlretrieve(GET_PIP_URL, get_pip_path)
@@ -163,22 +236,19 @@ def download_portable_python():
     return True
 
 
-def get_python():
-    """Retorna o caminho do Python: sistema ou portavel."""
+def get_python(splash):
     sys_py = find_system_python()
     if sys_py:
         log(f"Python do sistema: {sys_py}")
         return sys_py
 
-    log("Python do sistema nao encontrado, verificando portavel...")
+    log("Python do sistema nao encontrado")
     if PORTABLE_PYTHON.exists():
-        log("Usando Python portavel")
+        log("Usando Python portavel existente")
         return str(PORTABLE_PYTHON)
 
-    log("Baixando Python portavel...")
-    if download_portable_python():
+    if download_portable_python(splash):
         return str(PORTABLE_PYTHON)
-
     return None
 
 
@@ -199,7 +269,6 @@ def get_painel_path():
 
 
 def run_silent(cmd, timeout=300):
-    """Executa comando silenciosamente (sem console)."""
     log(f"Executando: {' '.join(str(c) for c in cmd[:3])}...")
     try:
         result = subprocess.run(
@@ -264,8 +333,8 @@ def install_playwright_chromium(python_path):
 
 
 def setup_ollama_background():
-    """Instala Ollama em background (nao bloqueia)."""
     try:
+        sys.path.insert(0, str(get_bundled_dir()))
         from ai_assist import OLLAMA_AUTO_SETUP
         if not OLLAMA_AUTO_SETUP:
             return
@@ -278,8 +347,7 @@ def setup_ollama_background():
     def _find_ollama():
         if ollama_exe.exists():
             return str(ollama_exe)
-        import shutil as _shutil
-        system_ollama = _shutil.which("ollama")
+        system_ollama = shutil.which("ollama")
         if system_ollama:
             return system_ollama
         local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
@@ -289,25 +357,22 @@ def setup_ollama_background():
 
     exe = _find_ollama()
     if not exe:
-        log("Ollama nao encontrado — instalacao pulada")
         return
 
     try:
         req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
         urllib.request.urlopen(req, timeout=3)
-        log("Ollama ja rodando")
         return
     except Exception:
         pass
 
-    log("Iniciando Ollama...")
     try:
         subprocess.Popen(
             [exe, "serve"],
             creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
         )
-    except Exception as e:
-        log(f"Falha ao iniciar Ollama: {e}")
+    except Exception:
+        pass
 
 
 def load_config():
@@ -320,14 +385,7 @@ def load_config():
     return {}
 
 
-def save_config(config):
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-
-
 def wait_for_streamlit(port=8501, timeout=60):
-    import urllib.error
     url = f"http://localhost:{port}"
     for _ in range(timeout * 2):
         try:
@@ -339,7 +397,6 @@ def wait_for_streamlit(port=8501, timeout=60):
 
 
 def show_error_box(title, message):
-    """Mostra message box de erro (Windows)."""
     if os.name == "nt":
         try:
             import ctypes
@@ -349,71 +406,127 @@ def show_error_box(title, message):
     log(f"ERRO: {title} — {message}")
 
 
+def _set_utf8():
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
+def _hide_console():
+    if os.name == "nt":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+        except Exception:
+            pass
+
+
 def main():
     _set_utf8()
     _hide_console()
     APP_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-
     log("=" * 40)
     log("BotDoProfessor — Iniciando...")
 
-    python = get_python()
-    if not python:
-        show_error_box(
-            "BotDoProfessor",
-            "Nao foi possivel encontrar ou baixar Python.\n\n"
-            "Instale o Python: https://www.python.org/downloads/\n"
-            "Marque 'Add Python to PATH' durante a instalacao."
-        )
-        sys.exit(1)
-
-    if not VENV_DIR.exists():
-        log("Primeira execucao — configurando ambiente...")
-        if not create_venv(python):
-            show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual.")
-            sys.exit(1)
-        if not install_requirements(VENV_PIP):
-            show_error_box("BotDoProfessor", "Falha ao instalar dependencias.\nVerifique sua conexao com a internet.")
-            sys.exit(1)
-        install_playwright_chromium(str(VENV_PYTHON))
-        threading.Thread(target=setup_ollama_background, daemon=True).start()
-        log("Configuracao concluida")
-    else:
-        log("Ambiente ja configurado")
-
-    painel_path = get_painel_path()
-    if not painel_path:
-        show_error_box("BotDoProfessor", "Arquivo do painel nao encontrado.")
-        sys.exit(1)
-
-    log("Iniciando painel web...")
-    port = 8501
-    proc = subprocess.Popen(
-        [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
-         "--server.headless", "true",
-         "--server.port", str(port),
-         "--browser.gatherUsageStats", "false"],
-        cwd=str(APP_DIR),
-        creationflags=NO_WINDOW,
-    )
-
-    import webbrowser
-    if wait_for_streamlit(port, timeout=60):
-        webbrowser.open(f"http://localhost:{port}")
-        log("Navegador aberto!")
-    else:
-        log("Streamlit nao respondeu — tentando abrir manualmente...")
-        webbrowser.open(f"http://localhost:{port}")
+    splash = SplashScreen()
 
     try:
-        proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
+        splash.update("Verificando Python...", "Procurando Python no sistema")
+        python = get_python(splash)
+        if not python:
+            splash.close()
+            show_error_box(
+                "BotDoProfessor",
+                "Nao foi possivel encontrar ou baixar Python.\n\n"
+                "Instale o Python: https://www.python.org/downloads/\n"
+                "Marque 'Add Python to PATH' durante a instalacao."
+            )
+            sys.exit(1)
+
+        if not VENV_DIR.exists():
+            splash.update("Configurando ambiente...", "Criando virtual environment (1/4)")
+            splash.set_progress(0.1)
+            if not create_venv(python):
+                splash.close()
+                show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual.")
+                sys.exit(1)
+
+            splash.update("Instalando dependencias...", "Baixando pacotes necessarios (2/4)")
+            splash.set_progress(0.2)
+            if not install_requirements(VENV_PIP):
+                splash.close()
+                show_error_box("BotDoProfessor", "Falha ao instalar dependencias.\nVerifique sua conexao com a internet.")
+                sys.exit(1)
+
+            splash.update("Instalando navegador...", "Chromium para automacao (3/4)")
+            splash.set_progress(0.6)
+            install_playwright_chromium(str(VENV_PYTHON))
+
+            splash.update("Configurando IA local...", "Ollama + modelo de visao (4/4)")
+            splash.set_progress(0.8)
+            threading.Thread(target=setup_ollama_background, daemon=True).start()
+
+            log("Configuracao concluida")
+        else:
+            log("Ambiente ja configurado")
+
+        painel_path = get_painel_path()
+        if not painel_path:
+            splash.close()
+            show_error_box("BotDoProfessor", "Arquivo do painel nao encontrado.")
+            sys.exit(1)
+
+        splash.update("Iniciando painel web...", "O navegador vai abrir automaticamente")
+        splash.set_progress(0.9)
+        log("Iniciando Streamlit...")
+
+        port = 8501
+        proc = subprocess.Popen(
+            [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
+             "--server.headless", "true",
+             "--server.port", str(port),
+             "--browser.gatherUsageStats", "false"],
+            cwd=str(APP_DIR),
+            creationflags=NO_WINDOW,
+        )
+
+        splash.update("Aguardando painel...", "Verificando se o servidor esta pronto")
+        splash.set_progress(0.95)
+
+        if wait_for_streamlit(port, timeout=60):
+            splash.update("Abrindo navegador...", "Pronto!")
+            splash.set_progress(1.0)
+            time.sleep(0.3)
+            webbrowser.open(f"http://localhost:{port}")
+            log("Navegador aberto!")
+        else:
+            log("Streamlit nao respondeu")
+            splash.close()
+            show_error_box(
+                "BotDoProfessor",
+                f"O painel nao abriu automaticamente.\n\n"
+                f"Tente abrir manualmente: http://localhost:{port}\n\n"
+                f"Se o problema persistir, verifique o log:\n{LOG_FILE}"
+            )
+            webbrowser.open(f"http://localhost:{port}")
+
+        splash.close()
+
         try:
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
+    except Exception as e:
+        log(f"Erro fatal: {e}")
+        splash.close()
+        show_error_box("BotDoProfessor", f"Erro inesperado:\n{e}")
 
 
 if __name__ == "__main__":

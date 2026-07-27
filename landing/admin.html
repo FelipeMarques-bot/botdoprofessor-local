@@ -17,7 +17,7 @@
         .login-box input{width:100%;padding:12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.95em;margin-bottom:16px;outline:none;transition:border .2s}
         .login-box input:focus{border-color:#3b82f6}
         .login-box .btn{width:100%;padding:13px;background:linear-gradient(135deg,#0c1b33,#1b2a4a);color:#fff;border:none;border-radius:8px;font-size:1em;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .15s}
-        .login-box .btn:hover{transform:translatéY(-1px);box-shadow:0 4px 16px rgba(12,27,51,.3)}
+        .login-box .btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(12,27,51,.3)}
         .login-box .err{color:#e94560;font-size:.85em;margin-bottom:12px;display:none}
 
         .dashboard{display:none}
@@ -33,9 +33,9 @@
 
         .content{max-width:1200px;margin:0 auto;padding:28px 24px}
 
-        .stats{display:grid;grid-templaté-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:28px}
+        .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:28px}
         .stat-card{background:#fff;border-radius:12px;padding:22px 20px;box-shadow:0 2px 12px rgba(0,0,0,.04);transition:transform .2s}
-        .stat-card:hover{transform:translatéY(-2px)}
+        .stat-card:hover{transform:translateY(-2px)}
         .stat-card .label{font-size:.78em;text-transform:uppercase;letter-spacing:.6px;color:#94a3b8;font-weight:600;margin-bottom:6px}
         .stat-card .value{font-size:1.8em;font-weight:800;letter-spacing:-.5px}
         .stat-card .sub{font-size:.82em;color:#64748b;margin-top:4px}
@@ -51,7 +51,7 @@
         .filters select,.filters input{padding:9px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.88em;background:#fff;outline:none;cursor:pointer}
         .filters select:focus,.filters input:focus{border-color:#3b82f6}
         .btn-new{padding:10px 22px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:.88em;cursor:pointer;transition:all .2s;position:relative;white-space:nowrap}
-        .btn-new:hover{box-shadow:0 4px 16px rgba(59,130,246,.3);transform:translatéY(-1px)}
+        .btn-new:hover{box-shadow:0 4px 16px rgba(59,130,246,.3);transform:translateY(-1px)}
         .btn-new:disabled{opacity:.6;cursor:not-allowed;transform:none}
 
         .table-wrap{background:#fff;border-radius:14px;box-shadow:0 2px 16px rgba(0,0,0,.05);overflow:hidden}
@@ -120,8 +120,8 @@
         .modal-footer .btn-danger{background:linear-gradient(135deg,#e94560,#c73650);color:#fff}
         .modal-footer .btn-danger:hover{box-shadow:0 4px 16px rgba(233,69,96,.3)}
 
-        .toast{position:fixed;bottom:24px;right:24px;padding:14px 22px;border-radius:10px;color:#fff;font-weight:600;font-size:.9em;z-index:300;opacity:0;transform:translatéY(16px);transition:all .3s;pointer-events:none}
-        .toast.show{opacity:1;transform:translatéY(0)}
+        .toast{position:fixed;bottom:24px;right:24px;padding:14px 22px;border-radius:10px;color:#fff;font-weight:600;font-size:.9em;z-index:300;opacity:0;transform:translateY(16px);transition:all .3s;pointer-events:none}
+        .toast.show{opacity:1;transform:translateY(0)}
         .toast.success{background:#059669}
         .toast.error{background:#e94560}
         .toast.info{background:#3b82f6}
@@ -132,7 +132,7 @@
 
         @media(max-width:768px){
             .content{padding:16px 12px}
-            .stats{grid-templaté-columns:repeat(2,1fr)}
+            .stats{grid-template-columns:repeat(2,1fr)}
             .topbar{padding:0 16px}
             .toolbar{flex-direction:column;align-items:stretch}
             .filters{flex-direction:column}
@@ -368,7 +368,7 @@ async function api(method, path, body) {
     if (body) opts.body = JSON.stringify(body);
     const resp = await fetch(API + path, opts);
     const data = await resp.json();
-    if (resp.status === 401) { doLogout(); throw new Error(data.error || 'Sessão expirada'); }
+    if (resp.status === 401) { doLogout(); throw new Error(data.error || 'Sessao expirada'); }
     if (resp.status === 429) {
         const msg = data.error || 'Muitas tentativas. Aguarde.';
         toast(msg, 'error');
@@ -395,10 +395,10 @@ function toast(msg, type) {
     setTimeout(() => el.classList.remove('show'), 3500);
 }
 
-function formatDaté(iso) {
+function formatDate(iso) {
     if (!iso) return '-';
-    const d = new Daté(iso);
-    return d.toLocaleDatéString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+    const d = new Date(iso);
+    return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
 }
 
 function maskCpf(cpf) {
@@ -417,7 +417,7 @@ function planAmount(plan) {
 }
 
 function methodLabel(m) {
-    return m === 'pix' ? 'PIX' : m === 'mercadopago_pix' ? 'MP Pix' : m === 'mercadopago' ? 'Cartão' : m || '-';
+    return m === 'pix' ? 'PIX' : m === 'mercadopago_pix' ? 'MP Pix' : m === 'mercadopago' ? 'Cartao' : m || '-';
 }
 
 function statusBadge(s) {
@@ -479,17 +479,17 @@ async function doChangePw() {
     const errEl = document.getElementById('pwError');
 
     if (!oldPw) {
-        errEl.textContent = 'Senha atual obrigatória'; errEl.style.display='block'; return;
+        errEl.textContent = 'Senha atual obrigatoria'; errEl.style.display='block'; return;
     }
     if (!newUsername && !newPw) {
-        errEl.textContent = 'Informe novo usuário ou nova senha'; errEl.style.display='block'; return;
+        errEl.textContent = 'Informe novo usuario ou nova senha'; errEl.style.display='block'; return;
     }
 
     try {
         if (newUsername) {
             const d = await api('POST', '/api/auth/change-username', { password: oldPw, new_username: newUsername });
             if (d.error) { errEl.textContent = d.error; errEl.style.display='block'; return; }
-            toast('Usuário alterado para: ' + d.new_username, 'success');
+            toast('Usuario alterado para: ' + d.new_username, 'success');
             document.getElementById('userTag').textContent = d.new_username;
             if (d.token) {
                 token = d.token;
@@ -499,11 +499,11 @@ async function doChangePw() {
 
         if (newPw) {
             if (newPw.length < 6) {
-                errEl.textContent = 'Nova senha deve ter no mínimo 6 caracteres'; errEl.style.display='block'; return;
+                errEl.textContent = 'Nova senha deve ter no minimo 6 caracteres'; errEl.style.display='block'; return;
             }
             const d2 = await api('POST', '/api/auth/change-password', { old_password: oldPw, new_password: newPw });
             if (d2.error) { errEl.textContent = d2.error; errEl.style.display='block'; return; }
-            toast('Senha alterada com sucesso! Faça login novamente.', 'success');
+            toast('Senha alterada com sucesso! Faca login novamente.', 'success');
             if (d2.token) {
                 token = d2.token;
                 localStorage.setItem('admin_token', token);
@@ -528,7 +528,7 @@ async function loadStats() {
     try {
         const d = await api('GET', '/api/admin/payments/stats');
         document.getElementById('statsRow').innerHTML = `
-            <div class="stat-card total"><div class="label">Total</div><div class="value">${d.total}</div><div class="sub">solicitações</div></div>
+            <div class="stat-card total"><div class="label">Total</div><div class="value">${d.total}</div><div class="sub">solicitacoes</div></div>
             <div class="stat-card pending"><div class="label">Pendentes</div><div class="value">${d.pending}</div><div class="sub">R$ ${d.pending_amount.toFixed(2)}</div></div>
             <div class="stat-card contacted"><div class="label">Contatados</div><div class="value">${d.contacted}</div><div class="sub">aguardando pgto</div></div>
             <div class="stat-card approved"><div class="label">Aprovados</div><div class="value">${d.approved}</div><div class="sub">R$ ${d.approved_amount.toFixed(2)}</div></div>
@@ -547,7 +547,7 @@ async function loadPayments() {
     try {
         const d = await api('GET', url);
         const body = document.getElementById('paymentsBody');
-        const empty = document.getElementById('emptyStaté');
+        const empty = document.getElementById('emptyState');
 
         if (!d.payments || d.payments.length === 0) {
             body.innerHTML = '';
@@ -562,7 +562,7 @@ async function loadPayments() {
                     <td>R$ ${p.amount.toFixed(2)}</td>
                     <td>${methodLabel(p.payment_method)}</td>
                     <td>${statusBadge(p.status)}</td>
-                    <td>${formatDaté(p.creatéd_at)}</td>
+                    <td>${formatDate(p.created_at)}</td>
                     <td>
                         <div class="actions-cell">
                             <button class="btn-sm btn-view" onclick="viewDetail(${p.id})">Ver</button>
@@ -575,13 +575,13 @@ async function loadPayments() {
             `).join('');
         }
 
-        renderPágination(d.pages || 1, d.current_page || 1);
+        renderPagination(d.pages || 1, d.current_page || 1);
     } catch(e) { toast('Erro ao carregar pagamentos', 'error'); }
 }
 
-function esc(s) { const d = document.creatéElement('div'); d.textContent = s||''; return d.innerHTML; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s||''; return d.innerHTML; }
 
-function renderPágination(pages, current) {
+function renderPagination(pages, current) {
     const el = document.getElementById('pagination');
     if (pages <= 1) { el.innerHTML = ''; return; }
     let html = `<button ${current<=1?'disabled':''} onclick="goPage(${current-1})">&laquo;</button>`;
@@ -589,7 +589,7 @@ function renderPágination(pages, current) {
         html += `<button class="${i===current?'active':''}" onclick="goPage(${i})">${i}</button>`;
     }
     html += `<button ${current>=pages?'disabled':''} onclick="goPage(${current+1})">&raquo;</button>`;
-    html += `<span class="page-info">Página ${current} de ${pages}</span>`;
+    html += `<span class="page-info">Pagina ${current} de ${pages}</span>`;
     el.innerHTML = html;
 }
 
@@ -606,13 +606,13 @@ async function viewDetail(id) {
             <div class="detail-row"><span class="lbl">CPF</span><span class="val">${esc(p.cpf)}</span></div>
             <div class="detail-row"><span class="lbl">Plano</span><span class="val">${planLabel(p.plan)}</span></div>
             <div class="detail-row"><span class="lbl">Valor</span><span class="val">R$ ${p.amount.toFixed(2)}</span></div>
-            <div class="detail-row"><span class="lbl">Método</span><span class="val">${methodLabel(p.payment_method)}</span></div>
+            <div class="detail-row"><span class="lbl">Metodo</span><span class="val">${methodLabel(p.payment_method)}</span></div>
             <div class="detail-row"><span class="lbl">Status</span><span class="val">${statusBadge(p.status)}</span></div>
-            <div class="detail-row"><span class="lbl">Referência</span><span class="val" style="font-family:monospace;font-size:.85em">${esc(p.reference||'-')}</span></div>
-            <div class="detail-row"><span class="lbl">Criado em</span><span class="val">${formatDaté(p.creatéd_at)}</span></div>
-            ${p.contacted_at ? `<div class="detail-row"><span class="lbl">Contatado em</span><span class="val">${formatDaté(p.contacted_at)}</span></div>` : ''}
-            ${p.approved_at ? `<div class="detail-row"><span class="lbl">Aprovado em</span><span class="val">${formatDaté(p.approved_at)}</span></div>` : ''}
-            ${p.license_key ? `<div class="detail-row"><span class="lbl">Chave Licença</span><span class="val key">${esc(p.license_key)}</span></div>` : ''}
+            <div class="detail-row"><span class="lbl">Referencia</span><span class="val" style="font-family:monospace;font-size:.85em">${esc(p.reference||'-')}</span></div>
+            <div class="detail-row"><span class="lbl">Criado em</span><span class="val">${formatDate(p.created_at)}</span></div>
+            ${p.contacted_at ? `<div class="detail-row"><span class="lbl">Contatado em</span><span class="val">${formatDate(p.contacted_at)}</span></div>` : ''}
+            ${p.approved_at ? `<div class="detail-row"><span class="lbl">Aprovado em</span><span class="val">${formatDate(p.approved_at)}</span></div>` : ''}
+            ${p.license_key ? `<div class="detail-row"><span class="lbl">Chave Licenca</span><span class="val key">${esc(p.license_key)}</span></div>` : ''}
             ${p.admin_notes ? `<div class="detail-row"><span class="lbl">Notas Admin</span><span class="val">${esc(p.admin_notes)}</span></div>` : ''}
         `;
         document.getElementById('detailFooter').innerHTML = `
@@ -636,7 +636,7 @@ async function markContacted(id) {
 
 async function rejectPayment(id) {
     if (!confirm('Tem certeza que deseja rejeitar este pagamento?')) return;
-    const notes = prompt('Motivo da rejeição (opcional):');
+    const notes = prompt('Motivo da rejeicao (opcional):');
     try {
         await api('POST', `/api/admin/payments/${id}/reject`, { notes: notes || '' });
         toast('Pagamento rejeitado', 'info');
@@ -677,16 +677,16 @@ async function confirmApprove() {
         if (result.email_sent === false) {
             document.getElementById('approveResult').innerHTML = `
                 <div class="license-box">
-                    <div class="lbl">Chave de licença gerada</div>
+                    <div class="lbl">Chave de licenca gerada</div>
                     <div class="key">${esc(result.license_key)}</div>
                 </div>
-                <p style="color:#f59e0b;font-size:.9em;margin-top:12px;text-align:center">Pagamento aprovado, mas o email NÃO foi enviado. Verifique as configurações SMTP no .env (SMTP_PASS vazio).</p>
+                <p style="color:#f59e0b;font-size:.9em;margin-top:12px;text-align:center">Pagamento aprovado, mas o email NAO foi enviado. Verifique as configuracoes SMTP no .env (SMTP_PASS vazio).</p>
             `;
-            toast('Aprovado, mas email não enviado. Verifique SMTP.', 'error');
+            toast('Aprovado, mas email nao enviado. Verifique SMTP.', 'error');
         } else {
             document.getElementById('approveResult').innerHTML = `
                 <div class="license-box">
-                    <div class="lbl">Chave de licença gerada</div>
+                    <div class="lbl">Chave de licenca gerada</div>
                     <div class="key">${esc(result.license_key)}</div>
                 </div>
                 <p style="color:#059669;font-size:.9em;margin-top:12px;text-align:center">Email enviado com sucesso!</p>
@@ -713,7 +713,7 @@ function openNewModal() {
     openModal('newModal');
 }
 
-async function creatéPayment() {
+async function createPayment() {
     const name = document.getElementById('newName').value.trim();
     const email = document.getElementById('newEmail').value.trim();
     const cpf = document.getElementById('newCpf').value.trim().replace(/\D/g,'');
@@ -730,7 +730,7 @@ async function creatéPayment() {
     const btn = document.querySelector('#newModal .btn-primary');
     setBtnLoading(btn, true);
     try {
-        await api('POST', '/api/admin/payments/creaté', {
+        await api('POST', '/api/admin/payments/create', {
             name, email, cpf, plan, amount, payment_method: method, notes
         });
         toast('Pagamento criado com sucesso', 'success');
@@ -751,7 +751,7 @@ function openManualSub() {
     openModal('manualSubModal');
 }
 
-async function creatéManualSub() {
+async function createManualSub() {
     const name = document.getElementById('msName').value.trim();
     const email = document.getElementById('msEmail').value.trim();
     const cpf = document.getElementById('msCpf').value.trim().replace(/\D/g,'');
@@ -766,12 +766,12 @@ async function creatéManualSub() {
     const btn = document.querySelector('#manualSubModal .btn-success');
     setBtnLoading(btn, true);
     try {
-        const d = await api('POST', '/api/admin/payments/creaté-manual', {
+        const d = await api('POST', '/api/admin/payments/create-manual', {
             name, email, cpf, plan, notes
         });
         if (d.error) { toast(d.error, 'error'); return; }
         if (d.email_sent === false) {
-            toast('Assinatura criada, mas o email NÃO foi enviado. Verifique as configurações SMTP no .env (SMTP_PASS vazio). Chave: ' + d.license_key, 'error');
+            toast('Assinatura criada, mas o email NAO foi enviado. Verifique as configuracoes SMTP no .env (SMTP_PASS vazio). Chave: ' + d.license_key, 'error');
         } else {
             toast('Assinatura criada e email enviado! Chave: ' + d.license_key, 'success');
         }
@@ -783,7 +783,7 @@ async function creatéManualSub() {
 
 async function revokeSub(id, name) {
     if (!confirm(`Revogar assinatura de ${name}? O acesso sera bloqueado imediatamente.`)) return;
-    const reason = prompt('Motivo da revogação (obrigatório):');
+    const reason = prompt('Motivo da revogacao (obrigatorio):');
     if (reason === null) return;
     try {
         const d = await api('POST', `/api/admin/payments/${id}/revoke`, { reason: reason || 'Revogado pelo admin' });
@@ -808,7 +808,7 @@ if (token) {
     }).catch(e => {
         doLogout();
         const errEl = document.getElementById('loginErr');
-        errEl.textContent = 'Sessão expirada. Faça login novamente.';
+        errEl.textContent = 'Sessao expirada. Faca login novamente.';
         errEl.style.display = 'block';
     });
 }

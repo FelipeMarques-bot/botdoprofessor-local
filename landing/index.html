@@ -28,8 +28,8 @@
             animation: heroFloat 20s ease-in-out infinite;
         }
         @keyframes heroFloat {
-            0%, 100% { transform: translaté(0, 0); }
-            50% { transform: translaté(-20px, -10px); }
+            0%, 100% { transform: translate(0, 0); }
+            50% { transform: translate(-20px, -10px); }
         }
         .hero-content { position: relative; z-index: 1; max-width: 800px; margin: 0 auto; }
         .hero-badge {
@@ -78,13 +78,13 @@
             animation: fadeInUp 0.9s ease-out;
         }
         .hero .cta:hover {
-            transform: translatéY(-2px);
+            transform: translateY(-2px);
             box-shadow: 0 8px 30px rgba(233,69,96,0.4);
         }
 
         .features {
             display: grid;
-            grid-templaté-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: 28px;
             max-width: 1000px;
             margin: -50px auto 60px;
@@ -106,7 +106,7 @@
         .feature:nth-child(2) { animation-delay: 0.2s; }
         .feature:nth-child(3) { animation-delay: 0.3s; }
         .feature:hover {
-            transform: translatéY(-6px);
+            transform: translateY(-6px);
             box-shadow: 0 12px 40px rgba(0,0,0,0.1);
         }
         .feature-icon {
@@ -125,7 +125,7 @@
         /* What you receive */
         .receive { max-width: 800px; margin: 0 auto 70px; padding: 0 20px; }
         .receive h2 { text-align: center; font-size: 2em; font-weight: 800; margin-bottom: 44px; }
-        .receive-grid { display: grid; grid-templaté-columns: 1fr 1fr; gap: 20px; }
+        .receive-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         .receive-item {
             background: white;
             border-radius: 12px;
@@ -155,7 +155,7 @@
         .pricing { max-width: 1000px; margin: 0 auto 70px; padding: 0 20px; }
         .pricing h2 { text-align: center; font-size: 2em; font-weight: 800; margin-bottom: 12px; }
         .pricing .subtitle { text-align: center; color: #64748b; margin-bottom: 40px; font-size: 1.05em; }
-        .plans { display: grid; grid-templaté-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+        .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
         .plan {
             background: white;
             border-radius: 14px;
@@ -166,11 +166,11 @@
             transition: transform 0.25s, box-shadow 0.25s;
             position: relative;
         }
-        .plan:hover { transform: translatéY(-4px); box-shadow: 0 12px 40px rgba(0,0,0,0.1); }
+        .plan:hover { transform: translateY(-4px); box-shadow: 0 12px 40px rgba(0,0,0,0.1); }
         .plan.popular { border-color: #e94560; }
         .plan.popular::after {
             content: "Mais popular";
-            position: absolute; top: -13px; left: 50%; transform: translatéX(-50%);
+            position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
             background: linear-gradient(135deg, #e94560, #c73650);
             color: white; padding: 5px 18px; border-radius: 20px;
             font-size: 0.8em; font-weight: 600;
@@ -192,7 +192,7 @@
             background: linear-gradient(135deg, #e94560, #c73650);
             color: white; border-color: transparent;
         }
-        .plan.popular .btn:hover { box-shadow: 0 4px 20px rgba(233,69,96,0.3); transform: translatéY(-1px); }
+        .plan.popular .btn:hover { box-shadow: 0 4px 20px rgba(233,69,96,0.3); transform: translateY(-1px); }
 
         /* How it works */
         .how { max-width: 800px; margin: 0 auto 70px; padding: 0 20px; }
@@ -228,19 +228,19 @@
         footer a { color: #e94560; text-decoration: none; font-weight: 500; }
 
         @keyframes fadeInUp {
-            from { opacity: 0; transform: translatéY(24px); }
-            to { opacity: 1; transform: translatéY(0); }
+            from { opacity: 0; transform: translateY(24px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         @keyframes fadeInDown {
-            from { opacity: 0; transform: translatéY(-16px); }
-            to { opacity: 1; transform: translatéY(0); }
+            from { opacity: 0; transform: translateY(-16px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         @media (max-width: 600px) {
             .hero h1 { font-size: 2em; }
             .hero p { font-size: 1em; }
             .plan .price { font-size: 2em; }
-            .receive-grid { grid-templaté-columns: 1fr; }
+            .receive-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -280,7 +280,7 @@
                 <p>Arquivo único que você baixa e executa direto. Não precisa instalar Python, nem configure nada. É só duplo-clique.</p>
             </div>
             <div class="receive-item">
-                <h4>Chave de licença válida por 12, 24 ou 36 meses</h4>
+                <h4>Chave de licença valida por 12, 24 ou 36 meses</h4>
                 <p>Licença pessoal enviada por email após o pagamento. Ative uma vez e o programa lembra para você.</p>
             </div>
             <div class="receive-item">
@@ -303,7 +303,7 @@
         <p class="subtitle">Só é necessário um computador com Windows e internet.</p>
         <div class="req-list">
             <div class="req-badge ok">Windows 10 ou 11</div>
-            <div class="req-badge ok">Conexão com a internet</div>
+            <div class="req-badge ok">Conexao com a internet</div>
             <div class="req-badge ok">Não precisa de Python</div>
             <div class="req-badge ok">Não precisa de conhecimento técnico</div>
         </div>
@@ -411,7 +411,7 @@
         </div>
         <div class="faq-item">
             <h4>Como funciona o pagamento?</h4>
-            <p>Você escolhe o plano, preenche seus dados e paga via Pix ou cartão de crédito pelo Mercado Pago. Assim que o pagamento é confirmado (instantâneo no cartão, até 5 min no Pix), a chave de licença é enviada para seu email automaticamente.</p>
+            <p>Você escolhe o plano, preenche seus dados e paga via Pix ou cartão de crédito pelo Mercado Pago. Assim que o pagamento é confirmado (instantaneo no cartão, até 5 min no Pix), a chave de licença e enviada para seu email automaticamente.</p>
         </div>
         <div class="faq-item">
             <h4>É se eu não gostar?</h4>
@@ -419,7 +419,7 @@
         </div>
         <div class="faq-item">
             <h4>Preciso de internet para usar?</h4>
-            <p>Sim, na primeira vez (para válidar a licença e acessar o SGE). Após o login, o programa funciona com o navegador aberto, entao a conexão deve permanecer ativa durante o lançamento.</p>
+            <p>Sim, na primeira vez (para validar a licença e acessar o SGE). Após o login, o programa funciona com o navegador aberto, entao a conexao deve permanecer ativa durante o lançamento.</p>
         </div>
     </div>
 

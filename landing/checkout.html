@@ -43,7 +43,7 @@
         <div class="checkout" id="checkout-form">
             <h1>BotDoProfessor</h1>
             <p class="plan-name" id="plan-label">Plano: Carregando...</p>
-            <p class="plan-desc">Pagamento único via Mercado Pago. Após a confirmação, você recebe a chave de licença e o link para baixar o programa por email.</p>
+            <p class="plan-desc">Pagamento único via Mercado Pago. Após a confirmacao, você recebe a chave de licença e o link para baixar o programa por email.</p>
 
             <div class="error" id="error-msg"></div>
 
@@ -107,7 +107,7 @@
             el.style.display = msg ? 'block' : 'none';
         }
 
-        function válidatéForm() {
+        function validateForm() {
             const name = document.getElementById('name').value.trim();
             const email = document.getElementById('email').value.trim();
             const cpf = document.getElementById('cpf').value.trim();
@@ -116,20 +116,20 @@
                 return false;
             }
             if (!email.includes('@')) {
-                showError('Email inválido.');
+                showError('Email invalido.');
                 return false;
             }
             return true;
         }
 
         async function payWithCard() {
-            if (!válidatéForm()) return;
+            if (!validateForm()) return;
             showError('');
             document.getElementById('pay-card').disabled = true;
             document.getElementById('pay-card').textContent = 'Criando pagamento...';
 
             try {
-                const resp = await fetch('/api/payment/creaté', {
+                const resp = await fetch('/api/payment/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -146,25 +146,25 @@
                 } else if (data.error) {
                     showError(data.error);
                     document.getElementById('pay-card').disabled = false;
-                    document.getElementById('pay-card').textContent = 'Pagar com cartão de crédito';
+                    document.getElementById('pay-card').textContent = 'Pagar com cartao de credito';
                 } else {
                     window.location.href = data.init_point;
                 }
             } catch (e) {
                 showError('Erro ao criar pagamento. Tente novamente.');
                 document.getElementById('pay-card').disabled = false;
-                document.getElementById('pay-card').textContent = 'Pagar com cartão de crédito';
+                document.getElementById('pay-card').textContent = 'Pagar com cartao de credito';
             }
         }
 
         async function payWithPix() {
-            if (!válidatéForm()) return;
+            if (!validateForm()) return;
             showError('');
             document.getElementById('pay-pix').disabled = true;
             document.getElementById('pay-pix').textContent = 'Gerando Pix...';
 
             try {
-                const resp = await fetch('/api/payment/creaté', {
+                const resp = await fetch('/api/payment/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -185,8 +185,8 @@
                         <img src="data:image/png;base64,${data.qr_code_base64}" style="width:200px;display:block;margin:0 auto 16px">
                         <textarea readonly style="width:100%;height:60px;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:0.85em">${data.qr_code || ''}</textarea>
                         <button onclick="navigator.clipboard.writeText('${data.qr_code || ''}')" style="width:100%;padding:10px;margin-top:8px;background:#32BCAD;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600">Copiar chave Pix</button>
-                        <p style="margin-top:16px;color:#64748b;font-size:0.9em;line-height:1.6">Após o pagamento, a chave de licença e o link de download serão enviados para <b>${document.getElementById('email').value}</b>. O email pode levar alguns minutos para chegar.</p>
-                        <a href="/" style="display:block;text-align:center;margin-top:16px;color:#666;text-decoration:none">Voltar ao início</a>
+                        <p style="margin-top:16px;color:#64748b;font-size:0.9em;line-height:1.6">Apos o pagamento, a chave de licenca e o link de download serao enviados para <b>${document.getElementById('email').value}</b>. O email pode levar alguns minutos para chegar.</p>
+                        <a href="/" style="display:block;text-align:center;margin-top:16px;color:#666;text-decoration:none">Voltar ao inicio</a>
                     `;
                 } else if (data.error) {
                     showError(data.error);

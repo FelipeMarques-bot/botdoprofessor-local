@@ -385,15 +385,34 @@ def load_config():
     return {}
 
 
-def wait_for_streamlit(port=8501, timeout=60):
+def wait_for_streamlit(proc, port=8501, timeout=90, splash=None):
+    """Aguarda Streamlit responder. Verifica se processo ainda esta vivo."""
     url = f"http://localhost:{port}"
-    for _ in range(timeout * 2):
+    log_file = str(LOG_DIR / "streamlit.log")
+
+    log(f"Aguardando Streamlit na porta {port}...")
+    time.sleep(3)
+
+    for i in range(timeout * 2):
+        if proc.poll() is not None:
+            stderr = ""
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                    stderr = f.read()[-2000:]
+            except Exception:
+                pass
+            log(f"Streamlit morreu (code {proc.returncode}). Log:\n{stderr}")
+            return False, f"Streamlit encerrou inesperadamente (codigo {proc.returncode})\n\n{stderr[-500:]}"
+
         try:
-            urllib.request.urlopen(url, timeout=2)
-            return True
+            resp = urllib.request.urlopen(url, timeout=2)
+            if resp.status == 200:
+                return True, ""
         except (urllib.error.URLError, OSError):
-            time.sleep(0.5)
-    return False
+            pass
+        time.sleep(0.5)
+
+    return False, "Servidor nao respondeu em 90 segundos"
 
 
 def show_error_box(title, message):
@@ -478,37 +497,52 @@ def main():
             show_error_box("BotDoProfessor", "Arquivo do painel nao encontrado.")
             sys.exit(1)
 
+        if not VENV_PYTHON.exists():
+            log(f"VENV_PYTHON nao encontrado: {VENV_PYTHON}")
+            splash.close()
+            show_error_box(
+                "BotDoProfessor",
+                f"Ambiente virtual incompleto.\n\n"
+                f"Delete a pasta: {VENV_DIR}\n"
+                f"e execute o programa novamente."
+            )
+            sys.exit(1)
+
         splash.update("Iniciando painel web...", "O navegador vai abrir automaticamente")
         splash.set_progress(0.9)
         log("Iniciando Streamlit...")
 
         port = 8501
+        streamlit_log = open(str(LOG_DIR / "streamlit.log"), "w", encoding="utf-8")
         proc = subprocess.Popen(
             [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
              "--server.headless", "true",
              "--server.port", str(port),
              "--browser.gatherUsageStats", "false"],
             cwd=str(APP_DIR),
-            creationflags=NO_WINDOW,
+            stdout=streamlit_log,
+            stderr=streamlit_log,
         )
 
         splash.update("Aguardando painel...", "Verificando se o servidor esta pronto")
         splash.set_progress(0.95)
 
-        if wait_for_streamlit(port, timeout=60):
+        ok, err_msg = wait_for_streamlit(proc, port, timeout=90, splash=splash)
+        if ok:
             splash.update("Abrindo navegador...", "Pronto!")
             splash.set_progress(1.0)
-            time.sleep(0.3)
+            time.sleep(0.5)
             webbrowser.open(f"http://localhost:{port}")
             log("Navegador aberto!")
         else:
-            log("Streamlit nao respondeu")
+            log(f"Streamlit falhou: {err_msg}")
             splash.close()
             show_error_box(
                 "BotDoProfessor",
-                f"O painel nao abriu automaticamente.\n\n"
-                f"Tente abrir manualmente: http://localhost:{port}\n\n"
-                f"Se o problema persistir, verifique o log:\n{LOG_FILE}"
+                f"O painel nao abriu.\n\n"
+                f"Detalhes: {err_msg}\n\n"
+                f"Log completo: {LOG_FILE}\n\n"
+                f"Tente abrir manualmente: http://localhost:{port}"
             )
             webbrowser.open(f"http://localhost:{port}")
 
@@ -522,6 +556,11 @@ def main():
                 proc.wait(timeout=5)
             except Exception:
                 proc.kill()
+        finally:
+            try:
+                streamlit_log.close()
+            except Exception:
+                pass
 
     except Exception as e:
         log(f"Erro fatal: {e}")

@@ -1,54 +1,72 @@
 #!/usr/bin/env python3
-"""BotDoProfessor — Launcher completo.
+"""BotDoProfessor — Launcher embarcado.
 
-Versao embedded: NAO depende de Python instalado no sistema.
-Cria venv, instala dependencias, configura IA local, inicia painel.
-Compilar com PyInstaller: pyinstaller --onefile --name BotDoProfessor launcher.py
+Funciona SEM Python instalado no sistema.
+Baixa Python portatil, cria venv, instala deps, inicia painel no navegador.
+Tudo silencioso — sem janela de terminal.
 """
 
 import os
-import re
 import sys
+import json
 import shutil
 import subprocess
 import tempfile
 import time
-import webbrowser
+import threading
+import zipfile
 import urllib.request
 import urllib.error
-import zipfile
-import json
 from pathlib import Path
 
 APP_DIR = Path.home() / ".bot_local"
 VENV_DIR = APP_DIR / "venv"
-OLLAMA_DIR = APP_DIR / "ollama"
-OLLAMA_EXE = OLLAMA_DIR / "ollama.exe"
+PORTABLE_PYTHON_DIR = APP_DIR / "python_portable"
 CONFIG_FILE = APP_DIR / "config.json"
-DOWNLOAD_URL = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
+LOG_DIR = APP_DIR / "logs"
+LOG_FILE = LOG_DIR / "launcher.log"
 
-OLLAMA_MODEL = "openbmb/minicpm-v4.6"
-OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
-OLLAMA_PULL_TIMEOUT = 1800
+PYTHON_VERSION = "3.11.9"
+PYTHON_ZIP_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 if os.name == "nt":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
     VENV_PIP = VENV_DIR / "Scripts" / "pip.exe"
+    PORTABLE_PYTHON = PORTABLE_PYTHON_DIR / "python.exe"
+    NO_WINDOW = subprocess.CREATE_NO_WINDOW
 else:
     VENV_PYTHON = VENV_DIR / "bin" / "python"
     VENV_PIP = VENV_DIR / "bin" / "pip"
+    PORTABLE_PYTHON = PORTABLE_PYTHON_DIR / "python3"
+    NO_WINDOW = 0
+
+
+def log(msg):
+    """Escreve no log file (silencioso)."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _hide_console():
+    """Esconde a janela do console no Windows."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+        except Exception:
+            pass
 
 
 def _set_utf8():
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-    if os.name == "nt":
-        try:
-            import ctypes
-            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
-            ctypes.windll.kernel32.SetConsoleCP(65001)
-        except Exception:
-            pass
 
 
 def _is_valid_python(path):
@@ -66,23 +84,21 @@ def _is_valid_python(path):
 
 
 def find_system_python():
-    """Encontra Python instalado no sistema."""
-    py = shutil.which("py")
+    """Encontra Python 3.11+ instalado no sistema."""
+    import shutil as _shutil
+    py = _shutil.which("py")
     if py and _is_valid_python(py):
         return py
-
     for name in ("python3", "python"):
-        path = shutil.which(name)
+        path = _shutil.which(name)
         if _is_valid_python(path):
             return path
-
     uv_base = os.path.expandvars(r"%APPDATA%\uv\python")
     if os.path.isdir(uv_base):
         import glob
         for uv_py in sorted(glob.glob(os.path.join(uv_base, "cpython-3.*", "python.exe")), reverse=True):
             if _is_valid_python(uv_py):
                 return uv_py
-
     common_paths = [
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
@@ -94,19 +110,85 @@ def find_system_python():
     for p in common_paths:
         if os.path.isfile(p):
             return p
+    return None
+
+
+def download_portable_python():
+    """Baixa Python portavel embutido (~11MB)."""
+    log("Baixando Python portavel...")
+    PORTABLE_PYTHON_DIR.mkdir(parents=True, exist_ok=True)
+
+    if PORTABLE_PYTHON.exists():
+        log("Python portavel ja existe")
+        return True
+
+    zip_path = os.path.join(tempfile.gettempdir(), f"python-{PYTHON_VERSION}-embed.zip")
+    try:
+        urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
+        log("Download concluido")
+    except Exception as e:
+        log(f"Falha ao baixar Python: {e}")
+        return False
+
+    log("Extraindo Python portavel...")
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(str(PORTABLE_PYTHON_DIR))
+        os.remove(zip_path)
+        log("Extraido com sucesso")
+    except Exception as e:
+        log(f"Falha ao extrair: {e}")
+        return False
+
+    pth_file = PORTABLE_PYTHON_DIR / f"python{PYTHON_VERSION.replace('.', '')}._pth"
+    if pth_file.exists():
+        content = pth_file.read_text(encoding="utf-8")
+        content = content.replace("#import site", "import site")
+        pth_file.write_text(content, encoding="utf-8")
+
+    log("Configurando pip...")
+    try:
+        get_pip_path = os.path.join(tempfile.gettempdir(), "get-pip.py")
+        urllib.request.urlretrieve(GET_PIP_URL, get_pip_path)
+        subprocess.run(
+            [str(PORTABLE_PYTHON), get_pip_path],
+            capture_output=True, timeout=120, creationflags=NO_WINDOW,
+        )
+        os.remove(get_pip_path)
+        log("pip instalado")
+    except Exception as e:
+        log(f"Falha ao instalar pip: {e}")
+        return False
+
+    return True
+
+
+def get_python():
+    """Retorna o caminho do Python: sistema ou portavel."""
+    sys_py = find_system_python()
+    if sys_py:
+        log(f"Python do sistema: {sys_py}")
+        return sys_py
+
+    log("Python do sistema nao encontrado, verificando portavel...")
+    if PORTABLE_PYTHON.exists():
+        log("Usando Python portavel")
+        return str(PORTABLE_PYTHON)
+
+    log("Baixando Python portavel...")
+    if download_portable_python():
+        return str(PORTABLE_PYTHON)
 
     return None
 
 
 def get_bundled_dir():
-    """Retorna diretorio dos arquivos bundlados pelo PyInstaller."""
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS)
     return Path(__file__).parent
 
 
 def get_painel_path():
-    """Entra o painel.py — bundled ou local."""
     bundled = get_bundled_dir() / "painel.py"
     if bundled.exists():
         return str(bundled)
@@ -116,17 +198,33 @@ def get_painel_path():
     return None
 
 
+def run_silent(cmd, timeout=300):
+    """Executa comando silenciosamente (sem console)."""
+    log(f"Executando: {' '.join(str(c) for c in cmd[:3])}...")
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=timeout,
+            creationflags=NO_WINDOW,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace")[:500]
+            log(f"Erro (code {result.returncode}): {stderr}")
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        log(f"Timeout apos {timeout}s")
+        return False
+    except Exception as e:
+        log(f"Excecao: {e}")
+        return False
+
+
 def create_venv(python_path):
-    """Cria virtual environment."""
-    print("[i] Criando ambiente virtual...")
-    subprocess.run([python_path, "-m", "venv", str(VENV_DIR)], check=True, capture_output=True)
-    print("  [OK] Ambiente virtual criado")
+    log("Criando ambiente virtual...")
+    return run_silent([python_path, "-m", "venv", str(VENV_DIR)], timeout=120)
 
 
-def install_requirements():
-    """Instala dependencias no venv."""
-    print("[i] Instalando dependencias (pode demorar na primeira vez)...")
-    print("  [i] pip install streamlit playwright openpyxl pandas...")
+def install_requirements(pip_path):
+    log("Instalando dependencias...")
     reqs = [
         "streamlit>=1.32",
         "playwright>=1.40",
@@ -138,15 +236,13 @@ def install_requirements():
         "openai>=1.30",
         "anthropic>=0.25",
     ]
-    subprocess.run(
-        [str(VENV_PIP), "install", "--quiet", "--disable-pip-version-check"] + reqs,
-        check=True,
+    return run_silent(
+        [str(pip_path), "install", "--quiet", "--disable-pip-version-check"] + reqs,
+        timeout=600,
     )
-    print("  [OK] Dependencias instaladas")
 
 
-def install_playwright_chromium():
-    """Instala navegador Chromium via Playwright."""
+def install_playwright_chromium(python_path):
     ms_playwright = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
     if not ms_playwright.exists():
         ms_playwright = Path.home() / ".cache" / "ms-playwright"
@@ -157,189 +253,64 @@ def install_playwright_chromium():
                 if not chrome.exists():
                     chrome = d / "chrome-win" / "chrome.exe"
                 if chrome.exists():
-                    print("[OK] Navegador Chromium ja instalado")
-                    return
+                    log("Chromium ja instalado")
+                    return True
 
-    print("[i] Baixando navegador Chromium (~180MB, primeira vez)...")
-    print("  [i] Isso demora cerca de 2 minutos e so acontece uma vez.")
+    log("Baixando Chromium (~180MB)...")
+    return run_silent(
+        [python_path, "-m", "playwright", "install", "chromium"],
+        timeout=300,
+    )
+
+
+def setup_ollama_background():
+    """Instala Ollama em background (nao bloqueia)."""
     try:
-        subprocess.run(
-            [str(VENV_PYTHON), "-m", "playwright", "install", "chromium"],
-            check=True,
-        )
-        print("  [OK] Navegador instalado com sucesso!")
-    except subprocess.CalledProcessError:
-        print("  [ER] Falha ao baixar navegador.")
-        print("  Tente manualmente: python -m playwright install chromium")
-
-
-def _find_ollama_exe():
-    """Encontra executavel do Ollama."""
-    if OLLAMA_EXE.exists():
-        return str(OLLAMA_EXE)
-
-    system_ollama = shutil.which("ollama")
-    if system_ollama:
-        return system_ollama
-
-    local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
-    if local_app.exists():
-        return str(local_app)
-
-    return None
-
-
-def _is_ollama_running():
-    """Verifica se o servico Ollama esta rodando."""
-    try:
-        import urllib.request
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
-
-
-def _is_model_available(model_name):
-    """Verifica se um modelo ja foi baixado."""
-    try:
-        import urllib.request
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5) as resp:
-            data = json.loads(resp.read())
-            models = data.get("models", [])
-            return any(model_name in m.get("name", "") for m in models)
-    except Exception:
-        return False
-
-
-def _get_available_ram_gb():
-    """Retorna RAM disponivel em GB."""
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        c_ulonglong = ctypes.c_ulonglong
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", c_ulonglong),
-                ("ullAvailPhys", c_ulonglong),
-                ("ullTotalPageFile", c_ulonglong),
-                ("ullAvailPageFile", c_ulonglong),
-                ("ullTotalVirtual", c_ulonglong),
-                ("ullAvailVirtual", c_ulonglong),
-                ("ullAvailExtendedVirtual", c_ulonglong),
-            ]
-        mem = MEMORYSTATUSEX()
-        mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
-        return mem.ullAvailPhys / (1024 ** 3)
-    except Exception:
-        return 8.0
-
-
-def setup_ollama():
-    """Baixa e instala Ollama + modelo minicpm-v4.6 automaticamente."""
-    print()
-    print("=" * 56)
-    print("  Configuracao de IA Local (Ollama)")
-    print("=" * 56)
-    print()
-
-    if _is_ollama_running() and _is_model_available(OLLAMA_MODEL):
-        print("[OK] Ollama rodando com modelo minicpm-v4.6")
-        return True
-
-    exe = _find_ollama_exe()
-
-    if not exe:
-        print("[i] Ollama nao encontrado. Baixando instalador (~100MB)...")
-        print("  [i] Isso leva 1-2 minutos.")
-
-        installer_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
-        try:
-            print("  [i] Baixando de ollama.com...")
-            urllib.request.urlretrieve(OLLAMA_INSTALLER_URL, installer_path)
-            print("  [OK] Instalador baixado.")
-        except Exception as exc:
-            print(f"  [ER] Falha ao baixar Ollama: {exc}")
-            print("  [i] Instale manualmente: https://ollama.com/download")
-            return False
-
-        print("  [i] Instalando Ollama (pode pedir permissao de admin)...")
-        try:
-            subprocess.run([installer_path, "/SILENT"], check=True, timeout=120)
-            print("  [OK] Ollama instalado!")
-            time.sleep(3)
-        except Exception as exc:
-            print(f"  [ER] Falha na instalacao: {exc}")
-            return False
-
-        exe = _find_ollama_exe()
-        if not exe:
-            print("[ER] Ollama instalado mas executavel nao encontrado.")
-            return False
-
-    if not _is_ollama_running():
-        print("[i] Iniciando servico do Ollama...")
-        try:
-            subprocess.Popen([exe, "serve"], creationflags=subprocess.DETACHED_PROCESS)
-            time.sleep(3)
-            for _ in range(15):
-                if _is_ollama_running():
-                    break
-                time.sleep(2)
-        except Exception:
-            pass
-
-    if not _is_ollama_running():
-        print("[ER] Servico do Ollama nao iniciou.")
-        print("  [i] Tente iniciar manualmente: ollama serve")
-        return False
-
-    print("[OK] Ollama rodando!")
-
-    avail_ram = _get_available_ram_gb()
-    print(f"[i] RAM disponivel: {avail_ram:.1f} GB")
-
-    if not _is_model_available(OLLAMA_MODEL):
-        print()
-        print(f"[i] Baixando modelo {OLLAMA_MODEL} (~1.6GB)...")
-        print("  [i] Isso leva 3-8 minutos dependendo da internet.")
-        print("  [i] O modelo e necessario para IA analisar portais quando o bot falhar.")
-        print()
-        try:
-            result = subprocess.run([exe, "pull", OLLAMA_MODEL], timeout=OLLAMA_PULL_TIMEOUT)
-            if result.returncode == 0:
-                print(f"  [OK] Modelo {OLLAMA_MODEL} baixado!")
-            else:
-                print(f"  [ER] Erro ao baixar modelo (codigo {result.returncode}).")
-                print(f"  [i] Tente manualmente: ollama pull {OLLAMA_MODEL}")
-        except subprocess.TimeoutExpired:
-            print(f"  [ER] Timeout baixando modelo apos {OLLAMA_PULL_TIMEOUT}s.")
-            print(f"  [i] Tente manualmente: ollama pull {OLLAMA_MODEL}")
-        except Exception as exc:
-            print(f"  [ER] {exc}")
-    else:
-        print(f"[OK] Modelo {OLLAMA_MODEL} ja disponivel")
-
-    return True
-
-
-def ensure_ollama():
-    """Garante que Ollama esteja instalado e rodando com modelo."""
-    try:
-        sys.path.insert(0, str(get_bundled_dir()))
         from ai_assist import OLLAMA_AUTO_SETUP
         if not OLLAMA_AUTO_SETUP:
-            return _is_ollama_running()
+            return
     except ImportError:
         pass
-    return setup_ollama()
+
+    ollama_dir = APP_DIR / "ollama"
+    ollama_exe = ollama_dir / "ollama.exe"
+
+    def _find_ollama():
+        if ollama_exe.exists():
+            return str(ollama_exe)
+        import shutil as _shutil
+        system_ollama = _shutil.which("ollama")
+        if system_ollama:
+            return system_ollama
+        local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+        if local_app.exists():
+            return str(local_app)
+        return None
+
+    exe = _find_ollama()
+    if not exe:
+        log("Ollama nao encontrado — instalacao pulada")
+        return
+
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        urllib.request.urlopen(req, timeout=3)
+        log("Ollama ja rodando")
+        return
+    except Exception:
+        pass
+
+    log("Iniciando Ollama...")
+    try:
+        subprocess.Popen(
+            [exe, "serve"],
+            creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
+        )
+    except Exception as e:
+        log(f"Falha ao iniciar Ollama: {e}")
 
 
 def load_config():
-    """Carrega configuracao salva."""
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -350,15 +321,12 @@ def load_config():
 
 
 def save_config(config):
-    """Salva configuracao."""
     APP_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
-def wait_for_streamlit(port=8501, timeout=30):
-    """Aguarda Streamlit iniciar."""
-    import urllib.request
+def wait_for_streamlit(port=8501, timeout=60):
     import urllib.error
     url = f"http://localhost:{port}"
     for _ in range(timeout * 2):
@@ -370,66 +338,56 @@ def wait_for_streamlit(port=8501, timeout=30):
     return False
 
 
+def show_error_box(title, message):
+    """Mostra message box de erro (Windows)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
+        except Exception:
+            pass
+    log(f"ERRO: {title} — {message}")
+
+
 def main():
     _set_utf8()
+    _hide_console()
     APP_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 56)
-    print("          BotDoProfessor — Automatize suas notas")
-    print("=" * 56)
-    print()
-    print("  Este programa lanca notas, planos de aula e")
-    print("  sequencias didaticas automaticamente no SGE.")
-    print()
-    print("  Funciona SEM precisar instalar Python.")
-    print("  Tudo configurado automaticamente na primeira vez.")
-    print()
+    log("=" * 40)
+    log("BotDoProfessor — Iniciando...")
 
-    python = find_system_python()
+    python = get_python()
     if not python:
-        print("[ER] Python nao encontrado no seu computador!")
-        print()
-        print("  Instale o Python: https://www.python.org/downloads/")
-        print("  Marque a opcao 'Add Python to PATH' durante a instalacao.")
-        print()
-        input("  Pressione Enter para sair...")
+        show_error_box(
+            "BotDoProfessor",
+            "Nao foi possivel encontrar ou baixar Python.\n\n"
+            "Instale o Python: https://www.python.org/downloads/\n"
+            "Marque 'Add Python to PATH' durante a instalacao."
+        )
         sys.exit(1)
 
-    print(f"[i] Python encontrado: {python}")
-
     if not VENV_DIR.exists():
-        print()
-        create_venv(python)
-        print()
-        install_requirements()
-        print()
-        install_playwright_chromium()
-        print()
-
-        config = load_config()
-        if config.get("ai_provider", "local") == "local":
-            setup_ollama()
-
-        print()
-        print("=" * 56)
-        print("  [OK] Tudo configurado! Iniciando o painel...")
-        print("=" * 56)
-        print()
+        log("Primeira execucao — configurando ambiente...")
+        if not create_venv(python):
+            show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual.")
+            sys.exit(1)
+        if not install_requirements(VENV_PIP):
+            show_error_box("BotDoProfessor", "Falha ao instalar dependencias.\nVerifique sua conexao com a internet.")
+            sys.exit(1)
+        install_playwright_chromium(str(VENV_PYTHON))
+        threading.Thread(target=setup_ollama_background, daemon=True).start()
+        log("Configuracao concluida")
     else:
-        print("[OK] Ambiente ja configurado")
-        print()
+        log("Ambiente ja configurado")
 
     painel_path = get_painel_path()
     if not painel_path:
-        print("[ER] painel.py nao encontrado!")
-        input("  Pressione Enter para sair...")
+        show_error_box("BotDoProfessor", "Arquivo do painel nao encontrado.")
         sys.exit(1)
 
-    print("[i] Iniciando painel web...")
-    print("[i] O navegador vai abrir automaticamente.")
-    print("[i] Para fechar, pressione Ctrl+C neste terminal.")
-    print()
-
+    log("Iniciando painel web...")
     port = 8501
     proc = subprocess.Popen(
         [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
@@ -437,20 +395,25 @@ def main():
          "--server.port", str(port),
          "--browser.gatherUsageStats", "false"],
         cwd=str(APP_DIR),
+        creationflags=NO_WINDOW,
     )
 
-    if wait_for_streamlit(port, timeout=30):
+    import webbrowser
+    if wait_for_streamlit(port, timeout=60):
         webbrowser.open(f"http://localhost:{port}")
-        print("[OK] Painel aberto no navegador!")
+        log("Navegador aberto!")
     else:
-        print("[i] Verifique o navegador manualmente: http://localhost:8501")
+        log("Streamlit nao respondeu — tentando abrir manualmente...")
+        webbrowser.open(f"http://localhost:{port}")
 
     try:
         proc.wait()
     except KeyboardInterrupt:
-        print("\n[i] Encerrando...")
         proc.terminate()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
 
 
 if __name__ == "__main__":

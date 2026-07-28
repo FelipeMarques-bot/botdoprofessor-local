@@ -657,6 +657,27 @@ def main():
             )
             sys.exit(1)
 
+        splash.update("Verificando ambiente...", "Testando compatibilidade")
+        splash.set_progress(0.85)
+        diag = subprocess.run(
+            [str(VENV_PYTHON), "-c",
+             "import _multiprocessing; print(_multiprocessing.__file__)"],
+            capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW,
+        )
+        if diag.returncode == 0:
+            log(f"_multiprocessing em: {diag.stdout.strip()}")
+        else:
+            log(f"_multiprocessing NAO carrega: {diag.stderr[:200]}")
+            splash.close()
+            show_error_box(
+                "BotDoProfessor",
+                f"Ambiente Python corrompido: Python 3.11 e 3.12 estao em conflito.\n\n"
+                f"Remova da variavel PATH do Windows qualquer pasta contendo 'Python311'\n"
+                f"e deixe apenas a pasta Python312.\n\n"
+                f"Apos corrigir, delete a pasta {VENV_DIR}\ne execute o programa novamente."
+            )
+            sys.exit(1)
+
         splash.update("Iniciando painel web...", "O navegador vai abrir automaticamente")
         splash.set_progress(0.9)
         log("Iniciando Streamlit...")
@@ -668,6 +689,15 @@ def main():
         clean_env.pop("PYTHONHOME", None)
         clean_env.pop("PYTHONNOUSERSITE", None)
         clean_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        py312_dir = os.path.dirname(python)
+        clean_env["PATH"] = os.pathsep.join([
+            str(VENV_DIR / "Scripts"),
+            py312_dir,
+            os.path.join(py312_dir, "DLLs"),
+            os.path.join(py312_dir, "Lib\\site-packages\\PyQt5"),
+            os.environ.get("SystemRoot", "C:\\Windows") + "\\system32",
+            os.environ.get("SystemRoot", "C:\\Windows"),
+        ])
         proc = subprocess.Popen(
             [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
              "--server.headless", "true",

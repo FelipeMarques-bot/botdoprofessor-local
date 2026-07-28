@@ -35,13 +35,29 @@ git push -u origin main
 | Start Command | `python app.py` |
 | Instance Type | `Free` (ou `Starter` para producao) |
 
-## Passo 3 — Variaveis de Ambiente no Render
+## Passo 3 — Criar Banco PostgreSQL (Neon)
+
+O SQLite nao persiste entre deploys no Render. Use PostgreSQL gratuito no Neon:
+
+1. Acesse https://neon.tech e crie uma conta gratis
+2. Crie um projeto (regiao: AWS US East ou similar)
+3. No painel, va em **Connection Details** e copie a **Connection String** (formato: `postgresql://...`)
+4. No Render, va em **Environment** e adicione:
+
+```
+DATABASE_URL=<cole a connection string do Neon>
+```
+
+**IMPORTANTE:** A string do Neon vem com `postgres://` — o Render converte automaticamente para `postgresql://`.
+
+> O banco PostgreSQL e **persistente** — seus dados (usuarios, pagamentos, licencas) nao serao apagados entre deploys.
+
+## Passo 4 — Variaveis de Ambiente no Render
 
 Na pagina do Web Service, va em **"Environment"** e adicione:
 
 ```
 SECRET_KEY=<gerar um aleatorio longo>
-DATABASE_URL=sqlite:///data/bot_local.db
 APP_URL=https://botdoprofessor.onrender.com
 MP_PUBLIC_KEY=TEST-0c535199-a88c-4153-b69b-07c063d8a38b
 MP_ACCESS_TOKEN=TEST-4683227438495768-071612-c3f780c572e0e884fcb851f05eca499c-330006403
@@ -51,16 +67,18 @@ CONTACT_EMAIL=labintelligenceappoiments@gmail.com
 SMTP_USER=ensinoreligiosoemacao@gmail.com
 SMTP_PASS=<senha de app Gmail>
 AI_PROVIDER=local
+ADMIN_USER=admin
+ADMIN_PASS=<sua senha segura>
 ```
 
-## Passo 4 — Deploy automatico
+## Passo 5 — Deploy automatico
 
 Apos salvar, o Render faz o deploy automatico. O site ficara em:
 `https://botdoprofessor.onrender.com`
 
 ---
 
-## Passo 5 — Configurar Webhook no Mercado Pago
+## Passo 6 — Configurar Webhook no Mercado Pago
 
 1. Acesse https://www.mercadopago.com.br/developers
 2. Va em **"Credenciais"** → **"Webhooks"**
@@ -74,7 +92,7 @@ Apos salvar, o Render faz o deploy automatico. O site ficara em:
 
 5. Salve
 
-## Passo 6 — Trocar para Producao
+## Passo 7 — Trocar para Producao
 
 Quando estiver pronto para vender:
 
@@ -84,7 +102,7 @@ Quando estiver pronto para vender:
    - `MP_PUBLIC_KEY` → Production Key (`APP_USR-xxxx`)
    - `MP_ACCESS_TOKEN` → Production Token (`APP_USR-xxxx`)
 
-## Passo 7 — Configurar Email (Gmail)
+## Passo 8 — Configurar Email (Gmail)
 
 Para o Gmail enviar emails automaticamente:
 

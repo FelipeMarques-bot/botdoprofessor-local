@@ -112,7 +112,7 @@ def create_app():
 
 
 def _seed_initial_admin(app):
-    """Cria admin inicial. Se ja existe, garante que a senha esta correta."""
+    """Cria admin inicial se nao existe. Nao altera senha em DB persistente (PostgreSQL)."""
     with app.app_context():
         admin_user = os.environ.get("ADMIN_USER", "admin")
         admin_pass = os.environ.get("ADMIN_PASS", "admin123")
@@ -120,12 +120,7 @@ def _seed_initial_admin(app):
 
         existing = User.query.filter_by(username=admin_user).first()
         if existing:
-            if not existing.check_password(admin_pass):
-                existing.set_password(admin_pass)
-                db.session.commit()
-                print(f"[SEED] Senha do admin '{admin_user}' recalibrada")
-            else:
-                print(f"[SEED] Admin '{admin_user}' OK (id={existing.id})")
+            print(f"[SEED] Admin '{admin_user}' OK (id={existing.id})")
         else:
             admin = User(username=admin_user, email=admin_email, profile="admin")
             admin.set_password(admin_pass)

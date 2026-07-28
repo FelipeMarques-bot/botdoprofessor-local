@@ -491,45 +491,40 @@ def main():
 
         venv_valid = VENV_DIR.exists() and VENV_PYTHON.exists()
 
-        if venv_valid and VENV_PYTHON.exists():
+        if venv_valid:
             try:
-                result = subprocess.run(
-                    [str(VENV_PYTHON), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                    capture_output=True, text=True, timeout=10,
-                    creationflags=NO_WINDOW,
+                r = subprocess.run(
+                    [str(VENV_PYTHON), "-c", "import sys; print(sys.version_info[:2])"],
+                    capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
                 )
-                venv_version = result.stdout.strip()
-                sys_result = subprocess.run(
-                    [python, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                    capture_output=True, text=True, timeout=10,
-                    creationflags=NO_WINDOW,
+                venv_ver = r.stdout.strip()
+                r2 = subprocess.run(
+                    [python, "-c", "import sys; print(sys.version_info[:2])"],
+                    capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
                 )
-                sys_version = sys_result.stdout.strip()
-                log(f"Venv: Python {venv_version}, Sistema: Python {sys_version}")
-                if venv_version != sys_version:
-                    log(f"CONFLITO! Deletando venv {venv_version} e recriando com {sys_version}")
+                sys_ver = r2.stdout.strip()
+                log(f"Venv={venv_ver} Sistema={sys_ver}")
+                if venv_ver != sys_ver:
+                    log("Versao diferente — deletando venv")
                     venv_valid = False
-                    try:
-                        import stat
-                        def _remove_readonly(func, path, _excinfo):
-                            os.chmod(path, stat.S_IWRITE)
-                            func(path)
-                        shutil.rmtree(str(VENV_DIR), onerror=_remove_readonly)
-                        log("Venv deletado com sucesso")
-                    except Exception as e:
-                        log(f"Falha ao deletar venv: {e}")
-                        try:
-                            subprocess.run(
-                                ["cmd", "/c", "rmdir", "/s", "/q", str(VENV_DIR)],
-                                capture_output=True, timeout=30, creationflags=NO_WINDOW,
-                            )
-                            log("Venv deletado via rmdir")
-                        except Exception as e2:
-                            log(f"Falha ao deletar via rmdir: {e2}")
             except Exception as e:
-                log(f"Erro ao verificar versao: {e}")
+                log(f"Erro ao checar venv: {e}")
+                venv_valid = False
 
         if not venv_valid:
+            log("Deletando venv antigo...")
+            try:
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", "/s", "/q", str(VENV_DIR)],
+                    capture_output=True, timeout=60, creationflags=NO_WINDOW,
+                )
+            except Exception:
+                pass
+            try:
+                shutil.rmtree(str(VENV_DIR), ignore_errors=True)
+            except Exception:
+                pass
+            log("Criando venv novo...")
             splash.update("Configurando ambiente...", "Criando virtual environment (1/4)")
             splash.set_progress(0.1)
             if not create_venv(python):
@@ -553,6 +548,8 @@ def main():
             threading.Thread(target=setup_ollama_background, daemon=True).start()
 
             log("Configuracao concluida")
+        else:
+            log("Venv OK, ambas versoes 3.12")
 
         painel_path = get_painel_path()
         if not painel_path:

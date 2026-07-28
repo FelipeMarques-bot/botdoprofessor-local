@@ -195,8 +195,24 @@ def find_system_python():
     if py and _is_valid_python(py) and py not in candidates:
         candidates.append(py)
 
-    if candidates:
-        return candidates[0]
+    verified = []
+    for c in candidates:
+        try:
+            r = subprocess.run(
+                [c, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+            )
+            ver = r.stdout.strip()
+            log(f"Candidato Python: {c} -> {ver}")
+            if ver.startswith("3.") and int(ver.split(".")[1]) >= 10:
+                verified.append((c, ver))
+        except Exception as e:
+            log(f"Candidato {c} falhou: {e}")
+
+    if verified:
+        verified.sort(key=lambda x: [int(p) for p in x[1].split(".")], reverse=True)
+        log(f"Python selecionado: {verified[0][0]} ({verified[0][1]})")
+        return verified[0][0]
 
     return None
 
@@ -489,41 +505,76 @@ def main():
             )
             sys.exit(1)
 
-        venv_valid = VENV_DIR.exists() and VENV_PYTHON.exists()
-
-        if venv_valid:
-            try:
-                r = subprocess.run(
-                    [str(VENV_PYTHON), "-c", "import sys; print(sys.version_info[:2])"],
-                    capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
-                )
-                venv_ver = r.stdout.strip()
-                r2 = subprocess.run(
-                    [python, "-c", "import sys; print(sys.version_info[:2])"],
-                    capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
-                )
-                sys_ver = r2.stdout.strip()
-                log(f"Venv={venv_ver} Sistema={sys_ver}")
-                if venv_ver != sys_ver:
-                    log("Versao diferente — deletando venv")
-                    venv_valid = False
-            except Exception as e:
-                log(f"Erro ao checar venv: {e}")
-                venv_valid = False
-
-        if not venv_valid:
+        def _force_delete_venv():
             log("Deletando venv antigo...")
+            if not VENV_DIR.exists():
+                return True
+            old_dir = VENV_DIR.parent / (VENV_DIR.name + "_old_delete")
             try:
-                subprocess.run(
-                    ["cmd", "/c", "rmdir", "/s", "/q", str(VENV_DIR)],
-                    capture_output=True, timeout=60, creationflags=NO_WINDOW,
-                )
+                if old_dir.exists():
+                    shutil.rmtree(str(old_dir), ignore_errors=True)
             except Exception:
                 pass
+            try:
+                VENV_DIR.rename(old_dir)
+                log(f"Venv renomeado para {old_dir.name}")
+                shutil.rmtree(str(old_dir), ignore_errors=True)
+                log("Venv antigo deletado via rename+rmtree")
+                return True
+            except Exception as e:
+                log(f"Rename falhou: {e}")
+            for method in [
+                ["cmd", "/c", "rmdir", "/s", "/q", str(VENV_DIR)],
+                ["cmd", "/c", "rmdir", "/s", "/q", str(old_dir)],
+            ]:
+                try:
+                    subprocess.run(method, capture_output=True, timeout=60, creationflags=NO_WINDOW)
+                except Exception:
+                    pass
             try:
                 shutil.rmtree(str(VENV_DIR), ignore_errors=True)
+                shutil.rmtree(str(old_dir), ignore_errors=True)
             except Exception:
                 pass
+            if VENV_DIR.exists():
+                log("NAO foi possivel deletar venv")
+                return False
+            log("Venv deletado")
+            return True
+
+        def _venv_works():
+            if not VENV_PYTHON.exists():
+                return False
+            try:
+                r = subprocess.run(
+                    [str(VENV_PYTHON), "-c", "import sys; import multiprocessing; print(sys.version_info[:2])"],
+                    capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    r2 = subprocess.run(
+                        [python, "-c", "import sys; print(sys.version_info[:2])"],
+                        capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+                    )
+                    sys_ver = r2.stdout.strip()
+                    venv_ver = r.stdout.strip()
+                    log(f"Venv={venv_ver} Sistema={sys_ver}")
+                    return venv_ver == sys_ver
+                log(f"Venv check falhou: rc={r.returncode} stderr={r.stderr[:200]}")
+                return False
+            except Exception as e:
+                log(f"Venv check erro: {e}")
+                return False
+
+        need_rebuild = False
+        if not VENV_DIR.exists():
+            log("Venv nao existe — criando do zero")
+            need_rebuild = True
+        elif not _venv_works():
+            log("Venv quebrado ou versao diferente — recriando")
+            need_rebuild = True
+
+        if need_rebuild:
+            _force_delete_venv()
             log("Criando venv novo...")
             splash.update("Configurando ambiente...", "Criando virtual environment (1/4)")
             splash.set_progress(0.1)
@@ -531,6 +582,14 @@ def main():
                 splash.close()
                 show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual.")
                 sys.exit(1)
+
+            if not _venv_works():
+                log("Venv recem-criado nao funciona! Tentando deletar e recriar...")
+                _force_delete_venv()
+                if not create_venv(python):
+                    splash.close()
+                    show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual (2a tentativa).")
+                    sys.exit(1)
 
             splash.update("Instalando dependencias...", "Baixando pacotes necessarios (2/4)")
             splash.set_progress(0.2)
@@ -549,7 +608,7 @@ def main():
 
             log("Configuracao concluida")
         else:
-            log("Venv OK, ambas versoes 3.12")
+            log("Venv OK e funcional")
 
         painel_path = get_painel_path()
         if not painel_path:

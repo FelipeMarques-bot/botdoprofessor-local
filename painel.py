@@ -311,9 +311,10 @@ with st.sidebar:
         st.markdown("**De onde vao os dados das notas?**")
         fonte = st.selectbox(
             "Selecione a origem",
-            options=["notion", "excel", "csv", "google_sheets", "google_drive"],
+            options=["notion", "imagem", "excel", "csv", "google_sheets", "google_drive"],
             format_func=lambda x: {
                 "notion": "Notion (bancos de dados)",
+                "imagem": "Imagem / Foto (extrair notas com IA)",
                 "excel": "Arquivo Excel (.xlsx)",
                 "csv": "Arquivo CSV",
                 "google_sheets": "Google Sheets (planilha online)",
@@ -328,6 +329,11 @@ with st.sidebar:
             st.info(
                 "Os dados serao buscados automaticamente das databases do Notion "
                 "configuradas nas API Keys acima."
+            )
+        elif fonte == "imagem":
+            st.info(
+                "Envie uma foto ou print na seção 'Filtros' abaixo. "
+                "A IA extrairá as notas automaticamente."
             )
         elif fonte in ("excel", "csv"):
             ext = "XLSX / XLS" if fonte == "excel" else "CSV"
@@ -625,9 +631,16 @@ if executar_btn:
             else:
                 registros = []
                 fonte = st.session_state.fonte
-                fonte_path = st.session_state.get("imagem_path", "")
+                fonte_path = ""
 
-                if fonte_path:
+                if fonte == "imagem":
+                    fonte_path = st.session_state.get("imagem_path", "")
+                    if not fonte_path:
+                        log_progress("ERRO: Nenhuma imagem selecionada.")
+                        log_progress("Selecione uma imagem na seção 'Filtros' antes de executar.")
+                        st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                        st.stop()
+
                     log_progress("Extraindo notas da imagem com IA...")
                     try:
                         from ai_assist import _call_ai

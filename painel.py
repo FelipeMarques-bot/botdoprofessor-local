@@ -768,6 +768,8 @@ if executar_btn:
 
                 resumo = executar_lancamento_sequencia(
                     escola=st.session_state.escola,
+                    turno=st.session_state.turno,
+                    turma=st.session_state.turma,
                     trimestre=st.session_state.trimestre or "2o Trimestre",
                     dry_run=dry_run,
                     logger=log_progress,

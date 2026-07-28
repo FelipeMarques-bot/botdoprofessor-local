@@ -615,12 +615,16 @@ def _gerar_contextos_de_sequencias(
     return contextos
 
 
-def _filter_contexts(contextos_raw: List[Dict[str, str]], escola: str, trimestre: str) -> List[ContextoPlano]:
-    """Filtra contextos por escola e trimestre vindos do CLI.
+def _filter_contexts(
+    contextos_raw: List[Dict[str, str]],
+    escola: str = "",
+    turno: str = "",
+    turma: str = "",
+    trimestre: str = "",
+) -> List[ContextoPlano]:
+    """Filtra contextos por escola, turno, turma e trimestre.
 
-    Quando `trimestre` do CLI nao bater com o do contexto (vazio),
-    considera como match (ja que trimestres vazios serao preenchidos
-    depois pelo CLI em executar_lancamento_sequencia).
+    Cada filtro so atua se o valor for preenchido e nao for "todas"/"todos".
     """
     filtered: List[ContextoPlano] = []
     for item in contextos_raw:
@@ -631,6 +635,10 @@ def _filter_contexts(contextos_raw: List[Dict[str, str]], escola: str, trimestre
             trimestre=item.get("trimestre", ""),
         )
         if escola and _normalize(escola) not in {"", "todas"} and _normalize(ctx.escola) != _normalize(escola):
+            continue
+        if turno and _normalize(turno) not in {"", "todos"} and _normalize(ctx.turno) != _normalize(turno):
+            continue
+        if turma and _normalize(turma) not in {"", "todos"} and _normalize(ctx.turma) != _normalize(turma):
             continue
         if trimestre and ctx.trimestre and _normalize(ctx.trimestre) != _normalize(trimestre):
             continue
@@ -1446,6 +1454,8 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
 
 def executar_lancamento_sequencia(
     escola: str = "",
+    turno: str = "",
+    turma: str = "",
     trimestre: str = "2º Trimestre",
     modo_execucao: str = "por_escola",
     dry_run: bool = False,
@@ -1484,13 +1494,15 @@ def executar_lancamento_sequencia(
     # Constroi contextos direto da database (cada linha = 1 contexto).
     contextos_raw = _gerar_contextos_de_sequencias(registros, logger=logger)
 
-    # Aplica filtro de escola/trimestre vindos do CLI.
+    # Aplica filtros de escola/turno/turma/trimestre.
     contextos = _filter_contexts(
         [
             {"escola": c.escola, "turno": c.turno, "turma": c.turma, "trimestre": c.trimestre}
             for c in contextos_raw
         ],
         escola=escola,
+        turno=turno,
+        turma=turma,
         trimestre=trimestre,
     )
 
@@ -1502,7 +1514,7 @@ def executar_lancamento_sequencia(
     if not contextos:
         msg = (
             f"Nenhum contexto valido. Registros lidos: {len(registros)}. "
-            "Verifique se cada linha da database tem Escola, Turno e Turma preenchidos."
+            "Verifique os filtros de Escola, Turno e Turma no painel."
         )
         if dry_run:
             _log(logger, f"DRY-RUN: {msg} Nada a fazer.")

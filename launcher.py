@@ -162,7 +162,7 @@ def _is_valid_python(path):
 
 def find_system_python():
     """Encontra Python 3.10+ instalado no sistema.
-    Prioriza instalacoes diretas ( Programs\Python ) sobre o py launcher,
+    Prioriza instalacoes diretas sobre o py launcher,
     pois o py pode retornar uma versao diferente da instalada.
     """
     candidates = []

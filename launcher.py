@@ -8,6 +8,7 @@ e abre o navegador automaticamente.
 import os
 import sys
 import json
+import hashlib
 import shutil
 import subprocess
 import tempfile
@@ -25,6 +26,21 @@ PORTABLE_PYTHON_DIR = APP_DIR / "python_portable"
 CONFIG_FILE = APP_DIR / "config.json"
 LOG_DIR = APP_DIR / "logs"
 LOG_FILE = LOG_DIR / "launcher.log"
+REQS_HASH_FILE = APP_DIR / "requirements_hash.txt"
+
+REQUIREMENTS = [
+    "streamlit>=1.32",
+    "playwright>=1.40",
+    "openpyxl>=3.1",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "notion-client>=2.2",
+    "google-generativeai>=0.5",
+    "openai>=1.30",
+    "anthropic>=0.25",
+]
 
 PYTHON_VERSION = "3.11.9"
 PYTHON_ZIP_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
@@ -328,23 +344,39 @@ def clear_pip_cache(pip_path):
 
 def install_requirements(pip_path):
     log("Instalando dependencias...")
-    reqs = [
-        "streamlit>=1.32",
-        "playwright>=1.40",
-        "openpyxl>=3.1",
-        "pandas>=2.0",
-        "requests>=2.31",
-        "httpx>=0.27",
-        "python-dotenv>=1.0",
-        "notion-client>=2.2",
-        "google-generativeai>=0.5",
-        "openai>=1.30",
-        "anthropic>=0.25",
-    ]
     return run_silent(
-        [str(pip_path), "install", "--quiet", "--no-cache-dir", "--disable-pip-version-check"] + reqs,
+        [str(pip_path), "install", "--quiet", "--no-cache-dir", "--disable-pip-version-check"] + REQUIREMENTS,
         timeout=600,
     )
+
+
+def _requirements_hash() -> str:
+    h = hashlib.sha256()
+    for r in REQUIREMENTS:
+        h.update(r.encode())
+    return h.hexdigest()[:16]
+
+
+def _requirements_changed(pip_path) -> bool:
+    atual = _requirements_hash()
+    log(f"Hash requisitos: {atual}")
+    if REQS_HASH_FILE.exists():
+        try:
+            salvo = REQS_HASH_FILE.read_text(encoding="utf-8").strip()
+            log(f"Hash salvo:      {salvo}")
+            if salvo == atual:
+                return False
+        except Exception:
+            pass
+    log("Hash diferente — reinstalando dependencias...")
+    ok = install_requirements(pip_path)
+    if ok:
+        try:
+            REQS_HASH_FILE.write_text(atual, encoding="utf-8")
+            log("Hash salvo")
+        except Exception as e:
+            log(f"Erro ao salvar hash: {e}")
+    return not ok
 
 
 def install_playwright_chromium(python_path):
@@ -641,6 +673,8 @@ def main():
             log("Configuracao concluida")
         else:
             log("Venv OK e funcional")
+            if _requirements_changed(VENV_PIP):
+                log("Reinstalacao de dependencias concluida")
 
         painel_path = get_painel_path()
         if not painel_path:

@@ -311,10 +311,9 @@ with st.sidebar:
         st.markdown("**De onde vao os dados das notas?**")
         fonte = st.selectbox(
             "Selecione a origem",
-            options=["notion", "imagem", "excel", "csv", "google_sheets", "google_drive"],
+            options=["notion", "excel", "csv", "google_sheets", "google_drive"],
             format_func=lambda x: {
                 "notion": "Notion (bancos de dados)",
-                "imagem": "Imagem / Foto (extrair notas com IA)",
                 "excel": "Arquivo Excel (.xlsx)",
                 "csv": "Arquivo CSV",
                 "google_sheets": "Google Sheets (planilha online)",
@@ -330,26 +329,6 @@ with st.sidebar:
                 "Os dados serao buscados automaticamente das databases do Notion "
                 "configuradas nas API Keys acima."
             )
-        elif fonte == "imagem":
-            st.info(
-                "Envie uma foto ou print contendo as notas dos alunos. "
-                "A IA extraira automaticamente os dados."
-            )
-            img = st.file_uploader(
-                "Selecione a imagem (JPG, PNG, WEBP)",
-                type=["jpg", "jpeg", "png", "webp"],
-                key="imagem_upload",
-            )
-            if img:
-                tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
-                tmp_dir.mkdir(exist_ok=True)
-                tmp_path = tmp_dir / img.name
-                with open(tmp_path, "wb") as f:
-                    f.write(img.getbuffer())
-                st.session_state["imagem_path"] = str(tmp_path)
-                st.success(f"Imagem salva: {img.name}")
-            else:
-                st.session_state.pop("imagem_path", None)
         elif fonte in ("excel", "csv"):
             ext = "XLSX / XLS" if fonte == "excel" else "CSV"
             st.info(f"Selecione o arquivo **{ext}** do seu computador.")
@@ -393,6 +372,24 @@ with st.sidebar:
             st.session_state.turno = turno
             trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select")
             st.session_state.trimestre = trimestre
+
+        st.markdown("---")
+        st.markdown("**Imagem / Foto (extrair notas com IA)**")
+        img = st.file_uploader(
+            "Envie foto ou print com notas dos alunos",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="imagem_upload",
+        )
+        if img:
+            tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+            tmp_dir.mkdir(exist_ok=True)
+            tmp_path = tmp_dir / img.name
+            with open(tmp_path, "wb") as f:
+                f.write(img.getbuffer())
+            st.session_state["imagem_path"] = str(tmp_path)
+            st.success(f"Imagem salva: {img.name}")
+        else:
+            st.session_state.pop("imagem_path", None)
 
         st.markdown("---")
         st.markdown("**Atalho: Lançar apenas 1 avaliação** (reduz tempo drasticamente)")
@@ -628,16 +625,9 @@ if executar_btn:
             else:
                 registros = []
                 fonte = st.session_state.fonte
-                fonte_path = ""
+                fonte_path = st.session_state.get("imagem_path", "")
 
-                if fonte == "imagem":
-                    fonte_path = st.session_state.get("imagem_path", "")
-                    if not fonte_path:
-                        log_progress("ERRO: Nenhuma imagem selecionada.")
-                        st.error("Selecione uma imagem primeiro.")
-                        st.session_state.executando = False
-                        st.stop()
-
+                if fonte_path:
                     log_progress("Extraindo notas da imagem com IA...")
                     try:
                         from ai_assist import _call_ai

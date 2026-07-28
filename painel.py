@@ -185,7 +185,7 @@ with st.sidebar:
             senha = st.text_input("Senha", value=st.session_state.get("sge_senha", ""), key="sge_senha_input", type="password")
             st.session_state.sge_senha = senha
 
-    with st.expander("API Keys"):
+    with st.expander("API Keys", expanded=True):
         notion_token = st.text_input(
             "Notion Token (secret_...)",
             value=st.session_state.get("notion_token", ""),
@@ -311,9 +311,10 @@ with st.sidebar:
         st.markdown("**De onde vao os dados das notas?**")
         fonte = st.selectbox(
             "Selecione a origem",
-            options=["notion", "excel", "csv", "google_sheets", "google_drive"],
+            options=["notion", "imagem", "excel", "csv", "google_sheets", "google_drive"],
             format_func=lambda x: {
                 "notion": "Notion (bancos de dados)",
+                "imagem": "Imagem / Foto (extrair notas com IA)",
                 "excel": "Arquivo Excel (.xlsx)",
                 "csv": "Arquivo CSV",
                 "google_sheets": "Google Sheets (planilha online)",
@@ -329,6 +330,26 @@ with st.sidebar:
                 "Os dados serao buscados automaticamente das databases do Notion "
                 "configuradas nas API Keys acima."
             )
+        elif fonte == "imagem":
+            st.info(
+                "Envie uma foto ou print contendo as notas dos alunos. "
+                "A IA extraira automaticamente os dados."
+            )
+            img = st.file_uploader(
+                "Selecione a imagem (JPG, PNG, WEBP)",
+                type=["jpg", "jpeg", "png", "webp"],
+                key="imagem_upload",
+            )
+            if img:
+                tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+                tmp_dir.mkdir(exist_ok=True)
+                tmp_path = tmp_dir / img.name
+                with open(tmp_path, "wb") as f:
+                    f.write(img.getbuffer())
+                st.session_state["imagem_path"] = str(tmp_path)
+                st.success(f"Imagem salva: {img.name}")
+            else:
+                st.session_state.pop("imagem_path", None)
         elif fonte in ("excel", "csv"):
             ext = "XLSX / XLS" if fonte == "excel" else "CSV"
             st.info(f"Selecione o arquivo **{ext}** do seu computador.")
@@ -605,28 +626,98 @@ if executar_btn:
                 log_progress(f"Concluido! Notas: {resultado['notas']}, Preenchidas: {resultado['notas_preenchidas']}, Ausentes: {resultado.get('ausentes', 0)}, Falhas: {resultado['falhas']}")
 
             else:
-                log_progress(f"Carregando dados de {st.session_state.fonte}...")
-                from leitor_planilhas import carregar_notas
+                registros = []
+                fonte = st.session_state.fonte
+                fonte_path = ""
 
-                if st.session_state.fonte in ("excel", "csv"):
-                    caminho = st.session_state.get("arquivo_path", "")
-                    if not caminho:
-                        log_progress("ERRO: Nenhum arquivo selecionado.")
-                        st.error("Selecione um arquivo primeiro.")
+                if fonte == "imagem":
+                    fonte_path = st.session_state.get("imagem_path", "")
+                    if not fonte_path:
+                        log_progress("ERRO: Nenhuma imagem selecionada.")
+                        st.error("Selecione uma imagem primeiro.")
                         st.session_state.executando = False
                         st.stop()
-                elif st.session_state.fonte in ("google_sheets", "google_drive"):
-                    caminho = st.session_state.get("link_url", "")
-                    if not caminho:
-                        log_progress("ERRO: Nenhum link informado.")
-                        st.error("Informe o link do Google Sheets/Drive.")
-                        st.session_state.executando = False
+
+                    log_progress("Extraindo notas da imagem com IA...")
+                    try:
+                        from ai_assist import _call_ai
+                        with open(fonte_path, "rb") as f:
+                            image_bytes = f.read()
+
+                        prompt = (
+                            "Extraia as notas/alunos desta imagem de diario de classe ou boletim. "
+                            "Responda APENAS com um JSON array onde cada item tem: "
+                            "aluno (nome completo), nota (valor numerico com virgula ou ponto). "
+                            "Exemplo: [{\"aluno\": \"Joao Silva\", \"nota\": \"8,5\"}]. "
+                            "Se nao conseguir extrair, retorne []."
+                        )
+                        resposta = _call_ai(prompt, image_bytes=image_bytes)
+                        log_progress(f"Resposta da IA: {resposta[:200]}...")
+
+                        import json as _json
+                        extraidas = _json.loads(resposta)
+                        if not isinstance(extraidas, list):
+                            extraidas = []
+
+                        if not extraidas:
+                            log_progress("AVISO: IA nao conseguiu extrair notas da imagem.")
+                            st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                            st.stop()
+
+                        log_progress(f"Extraidas {len(extraidas)} notas da imagem.")
+                        escola = st.session_state.get("escola", "")
+                        turno = st.session_state.get("turno", "")
+                        turma = st.session_state.get("turma", "")
+                        trimestre = st.session_state.get("trimestre", "")
+
+                        from leitor_planilhas import RegistroNota
+                        for item in extraidas:
+                            aluno = item.get("aluno", "").strip()
+                            nota = str(item.get("nota", "")).strip().replace(",", ".")
+                            if not aluno or not nota:
+                                continue
+                            try:
+                                float(nota)
+                            except ValueError:
+                                continue
+                            registros.append(RegistroNota(
+                                escola=escola, turno=turno, turma=turma,
+                                trimestre=trimestre, aluno=aluno, nota=nota,
+                            ))
+
+                    except Exception as exc:
+                        log_progress(f"ERRO ao processar imagem com IA: {exc}")
+                        import traceback
+                        traceback.print_exc()
+                        st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
                         st.stop()
+
                 else:
-                    caminho = ""
+                    log_progress(f"Carregando dados de {fonte}...")
+                    from leitor_planilhas import carregar_notas
 
-                registros = carregar_notas(st.session_state.fonte, caminho, logger=log_progress)
-                log_progress(f"{len(registros)} notas carregadas.")
+                    if fonte in ("excel", "csv"):
+                        fonte_path = st.session_state.get("arquivo_path", "")
+                        if not fonte_path:
+                            log_progress("ERRO: Nenhum arquivo selecionado.")
+                            st.error("Selecione um arquivo primeiro.")
+                            st.session_state.executando = False
+                            st.stop()
+                    elif fonte in ("google_sheets", "google_drive"):
+                        fonte_path = st.session_state.get("link_url", "")
+                        if not fonte_path:
+                            log_progress("ERRO: Nenhum link informado.")
+                            st.error("Informe o link do Google Sheets/Drive.")
+                            st.session_state.executando = False
+                            st.stop()
+
+                    registros = carregar_notas(fonte, fonte_path, logger=log_progress)
+                    log_progress(f"{len(registros)} notas carregadas.")
+
+                if not registros:
+                    log_progress("ERRO: Nenhum registro carregado.")
+                    st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                    st.stop()
 
                 if dry_run:
                     log_progress("[DRY-RUN] Nenhum dado sera enviado ao SGE.")
@@ -657,7 +748,7 @@ if executar_btn:
                     from playwright.sync_api import sync_playwright
                     from status_store import StatusStore
 
-                    status_store = StatusStore(caminho, logger=log_progress)
+                    status_store = StatusStore(fonte_path, logger=log_progress)
                     ja_lancadas = 0
                     ja_no_sge = 0
                     ausentes_count = 0
@@ -687,11 +778,10 @@ if executar_btn:
                         _login_sge(page, cpf=st.session_state.sge_cpf, senha=st.session_state.sge_senha, logger=log_progress)
 
                         for idx, (key, itens) in enumerate(grouped.items(), start=1):
-                            escola, turno, turma, trimestre,atividade = key
+                            escola, turno, turma, trimestre, atividade = key
                             log_progress(f"[{idx}/{len(grouped)}] {escola} | {turno} | {turma} | {trimestre} | {atividade}")
 
-                            # Verificacao de data: pula se data futura
-                            from lancar_notas_sge import _date_diff_days, _mark_failed_launch_status_for_notes
+                            from lancar_notas_sge import _date_diff_days
                             datas_bloco = [r.data_realizacao for r in itens if r.data_realizacao]
                             if datas_bloco:
                                 from collections import Counter
@@ -707,7 +797,6 @@ if executar_btn:
                             _open_assessment_for_context(page, contexto, logger=log_progress)
                             _, data_sge, posicao_grid = _select_activity(page, atividade, logger=log_progress)
 
-                            # Verificacao de atividade: se nao encontrou, pula
                             if not data_sge and posicao_grid == 0:
                                 log_progress(f"  [AVISO] Atividade '{atividade}' nao encontrada no SGE. Pulando bloco.")
                                 falhas += len(itens)

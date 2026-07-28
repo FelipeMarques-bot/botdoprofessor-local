@@ -321,6 +321,11 @@ def create_venv(python_path):
     return run_silent([python_path, "-m", "venv", str(VENV_DIR)], timeout=120)
 
 
+def clear_pip_cache(pip_path):
+    log("Limpando cache do pip...")
+    run_silent([str(pip_path), "cache", "purge"], timeout=60)
+
+
 def install_requirements(pip_path):
     log("Instalando dependencias...")
     reqs = [
@@ -335,7 +340,7 @@ def install_requirements(pip_path):
         "anthropic>=0.25",
     ]
     return run_silent(
-        [str(pip_path), "install", "--quiet", "--disable-pip-version-check"] + reqs,
+        [str(pip_path), "install", "--quiet", "--no-cache-dir", "--disable-pip-version-check"] + reqs,
         timeout=600,
     )
 
@@ -547,7 +552,8 @@ def main():
                 return False
             try:
                 r = subprocess.run(
-                    [str(VENV_PYTHON), "-c", "import sys; import multiprocessing; print(sys.version_info[:2])"],
+                    [str(VENV_PYTHON), "-c",
+                     "import sys, multiprocessing; multiprocessing.allow_connection_pickling(); print(sys.version_info[:2])"],
                     capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW,
                 )
                 if r.returncode == 0 and r.stdout.strip():
@@ -591,12 +597,36 @@ def main():
                     show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual (2a tentativa).")
                     sys.exit(1)
 
+            splash.update("Preparando instalacao...", "Limpando cache de pacotes")
+            splash.set_progress(0.15)
+            clear_pip_cache(VENV_PIP)
+
             splash.update("Instalando dependencias...", "Baixando pacotes necessarios (2/4)")
             splash.set_progress(0.2)
             if not install_requirements(VENV_PIP):
                 splash.close()
                 show_error_box("BotDoProfessor", "Falha ao instalar dependencias.\nVerifique sua conexao com a internet.")
                 sys.exit(1)
+
+            splash.update("Verificando instalacao...", "Testando pacotes instalados")
+            splash.set_progress(0.35)
+            install_ok = subprocess.run(
+                [str(VENV_PYTHON), "-c",
+                 "import multiprocessing; multiprocessing.allow_connection_pickling(); import uvicorn; print('OK')"],
+                capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
+            )
+            if install_ok.returncode != 0:
+                log(f"Pacotes com problema (python311.dll). Reinstalando sem cache...")
+                _force_delete_venv()
+                if not create_venv(python):
+                    splash.close()
+                    show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual (recovery).")
+                    sys.exit(1)
+                if not install_requirements(VENV_PIP):
+                    splash.close()
+                    show_error_box("BotDoProfessor", "Falha ao instalar dependencias (recovery).")
+                    sys.exit(1)
+                log("Reinstalacao concluida")
 
             splash.update("Instalando navegador...", "Chromium para automacao (3/4)")
             splash.set_progress(0.6)

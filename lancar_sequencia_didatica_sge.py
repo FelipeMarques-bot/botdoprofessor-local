@@ -1534,8 +1534,11 @@ def executar_lancamento_sequencia(
             c.trimestre = trimestre
 
     if not contextos:
+        anos_disp = sorted({_normalize(r.ano) for r in registros if r.ano})
         msg = (
-            f"Nenhum contexto valido. Registros lidos: {len(registros)}. "
+            f"Nenhum contexto valido. "
+            f"Filtros ativos: escola='{escola}' turno='{turno}' turma='{turma}' trimestre='{trimestre}'. "
+            f"Anos disponiveis apos filtros: {anos_disp or '(nenhum)'}. "
             "Verifique os filtros de Escola, Turno e Turma no painel."
         )
         if dry_run:

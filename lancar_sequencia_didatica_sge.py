@@ -1495,6 +1495,11 @@ def executar_lancamento_sequencia(
     contextos_raw = _gerar_contextos_de_sequencias(registros, logger=logger)
 
     # Aplica filtros de escola/turno/turma/trimestre.
+    _log(logger, f"[filtro] escola='{escola}' turno='{turno}' turma='{turma}' trimestre='{trimestre}'")
+    _log(logger, f"[filtro] Total contextos brutos: {len(contextos_raw)}")
+    if contextos_raw:
+        _log(logger, f"[filtro] Primeiro contexto bruto: escola='{contextos_raw[0].escola}' turno='{contextos_raw[0].turno}' turma='{contextos_raw[0].turma}' trimestre='{contextos_raw[0].trimestre}'")
+
     contextos = _filter_contexts(
         [
             {"escola": c.escola, "turno": c.turno, "turma": c.turma, "trimestre": c.trimestre}
@@ -1505,6 +1510,8 @@ def executar_lancamento_sequencia(
         turma=turma,
         trimestre=trimestre,
     )
+
+    _log(logger, f"[filtro] Contextos apos filtro: {len(contextos)}")
 
     # Preenche trimestre do CLI nos contextos (ja que vem da database, nao do titulo).
     for c in contextos:

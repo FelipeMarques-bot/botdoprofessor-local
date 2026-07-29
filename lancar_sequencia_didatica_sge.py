@@ -861,6 +861,8 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
                 f"img[name='W0019W0075_PLANOAULA_{suffix}']",
                 f"#W0019W0075_PLANODEAULA_{suffix}",
                 f"img[name='W0019W0075_PLANODEAULA_{suffix}']",
+                f"#W0019W0075_SEQUENCIADIDATICA_{suffix}",
+                f"img[name='W0019W0075_SEQUENCIADIDATICA_{suffix}']",
             ]
             for sel in selectors:
                 try:
@@ -874,8 +876,8 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
                         pass
                     page.wait_for_timeout(2000)
                     url_atual = (page.url or "").lower()
-                    if "planejamentoaula" in url_atual:
-                        _log(logger, "Icone Plano de Aulas clicado; navegacao concluida.")
+                    if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
+                        _log(logger, "Icone clicado; navegacao concluida.")
                         return True
                 except Exception:  # noqa: BLE001
                     continue
@@ -926,6 +928,9 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
                 f"#W0019W0075_PLANOAULA_{suffix}",
                 f"img[name='W0019W0075_PLANOAULA_{suffix}']",
                 f"a:has(img[name='W0019W0075_PLANOAULA_{suffix}'])",
+                f"#W0019W0075_SEQUENCIADIDATICA_{suffix}",
+                f"img[name='W0019W0075_SEQUENCIADIDATICA_{suffix}']",
+                f"a:has(img[name='W0019W0075_SEQUENCIADIDATICA_{suffix}'])",
             ]:
                 try:
                     icon = scope.locator(sel)
@@ -934,20 +939,25 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
                     icon.first.click(timeout=ACTION_TIMEOUT_MS)
                     page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
                     page.wait_for_timeout(2000)
-                    if "planejamentoaula" in (page.url or "").lower():
-                        _log(logger, "Icone Plano de Aulas clicado; navegacao concluida.")
+                    url_atual = (page.url or "").lower()
+                    if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
+                        _log(logger, "Icone clicado; navegacao concluida.")
                         return True
                 except Exception:  # noqa: BLE001
                     continue
 
     # 5) Fallback: navegacao direta
-    _log(logger, "Nenhuma linha com icone PLANOAULA encontrada; tentando navegacao direta...")
-    page.goto("https://www.sge8147.com.br/hportalplanejamentoaula.aspx", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-    page.wait_for_timeout(2000)
-    url_atual = (page.url or "").lower()
-    if "planejamentoaula" in url_atual:
-        _log(logger, "Navegacao direta funcionou.")
-        return True
+    _log(logger, "Nenhuma linha com icone encontrada; tentando navegacao direta...")
+    for url_tentativa in [
+        "https://www.sge8147.com.br/hportalplanejamentoaula.aspx",
+        "https://www.sge8147.com.br/hportalsequenciadidatica.aspx",
+    ]:
+        page.goto(url_tentativa, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        page.wait_for_timeout(2000)
+        url_atual = (page.url or "").lower()
+        if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
+            _log(logger, f"Navegacao direta funcionou: {url_tentativa}")
+            return True
     _log(logger, f"Navegacao falhou. URL atual: {url_atual}")
     return False
 

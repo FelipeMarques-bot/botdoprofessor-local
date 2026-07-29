@@ -369,15 +369,32 @@ with st.sidebar:
 
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            escola = st.text_input("Escola (vazio = todas)", key="escola_input")
+            escola = st.text_input(
+                "Escola",
+                key="escola_input",
+                placeholder="vazio = todas as escolas",
+            )
             st.session_state.escola = escola
-            turma = st.text_input("Turma (ex: 6o Ano)", key="turma_input")
+            turma = st.text_input(
+                "Turma (ex: 6o Ano)",
+                key="turma_input",
+                placeholder="vazio = todas as turmas",
+            )
             st.session_state.turma = turma
         with col_f2:
             turno = st.selectbox("Turno", options=["", "Matutino", "Vespertino", "Noturno"], key="turno_select")
             st.session_state.turno = turno
             trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select")
             st.session_state.trimestre = trimestre
+
+
+
+        if tipo == "sequencia":
+            filtros_ativos = [k for k in ["escola", "turno", "turma"] if st.session_state.get(k, "")]
+            if not filtros_ativos:
+                st.info("Publicara em **todas as escolas, turnos e turmas** disponiveis.")
+            else:
+                st.caption(f"Filtros ativos: {', '.join(filtros_ativos)}")
 
         st.markdown("---")
         st.markdown("**Imagem / Foto (extrair notas com IA)**")

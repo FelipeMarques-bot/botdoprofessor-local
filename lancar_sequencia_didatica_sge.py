@@ -615,6 +615,18 @@ def _gerar_contextos_de_sequencias(
     return contextos
 
 
+def _loose_turma(s: str) -> str:
+    """Normaliza nome de turma ignorando sufixo |N e caracteres especiais."""
+    text = (s or "").strip().lower()
+    text = text.replace("°", "o").replace("º", "o")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = "".join(ch for ch in text if unicodedata.category(ch) not in {"Cf", "Cc"})
+    text = re.sub(r"\|(\d+)$", "", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
 def _filter_contexts(
     contextos_raw: List[Dict[str, str]],
     escola: str = "",
@@ -638,8 +650,11 @@ def _filter_contexts(
             continue
         if turno and _normalize(turno) not in {"", "todos"} and _normalize(ctx.turno) != _normalize(turno):
             continue
-        if turma and _normalize(turma) not in {"", "todos"} and _normalize(ctx.turma) != _normalize(turma):
-            continue
+        if turma and _normalize(turma) not in {"", "todos"}:
+            ctx_turma_norm = _loose_turma(ctx.turma)
+            turma_norm = _loose_turma(turma)
+            if ctx_turma_norm != turma_norm:
+                continue
         if trimestre and ctx.trimestre and _normalize(ctx.trimestre) != _normalize(trimestre):
             continue
         filtered.append(ctx)

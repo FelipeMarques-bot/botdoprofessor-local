@@ -1,4 +1,4 @@
-﻿from bot.core.portal_adapter import (
+from bot.core.portal_adapter import (
     PortalAdapter, PortalContext, StudentGrade, GradeResult,
     LessonPlan, LessonPlanResult,
 )

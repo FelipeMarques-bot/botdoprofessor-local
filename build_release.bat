@@ -52,7 +52,7 @@ python -m PyInstaller ^
     --hidden-import "openai" ^
     --hidden-import "anthropic" ^
     --hidden-import "requests" ^
-    --hidden-import "python_dotenv" ^
+    --hidden-import "dotenv" ^
     launcher.py
 
 echo [3/3] Verificando resultado...

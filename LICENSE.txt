@@ -3,8 +3,9 @@ LICENCA DE USO - BotDoProfessor
 Copyright (c) 2026 Felipe Marques
 
 1. CONCESSAO DE LICENCA
-   Este software e fornecido gratuitamente para uso pessoal e educacional.
-   O usuario pode instalar e utilizar o software em seus proprios equipamentos.
+   Este software e fornecido mediante assinatura (plano ativo).
+   O usuario pode instalar e utilizar o software em seus proprios equipamentos
+   apenas enquanto possuir uma assinatura valida.
 
 2. RESTRICOES
    - Nao e permitida a distribuicao, venda, aluguel ou sublicenciamento do software.

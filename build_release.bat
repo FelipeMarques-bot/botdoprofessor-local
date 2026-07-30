@@ -36,6 +36,7 @@ python -m PyInstaller ^
     --noconfirm ^
     --clean ^
     --add-data "painel.py;." ^
+    --add-data "autofix.py;." ^
     --add-data "lancar_notas_sge.py;." ^
     --add-data "lancar_sequencia_didatica_sge.py;." ^
     --add-data "leitor_planilhas.py;." ^

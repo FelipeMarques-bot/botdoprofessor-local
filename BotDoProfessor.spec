@@ -5,7 +5,7 @@ a = Analysis(
     ['launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('painel.py', '.'), ('lancar_notas_sge.py', '.'), ('lancar_sequencia_didatica_sge.py', '.'), ('leitor_planilhas.py', '.'), ('ai_assist.py', '.'), ('status_store.py', '.')],
+    datas=[('painel.py', '.'), ('autofix.py', '.'), ('lancar_notas_sge.py', '.'), ('lancar_sequencia_didatica_sge.py', '.'), ('leitor_planilhas.py', '.'), ('ai_assist.py', '.'), ('status_store.py', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

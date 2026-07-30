@@ -146,10 +146,18 @@ def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[Regist
     return registros
 
 
+def _csv_skip_comments(f):
+    for line in f:
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        yield line
+
+
 def ler_notas_csv(caminho: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
     registros: List[RegistroNota] = []
     with open(caminho, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(_csv_skip_comments(f))
         headers = reader.fieldnames or []
 
         grade_cols = {h: h for h in headers if _is_grade_column(h) and _normalize(h) not in ("nome", "aluno")}
@@ -329,14 +337,68 @@ def gerar_template_notas_xlsx() -> bytes:
     for col in ws.columns:
         max_len = max((len(str(c.value or "")) for c in col), default=0)
         ws.column_dimensions[col[0].column_letter].width = max(max_len + 2, 18)
+
+    _add_notas_instrucoes(wb)
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
 
 
+def _add_notas_instrucoes(wb):
+    ws2 = wb.create_sheet("Instrucoes", 0)
+    instrucoes = [
+        ["INSTRUCOES - PLANILHA DE NOTAS", "", ""],
+        ["", "", ""],
+        ["O que e cada coluna:", "", ""],
+        ["", "", ""],
+        ["Coluna", "O que preencher", "Exemplo"],
+        ["Escola", "Nome da escola (como aparece no portal)", "Juvenal"],
+        ["Turno", "Matutino, Vespertino ou Noturno", "Matutino"],
+        ["Turma", "Turma completa (ex: 6o Ano, 7o Ano)", "6o Ano"],
+        ["Trimestre", "1o Trimestre, 2o Trimestre ou 3o Trimestre", "1o Trimestre"],
+        ["Nome do Aluno", "Nome completo do aluno", "Joao Silva"],
+        ["Atividade 1", "Nota da primeira atividade (use virgula para decimal)", "8,5"],
+        ["Atividade 2", "Nota da segunda atividade", "7,0"],
+        ["Atividade 3", "Nota da terceira atividade", "9,0"],
+        ["Data realizacao 1", "Data que a atividade 1 foi aplicada (dd/mm/aaaa)", "01/03/2026"],
+        ["Data realizacao 2", "Data que a atividade 2 foi aplicada (dd/mm/aaaa)", "15/04/2026"],
+        ["Data realizacao 3", "Data que a atividade 3 foi aplicada (dd/mm/aaaa)", "20/05/2026"],
+        ["Observacoes 1", "Observacao sobre a atividade 1 (opcional)", ""],
+        ["Observacoes 2", "Observacao sobre a atividade 2 (opcional)", ""],
+        ["Observacoes 3", "Observacao sobre a atividade 3 (opcional)", ""],
+        ["", "", ""],
+        ["DICAS IMPORTANTES:", "", ""],
+        ["1. Os nomes das atividades (Atividade 1, 2, 3) devem ser IGUAIS aos nomes", "que aparecem no portal SGE para aquela turma/trimestre.", ""],
+        ["2. Preencha uma linha por aluno. Repita os dados de escola/turma/trimestre", "para cada aluno.", ""],
+        ["3. Use virgula (,) como separador decimal nas notas. Ex: 8,5", "", ""],
+        ["4. Datas sempre no formato: dia/mes/ano (ex: 01/03/2026)", "", ""],
+        ["5. Deixe em branco o que nao for preencher.", "", ""],
+    ]
+    for row in instrucoes:
+        ws2.append(row)
+    ws2.column_dimensions["A"].width = 24
+    ws2.column_dimensions["B"].width = 60
+    ws2.column_dimensions["C"].width = 24
+
+
 def gerar_template_notas_csv() -> str:
     buf = io.StringIO()
+    _write_csv_comments(buf, [
+        "INSTRUCOES - Planilha de Notas",
+        "Escola: nome da escola. Ex: Juvenal",
+        "Turno: Matutino, Vespertino ou Noturno",
+        "Turma: 6o Ano, 7o Ano, etc.",
+        "Trimestre: 1o Trimestre, 2o Trimestre ou 3o Trimestre",
+        "Nome do Aluno: nome completo do aluno",
+        "Atividade 1/2/3: nota de cada atividade (use virgula p/ decimal). Ex: 8,5",
+        "Data realizacao 1/2/3: data da atividade no formato dd/mm/aaaa",
+        "Observacoes 1/2/3: opcional",
+        "",
+        "IMPORTANTE: os nomes das atividades devem ser IGUAIS aos nomes no portal SGE",
+        "",
+    ])
     writer = csv.writer(buf)
     writer.writerow([
         "Escola", "Turno", "Turma", "Trimestre",
@@ -381,14 +443,70 @@ def gerar_template_sequencias_xlsx() -> bytes:
     for col in ws.columns:
         max_len = max((len(str(c.value or "")) for c in col), default=0)
         ws.column_dimensions[col[0].column_letter].width = max(max_len + 2, 22)
+
+    _add_seq_instrucoes(wb)
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
 
 
+def _add_seq_instrucoes(wb):
+    ws2 = wb.create_sheet("Instrucoes", 0)
+    instrucoes = [
+        ["INSTRUCOES - PLANILHA DE SEQUENCIAS DIDATICAS", "", ""],
+        ["", "", ""],
+        ["O que e cada coluna:", "", ""],
+        ["", "", ""],
+        ["Coluna", "O que preencher", "Exemplo"],
+        ["Name", "Nome da sequencia (para identificacao)", "SD - 6o Ano - Matematica"],
+        ["Escola", "Nome da escola (como aparece no portal)", "Juvenal"],
+        ["Ano", "Ano escolar (6o Ano, 7o Ano, 8o Ano, 9o Ano)", "6o Ano"],
+        ["Periodo inicio", "Data de inicio da sequencia (dd/mm/aaaa)", "01/03/2026"],
+        ["Periodo fim", "Data de termino da sequencia (dd/mm/aaaa)", "31/03/2026"],
+        ["N aulas", "Numero de aulas da sequencia", "4"],
+        ["Titulo Documento", "Titulo do documento que aparecera no portal", "Sequencia Didatica - Matematica - 6o Ano"],
+        ["Link do Arquivo", "Link do Google Drive para o PDF do plano de aula", "https://drive.google.com/..."],
+        ["Ativo", "'Sim' para processar, 'Nao' para pular esta linha", "Sim"],
+        ["Observacoes", "Observacao opcional (nao vai para o portal)", ""],
+        ["", "", ""],
+        ["DICAS IMPORTANTES:", "", ""],
+        ["1. Coloque 'Nao' na coluna Ativo para pular linhas sem deleta-las.", "", ""],
+        ["2. Os links do Google Drive devem ser compartilhados como 'Qualquer um com o link pode ver'.", "", ""],
+        ["3. Datas sempre no formato: dia/mes/ano (ex: 01/03/2026)", "", ""],
+        ["4. Deixe em branco o que nao for preencher.", "", ""],
+    ]
+    for row in instrucoes:
+        ws2.append(row)
+    ws2.column_dimensions["A"].width = 24
+    ws2.column_dimensions["B"].width = 60
+    ws2.column_dimensions["C"].width = 24
+
+
+def _write_csv_comments(buf, lines):
+    for line in lines:
+        buf.write(f"#{line}\n")
+
+
 def gerar_template_sequencias_csv() -> str:
     buf = io.StringIO()
+    _write_csv_comments(buf, [
+        "INSTRUCOES - Planilha de Sequencias Didaticas",
+        "Name: nome da sequencia para identificacao. Ex: SD - 6o Ano - Matematica",
+        "Escola: nome da escola. Ex: Juvenal",
+        "Ano: 6o Ano, 7o Ano, 8o Ano ou 9o Ano",
+        "Periodo inicio: data de inicio (dd/mm/aaaa). Ex: 01/03/2026",
+        "Periodo fim: data de termino (dd/mm/aaaa). Ex: 31/03/2026",
+        "N aulas: numero de aulas. Ex: 4",
+        "Titulo Documento: titulo que aparecera no portal",
+        "Link do Arquivo: link do Google Drive para o PDF",
+        "Ativo: Sim para processar, Nao para pular",
+        "Observacoes: opcional",
+        "",
+        "IMPORTANTE: links do Drive devem estar como 'Qualquer um com o link pode ver'",
+        "",
+    ])
     writer = csv.writer(buf)
     writer.writerow([
         "Name", "Escola", "Ano", "Periodo inicio", "Periodo fim",
@@ -497,7 +615,7 @@ def ler_sequencias_csv(caminho: str, logger: Optional[LogFn] = None) -> list:
     from datetime import datetime as _dt
 
     with open(caminho, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(_csv_skip_comments(f))
         headers = reader.fieldnames or []
         h_norm = {_normalize_str(h): h for h in headers}
 

@@ -699,20 +699,43 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    col_h1, col_h2 = st.columns(2)
-    with col_h1:
-        headless_mode = st.checkbox("Modo headless", value=st.session_state.headless_mode, key="headless_check",
-            help="Desmarque para ver o navegador sendo controlado (debug)")
+    st.markdown("**Opcoes de execucao**")
+
+    with st.expander("Modo headless (navegador invisivel)"):
+        st.markdown(
+            "Quando ativado, o navegador roda em **segundo plano** sem mostrar nada na tela. "
+            "Deixe marcado para uso normal.\n\n"
+            "**Desmarque** apenas se quiser **ver** o navegador sendo controlado passo a passo "
+            "(para entender o que o programa faz ou para tirar duvidas)."
+        )
+        headless_mode = st.checkbox("Rodar em segundo plano (recomendado)", value=st.session_state.headless_mode, key="headless_check")
         st.session_state.headless_mode = headless_mode
-    with col_h2:
-        dark_mode = st.checkbox("Modo escuro", value=st.session_state.dark_mode, key="dark_check")
+
+    with st.expander("Modo Dry-run (apenas simular)"):
+        st.markdown(
+            "Quando ativado, o programa **apenas simula** o lancamento — ele mostra o que "
+            "seria feito, mas **nao envia nada** para o portal.\n\n"
+            "Use sempre marcado na primeira vez para conferir se os dados estao corretos.\n"
+            "**Desmarque** quando quiser realmente enviar as notas para o portal."
+        )
+        dry_run = st.checkbox("Simular sem enviar (recomendado)", value=True, key="dry_run_check")
+
+    with st.expander("Auto-fix IA (correcao automatica)"):
+        st.markdown(
+            "Quando ativado, se acontecer algum erro (ex: data no formato errado, link invalido, "
+            "demora para carregar), o programa **tenta corrigir sozinho** usando inteligencia "
+            "artificial local.\n\n"
+            "Se conseguir corrigir, uma mensagem explica o que foi ajustado e voce pode clicar "
+            "em **Tentar novamente**.\n\n"
+            "Requer o Ollama instalado (ja configurado neste computador)."
+        )
+        autofix_enabled = st.checkbox("Corrigir erros automaticamente", value=st.session_state.get("autofix_enabled", False), key="autofix_check")
+        st.session_state.autofix_enabled = autofix_enabled
+
+    with st.expander("Modo escuro"):
+        st.markdown("Alterna entre tema claro e escuro da interface.")
+        dark_mode = st.checkbox("Usar tema escuro", value=st.session_state.dark_mode, key="dark_check")
         st.session_state.dark_mode = dark_mode
-
-    autofix_enabled = st.checkbox("Auto-fix IA", value=st.session_state.get("autofix_enabled", False), key="autofix_check",
-        help="Tenta corrigir erros automaticamente com IA local (Ollama)")
-    st.session_state.autofix_enabled = autofix_enabled
-
-    dry_run = st.checkbox("Modo Dry-run (apenas validar)", value=True, key="dry_run_check")
     salvar = st.button("Salvar Configuracao")
 
     if salvar:

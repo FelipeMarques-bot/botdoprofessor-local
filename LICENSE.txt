@@ -1,1 +1,27 @@
-BotDoProfessor - Uso interno. Nao distribuir.
+LICENCA DE USO - BotDoProfessor
+
+Copyright (c) 2026 Felipe Marques
+
+1. CONCESSAO DE LICENCA
+   Este software e fornecido gratuitamente para uso pessoal e educacional.
+   O usuario pode instalar e utilizar o software em seus proprios equipamentos.
+
+2. RESTRICOES
+   - Nao e permitida a distribuicao, venda, aluguel ou sublicenciamento do software.
+   - Nao e permitida a engenharia reversa, descompilacao ou modificacao do codigo.
+   - Nao e permitida a reproducao ou redistribuicao do instalador sem autorizacao expressa.
+
+3. ISENCAO DE GARANTIAS
+   O software e fornecido "como esta", sem garantias de qualquer tipo.
+   O autor nao se responsabiliza por danos diretos ou indiretos decorrentes do uso.
+
+4. COLETA DE DADOS
+   Este software nao coleta, armazena ou transmite dados pessoais do usuario.
+   Toda a operacao ocorre localmente no equipamento do usuario.
+
+5. ATUALIZACOES
+   Atualizacoes serao disponibilizadas no repositorio oficial do projeto.
+   O usuario pode verificar periodicamente por novas versoes.
+
+6. ACEITACAO
+   Ao utilizar este software, o usuario automaticamente aceita os termos desta licenca.

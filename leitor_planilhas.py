@@ -303,6 +303,288 @@ def ler_notas_google_drive(url_or_id: str, logger: Optional[LogFn] = None) -> Li
         raise RuntimeError(f"Falha ao baixar arquivo do Google Drive: {exc}")
 
 
+def _normalize_str(s: str) -> str:
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch)).strip()
+
+
+def gerar_template_notas_xlsx() -> bytes:
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Exemplo - 6º Ano"
+    headers = [
+        "Escola", "Turno", "Turma", "Trimestre",
+        "Nome do Aluno", "Atividade 1", "Atividade 2", "Atividade 3",
+        "Data realização 1", "Data realização 2", "Data realização 3",
+        "Observações 1", "Observações 2", "Observações 3",
+    ]
+    ws.append(headers)
+    ws.append([
+        "Juvenal", "Matutino", "6º Ano", "1º Trimestre",
+        "Exemplo Aluno", "8,5", "7,0", "9,0",
+        "01/03/2026", "15/04/2026", "20/05/2026",
+        "", "", "",
+    ])
+    for col in ws.columns:
+        max_len = max((len(str(c.value or "")) for c in col), default=0)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 2, 18)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def gerar_template_notas_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Escola", "Turno", "Turma", "Trimestre",
+        "Nome do Aluno", "Atividade 1", "Atividade 2", "Atividade 3",
+        "Data realização 1", "Data realização 2", "Data realização 3",
+        "Observações 1", "Observações 2", "Observações 3",
+    ])
+    writer.writerow([
+        "Juvenal", "Matutino", "6º Ano", "1º Trimestre",
+        "Exemplo Aluno", "8,5", "7,0", "9,0",
+        "01/03/2026", "15/04/2026", "20/05/2026",
+        "", "", "",
+    ])
+    return buf.getvalue()
+
+
+def gerar_template_sequencias_xlsx() -> bytes:
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sequências"
+    headers = [
+        "Name", "Escola", "Ano", "Periodo inicio", "Periodo fim",
+        "N aulas", "Titulo Documento", "Link do Arquivo",
+        "Ativo", "Observações",
+    ]
+    ws.append(headers)
+    ws.append([
+        "SD - 6º Ano - Matemática", "Juvenal", "6º Ano",
+        "01/03/2026", "31/03/2026", 4,
+        "Sequência Didática - Matemática - 6º Ano",
+        "https://drive.google.com/your-file-link-here",
+        "Sim", "",
+    ])
+    ws.append([
+        "SD - 7º Ano - Português", "Arapongas", "7º Ano",
+        "01/04/2026", "30/04/2026", 4,
+        "Sequência Didática - Português - 7º Ano",
+        "https://drive.google.com/your-file-link-here",
+        "Sim", "",
+    ])
+    for col in ws.columns:
+        max_len = max((len(str(c.value or "")) for c in col), default=0)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 2, 22)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def gerar_template_sequencias_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Name", "Escola", "Ano", "Periodo inicio", "Periodo fim",
+        "N aulas", "Titulo Documento", "Link do Arquivo",
+        "Ativo", "Observações",
+    ])
+    writer.writerow([
+        "SD - 6º Ano - Matemática", "Juvenal", "6º Ano",
+        "01/03/2026", "31/03/2026", 4,
+        "Sequência Didática - Matemática - 6º Ano",
+        "https://drive.google.com/your-file-link-here",
+        "Sim", "",
+    ])
+    return buf.getvalue()
+
+
+def ler_sequencias_excel(caminho: str, logger: Optional[LogFn] = None) -> list:
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("openpyxl nao instalado")
+    from datetime import datetime as _dt
+
+    wb = openpyxl.load_workbook(caminho, data_only=True)
+    registros = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            continue
+        headers = [str(h or "").strip() for h in rows[0]]
+        h_norm = {_normalize_str(h): i for i, h in enumerate(headers)}
+
+        def _col(names):
+            for n in names:
+                nn = _normalize_str(n)
+                if nn in h_norm:
+                    return h_norm[nn]
+            return None
+
+        col_name = _col(["Name", "Nome", "Titulo"])
+        col_escola = _col(["Escola"])
+        col_ano = _col(["Ano"])
+        col_periodo_inicio = _col(["Periodo inicio", "Periodo início", "Data inicio", "Data início"])
+        col_periodo_fim = _col(["Periodo fim", "Periodo fim", "Data fim"])
+        col_n_aulas = _col(["N aulas", "Nº aulas", "Numero de aulas"])
+        col_titulo_doc = _col(["Titulo Documento", "Título Documento", "Titulo do Documento"])
+        col_link = _col(["Link do Arquivo", "Link do arquivo", "Arquivo PDF", "URL"])
+        col_ativo = _col(["Ativo"])
+
+        if col_name is None:
+            if logger:
+                logger(f"Aba '{sheet_name}': coluna 'Name' nao encontrada. Pulando.")
+            continue
+
+        for row_idx, row in enumerate(rows[1:], start=2):
+            name = str(row[col_name] or "").strip()
+            if not name:
+                continue
+            escola = str(row[col_escola] or "").strip() if col_escola is not None else ""
+            ano = str(row[col_ano] or "").strip() if col_ano is not None else ""
+            periodo_inicio = _fmt_date(str(row[col_periodo_inicio] or "")) if col_periodo_inicio is not None else ""
+            periodo_fim = _fmt_date(str(row[col_periodo_fim] or "")) if col_periodo_fim is not None else ""
+            n_aulas_raw = row[col_n_aulas] if col_n_aulas is not None else None
+            n_aulas = 4
+            if n_aulas_raw is not None:
+                try:
+                    n_aulas = int(float(str(n_aulas_raw).replace(",", ".")))
+                except (ValueError, TypeError):
+                    pass
+            titulo_doc = str(row[col_titulo_doc] or "").strip() if col_titulo_doc is not None else name
+            link = str(row[col_link] or "").strip() if col_link is not None else ""
+            ativo_raw = str(row[col_ativo] or "").strip().lower() if col_ativo is not None else "sim"
+            ativo = ativo_raw in ("sim", "s", "yes", "1", "true", "verdadeiro")
+
+            if not ativo:
+                if logger:
+                    logger(f"Linha {row_idx}: registro '{name}' ignorado (Ativo = '{ativo_raw}').")
+                continue
+
+            registros.append({
+                "page_id": "",
+                "ano": ano,
+                "escola": escola,
+                "turno": "",
+                "turma": "",
+                "titulo_documento": titulo_doc,
+                "arquivo_nome": f"{name}.pdf",
+                "arquivo_url": link,
+                "link_arquivo": link,
+                "periodo_inicio": periodo_inicio,
+                "periodo_fim": periodo_fim,
+                "n_aulas": n_aulas,
+                "status": "",
+            })
+
+        if logger:
+            logger(f"Aba '{sheet_name}': {len(registros)} sequencias carregadas.")
+
+    wb.close()
+    return registros
+
+
+def ler_sequencias_csv(caminho: str, logger: Optional[LogFn] = None) -> list:
+    registros = []
+    from datetime import datetime as _dt
+
+    with open(caminho, encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        headers = reader.fieldnames or []
+        h_norm = {_normalize_str(h): h for h in headers}
+
+        def _col(names):
+            for n in names:
+                nn = _normalize_str(n)
+                if nn in h_norm:
+                    return h_norm[nn]
+            return None
+
+        col_name = _col(["Name", "Nome", "Titulo"])
+        col_escola = _col(["Escola"])
+        col_ano = _col(["Ano"])
+        col_periodo_inicio = _col(["Periodo inicio", "Periodo início", "Data inicio", "Data início"])
+        col_periodo_fim = _col(["Periodo fim", "Periodo fim", "Data fim"])
+        col_n_aulas = _col(["N aulas", "Nº aulas", "Numero de aulas"])
+        col_titulo_doc = _col(["Titulo Documento", "Título Documento", "Titulo do Documento"])
+        col_link = _col(["Link do Arquivo", "Link do arquivo", "Arquivo PDF", "URL"])
+        col_ativo = _col(["Ativo"])
+
+        if not col_name:
+            if logger:
+                logger("CSV: coluna 'Name' nao encontrada")
+            return registros
+
+        for row in reader:
+            name = (row.get(col_name) or "").strip()
+            if not name:
+                continue
+
+            escola = (row.get(col_escola) or "").strip() if col_escola else ""
+            ano = (row.get(col_ano) or "").strip() if col_ano else ""
+            periodo_inicio = _fmt_date(row.get(col_periodo_inicio, "")) if col_periodo_inicio else ""
+            periodo_fim = _fmt_date(row.get(col_periodo_fim, "")) if col_periodo_fim else ""
+            n_aulas = 4
+            if col_n_aulas:
+                try:
+                    n_aulas = int(float(str(row.get(col_n_aulas, "4")).replace(",", ".")))
+                except (ValueError, TypeError):
+                    pass
+            titulo_doc = (row.get(col_titulo_doc) or name).strip() if col_titulo_doc else name
+            link = (row.get(col_link) or "").strip() if col_link else ""
+            ativo_raw = (row.get(col_ativo) or "sim").strip().lower() if col_ativo else "sim"
+            ativo = ativo_raw in ("sim", "s", "yes", "1", "true", "verdadeiro")
+            if not ativo:
+                continue
+
+            registros.append({
+                "page_id": "",
+                "ano": ano,
+                "escola": escola,
+                "turno": "",
+                "turma": "",
+                "titulo_documento": titulo_doc,
+                "arquivo_nome": f"{name}.pdf",
+                "arquivo_url": link,
+                "link_arquivo": link,
+                "periodo_inicio": periodo_inicio,
+                "periodo_fim": periodo_fim,
+                "n_aulas": n_aulas,
+                "status": "",
+            })
+
+    if logger:
+        logger(f"CSV: {len(registros)} sequencias carregadas")
+    return registros
+
+
+def _fmt_date(value: str) -> str:
+    from datetime import datetime as _dt
+    raw = value.strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"\d{2}/\d{2}/\d{4}", raw):
+        return raw
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return _dt.strptime(raw, "%Y-%m-%d").strftime("%d/%m/%Y")
+    try:
+        import openpyxl
+        from datetime import datetime as _py_dt
+        if isinstance(value, _py_dt):
+            return value.strftime("%d/%m/%Y")
+    except ImportError:
+        pass
+    return raw
+
+
 def _extract_sheet_id(url_or_id: str) -> Optional[str]:
     url_or_id = url_or_id.strip()
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url_or_id)

@@ -1488,6 +1488,7 @@ def executar_lancamento_sequencia(
     data_fim: str = "",
     arquivo_por_ano: Optional[Dict[str, str]] = None,
     ano: str = "",
+    registros: Optional[List[SequenciaRegistro]] = None,
     logger=print,
 ) -> ExecucaoResumo:
     cpf = _resolve_env_credential(SGE_CPF, "SGE_CPF", logger=logger, digits_only=True)
@@ -1499,7 +1500,8 @@ def executar_lancamento_sequencia(
     if _is_placeholder_env(cpf) or _is_placeholder_env(senha):
         raise LancamentoError("SGE_CPF/SGE_SENHA estao com placeholders. Atualize com valores reais.")
 
-    registros = _load_sequencias_from_notion(logger=logger)
+    if registros is None:
+        registros = _load_sequencias_from_notion(logger=logger)
 
     if not registros:
         msg = "Nenhum registro ativo/valido encontrado na database de Sequencias."

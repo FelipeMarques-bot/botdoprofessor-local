@@ -20,6 +20,12 @@ from typing import Dict, List, Optional
 
 import streamlit as st
 
+from leitor_planilhas import (
+    gerar_template_notas_xlsx, gerar_template_notas_csv,
+    gerar_template_sequencias_xlsx, gerar_template_sequencias_csv,
+    ler_sequencias_excel, ler_sequencias_csv,
+)
+
 # === CONFIGURACAO DA PAGINA ===
 st.set_page_config(
     page_title="Bot do Professor - Lancamento de Notas",
@@ -29,39 +35,119 @@ st.set_page_config(
 )
 
 # === ESTILO CSS ===
-st.markdown("""
+_BASE_CSS = """
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+
     .main-header {
-        font-size: 2rem;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
+        font-size: 2rem; font-weight: 700; margin-bottom: 0.25rem;
+        background: linear-gradient(135deg, #2563eb, #7c3aed);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        background-clip: text;
     }
-    .sub-header {
-        font-size: 1.1rem;
-        color: #666;
-        margin-bottom: 2rem;
-    }
+    .sub-header { font-size: 1rem; color: #666; margin-bottom: 1.5rem; }
+
     .card {
-        background: #f8f9fa;
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        border: 1px solid #e9ecef;
+        background: #f8f9fa; border-radius: 12px; padding: 1.5rem;
+        margin-bottom: 1rem; border: 1px solid #e9ecef;
+        transition: box-shadow 0.2s ease, transform 0.2s ease;
     }
+    .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); transform: translateY(-1px); }
+
     .stButton button {
-        width: 100%;
-        border-radius: 8px;
-        padding: 0.5rem 1rem;
-        font-weight: 600;
+        width: 100%; border-radius: 8px; padding: 0.5rem 1rem; font-weight: 600;
+        transition: all 0.2s ease; position: relative; overflow: hidden;
     }
-    .stTextInput input, .stTextArea textarea {
-        border-radius: 8px;
+    .stButton button:hover {
+        transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,0.3);
     }
-    .stSelectbox div[data-baseweb="select"] {
-        border-radius: 8px;
+    .stButton button:active { transform: translateY(0); }
+    .stButton button[kind="primary"] {
+        background: linear-gradient(135deg, #2563eb, #7c3aed);
+        border: none; color: white;
     }
+    .stButton button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #1d4ed8, #6d28d9);
+        box-shadow: 0 4px 16px rgba(37,99,235,0.4);
+    }
+
+    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] {
+        border-radius: 8px; transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .stTextInput input:focus, .stTextArea textarea:focus {
+        border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+    }
+
+    .st-bb, .st-bc, .st-bd, .st-be, .st-bf, .st-bg, .st-bh { border-radius: 8px; }
+
+    div[data-testid="stMetric"] {
+        background: #f8f9fa; border-radius: 10px; padding: 1rem;
+        border: 1px solid #e9ecef; transition: all 0.2s ease;
+    }
+    div[data-testid="stMetric"]:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.06); transform: translateY(-1px);
+    }
+
+    section[data-testid="stSidebar"] .stMarkdown h3 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; }
+
+    .stAlert { border-radius: 10px; border: none; }
+    .st-bw { border-radius: 8px; }
+
+    @media (max-width: 768px) {
+        .main-header { font-size: 1.5rem; }
+        .row-widget.stColumns { flex-direction: column; }
+    }
+
+    @keyframes pulse-glow {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(37,99,235,0.4); }
+        50% { box-shadow: 0 0 0 8px rgba(37,99,235,0); }
+    }
+    .stButton button[kind="primary"]:not(:disabled) {
+        animation: pulse-glow 2s infinite;
+    }
+
+    .link-entry {
+        background: #f0f4ff; border-radius: 8px; padding: 0.75rem;
+        margin-bottom: 0.5rem; border-left: 3px solid #2563eb;
+    }
+    .link-entry-remove { color: #ef4444; cursor: pointer; font-size: 0.8rem; }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+_LIGHT_CSS = """
+<style>
+    .stApp { background: #fafbfc; color: #1a1a2e; }
+    div[data-testid="stMetric"] { background: #ffffff; }
+    .link-entry { background: #f0f4ff; }
+</style>
+"""
+
+_DARK_THEME_CSS = """
+<style>
+    .stApp { background: #0e1117; color: #e0e0e0; }
+    div[data-testid="stMetric"] { background: #1e2130; border-color: #2d3040; }
+    div[data-testid="stMetric"]:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .main-header { background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; background-clip: text; }
+    .sub-header { color: #888; }
+    .card { background: #1e2130; border-color: #2d3040; }
+    .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] { background-color: #262a3a; color: #e0e0e0; border-color: #3a3d50; }
+    .st-bd, .st-cf, .st-cg, .st-ch, .st-ci, .st-cj { background-color: #1e2130; color: #e0e0e0; }
+    .st-dg, .st-dh, .st-di, .st-dj, .st-dk, .st-dl { background-color: #262a3a; color: #e0e0e0; }
+    .stMarkdown, .stText, p, span, label { color: #c0c0d0; }
+    h1, h2, h3, h4, h5, h6 { color: #e8e8f0; }
+    .st-bb, .st-bc, .st-bd, .st-be, .st-bf, .st-bg, .st-bh { background-color: #262a3a; }
+    .st-cx, .st-cy, .st-cz, .st-d0, .st-d1, .st-d2 { border-color: #3a3d50; }
+    .stAlert { background-color: #1e2130; color: #e0e0e0; }
+    section[data-testid="stSidebar"] { background-color: #12151f; }
+    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] p { color: #b0b0c0; }
+    .link-entry { background: #1a1f35; border-left-color: #3b82f6; }
+</style>
+"""
+
+st.markdown(_BASE_CSS, unsafe_allow_html=True)
 
 
 # === SESSAO DE ESTADO ===
@@ -83,6 +169,46 @@ def log(msg: str):
         st.session_state.logs.append(f"[{timestamp}] {msg}")
     except Exception:
         pass
+
+
+def _validar_template(fonte: str, caminho: str, tipo: str) -> tuple:
+    try:
+        if tipo == "notas":
+            if fonte == "excel":
+                import openpyxl
+                wb = openpyxl.load_workbook(caminho, data_only=True)
+                headers = [str(h or "") for h in next(wb.active.iter_rows(values_only=True))]
+                wb.close()
+            else:
+                with open(caminho, encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    headers = reader.fieldnames or []
+            req = ["nome", "aluno"]
+            found = any(any(r in h.lower() for r in req) for h in headers)
+            if not found:
+                return False, ["Coluna 'Nome' ou 'Aluno' nao encontrada no cabecalho"]
+            return True, []
+        else:
+            if fonte == "excel":
+                import openpyxl
+                wb = openpyxl.load_workbook(caminho, data_only=True)
+                headers = [str(h or "") for h in next(wb.active.iter_rows(values_only=True))]
+                wb.close()
+            else:
+                with open(caminho, encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    headers = reader.fieldnames or []
+            h_lower = [h.lower() for h in headers]
+            avisos = []
+            if not any("ano" in h for h in h_lower):
+                avisos.append("Coluna 'Ano' nao encontrada. O ano sera extraido da Turma.")
+            if not any("escola" in h for h in h_lower):
+                avisos.append("Coluna 'Escola' nao encontrada.")
+            if not any("nome" in h or "name" in h for h in h_lower):
+                avisos.append("Coluna 'Name'/'Nome' nao encontrada.")
+            return len(avisos) < 3, avisos
+    except Exception as exc:
+        return False, [f"Erro ao ler arquivo: {exc}"]
 
 
 def salvar_config():
@@ -108,6 +234,11 @@ def salvar_config():
         "avaliacao_nome": st.session_state.get("avaliacao_nome", ""),
         "avaliacao_data": st.session_state.get("avaliacao_data", ""),
         "tipo": st.session_state.get("tipo", "notas"),
+        "seq_titulo_documento": st.session_state.get("seq_titulo_documento", ""),
+        "seq_periodo_inicio": st.session_state.get("seq_periodo_inicio", ""),
+        "seq_periodo_fim": st.session_state.get("seq_periodo_fim", ""),
+        "seq_n_aulas": st.session_state.get("seq_n_aulas", 4),
+        "seq_drive_links": st.session_state.get("seq_drive_links", []),
     }
     config_dir = Path.home() / ".sge_bot"
     config_dir.mkdir(exist_ok=True)
@@ -162,6 +293,17 @@ for k, v in config_salva.items():
 # Default para ai_provider se nao veio da config
 if "ai_provider" not in st.session_state:
     st.session_state.ai_provider = "local"
+
+# Defaults para campos de sequencia (Google Drive)
+for _k, _v in [("seq_titulo_documento", ""), ("seq_periodo_inicio", ""), ("seq_periodo_fim", ""), ("seq_n_aulas", 4)]:
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# Defaults para preferencias de exibicao
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+if "headless_mode" not in st.session_state:
+    st.session_state.headless_mode = True
 
 
 # === BARRA LATERAL ===
@@ -350,6 +492,11 @@ with st.sidebar:
                     f.write(arquivo.getbuffer())
                 st.session_state["arquivo_path"] = str(tmp_path)
                 st.success(f"Arquivo salvo: {arquivo.name}")
+                valido, avisos = _validar_template(fonte, tmp_path, st.session_state.get("tipo", "notas"))
+                if valido:
+                    st.success("Template valido! Pronto para executar.")
+                for aviso in avisos:
+                    st.warning(aviso)
         elif fonte in ("google_sheets", "google_drive"):
             nome_origem = "Google Sheets" if fonte == "google_sheets" else "Google Drive"
             st.info(
@@ -362,6 +509,42 @@ with st.sidebar:
                 placeholder="https://docs.google.com/spreadsheets/d/...",
             )
             st.session_state["link_url"] = link
+
+    with st.expander("Download de Templates", expanded=False):
+        st.markdown("**Baixe o modelo, preencha, e use no bot:**")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("**Notas (alunos)**")
+            st.download_button(
+                "📥 .xlsx",
+                data=gerar_template_notas_xlsx(),
+                file_name="template_notas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            st.download_button(
+                "📥 .csv",
+                data=gerar_template_notas_csv(),
+                file_name="template_notas.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with col_t2:
+            st.markdown("**Sequência Didática**")
+            st.download_button(
+                "📥 .xlsx",
+                data=gerar_template_sequencias_xlsx(),
+                file_name="template_sequencia_didatica.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            st.download_button(
+                "📥 .csv",
+                data=gerar_template_sequencias_csv(),
+                file_name="template_sequencia_didatica.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
     with st.expander("Filtros"):
         tipo = st.radio("Tipo de lancamento:", options=["notas", "sequencia"], horizontal=True, key="tipo_radio")
@@ -395,6 +578,72 @@ with st.sidebar:
                 st.info("Publicara em **todas as escolas, turnos e turmas** disponiveis.")
             else:
                 st.caption(f"Filtros ativos: {', '.join(filtros_ativos)}")
+
+            if st.session_state.get("fonte", "") == "google_drive":
+                st.markdown("---")
+                st.markdown("**Links do Google Drive por Ano**")
+                st.caption("Cole os links dos PDFs para cada ano. Deixe vazio o que nao for lancar.")
+
+                if "seq_drive_links" not in st.session_state:
+                    st.session_state.seq_drive_links = [
+                        {"ano": "6º Ano", "link": ""},
+                        {"ano": "7º Ano", "link": ""},
+                        {"ano": "8º Ano", "link": ""},
+                        {"ano": "9º Ano", "link": ""},
+                    ]
+
+                for i, entry in enumerate(st.session_state.seq_drive_links):
+                    cols = st.columns([1.2, 4, 0.5])
+                    with cols[0]:
+                        entry["ano"] = st.selectbox(
+                            "Ano",
+                            ["6º Ano", "7º Ano", "8º Ano", "9º Ano"],
+                            index=["6º Ano", "7º Ano", "8º Ano", "9º Ano"].index(entry["ano"]),
+                            key=f"seq_drive_ano_{i}",
+                            label_visibility="collapsed",
+                        )
+                    with cols[1]:
+                        entry["link"] = st.text_input(
+                            "Link do Drive",
+                            value=entry["link"],
+                            key=f"seq_drive_link_{i}",
+                            placeholder="https://drive.google.com/file/d/...",
+                            label_visibility="collapsed",
+                        )
+                    with cols[2]:
+                        if len(st.session_state.seq_drive_links) > 1:
+                            if st.button("✕", key=f"seq_drive_rm_{i}", help="Remover"):
+                                st.session_state.seq_drive_links.pop(i)
+                                st.rerun()
+
+                if st.button("+ Adicionar ano", key="add_drive_link", use_container_width=True):
+                    st.session_state.seq_drive_links.append({"ano": "6º Ano", "link": ""})
+                    st.rerun()
+
+                st.markdown("**Campos comuns a todos os anos:**")
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    st.text_input(
+                        "Título do Documento",
+                        key="seq_titulo_documento",
+                        placeholder="Sequência - Matemática",
+                    )
+                    st.text_input(
+                        "Período início (dd/mm/aaaa)",
+                        key="seq_periodo_inicio",
+                        placeholder="01/03/2026",
+                    )
+                with col_g2:
+                    st.number_input(
+                        "Nº de aulas",
+                        min_value=1, max_value=40, value=4,
+                        key="seq_n_aulas",
+                    )
+                    st.text_input(
+                        "Período fim (dd/mm/aaaa)",
+                        key="seq_periodo_fim",
+                        placeholder="31/03/2026",
+                    )
 
         st.markdown("---")
         st.markdown("**Imagem / Foto (extrair notas com IA)**")
@@ -448,6 +697,16 @@ with st.sidebar:
         key="ia_radio",
     )
 
+    st.markdown("---")
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        headless_mode = st.checkbox("Modo headless", value=st.session_state.headless_mode, key="headless_check",
+            help="Desmarque para ver o navegador sendo controlado (debug)")
+        st.session_state.headless_mode = headless_mode
+    with col_h2:
+        dark_mode = st.checkbox("Modo escuro", value=st.session_state.dark_mode, key="dark_check")
+        st.session_state.dark_mode = dark_mode
+
     dry_run = st.checkbox("Modo Dry-run (apenas validar)", value=True, key="dry_run_check")
     salvar = st.button("Salvar Configuracao")
 
@@ -460,6 +719,10 @@ with st.sidebar:
         st.session_state.logs = []
         st.session_state.resultado = None
 
+
+# === TEMA DINAMICO ===
+if st.session_state.get("dark_mode", False):
+    st.markdown(_DARK_THEME_CSS, unsafe_allow_html=True)
 
 # === AREA PRINCIPAL ===
 st.markdown('<div class="main-header">Bot do Professor - Automacao de Notas</div>', unsafe_allow_html=True)
@@ -541,6 +804,7 @@ if executar_btn:
 
     try:
         # Prepara variaveis de ambiente
+        os.environ["HEADLESS"] = "1" if st.session_state.get("headless_mode", True) else "0"
         os.environ["SGE_LOGIN_URL"] = st.session_state.sge_url
         os.environ["SGE_CPF"] = st.session_state.sge_cpf
         os.environ["SGE_SENHA"] = st.session_state.sge_senha
@@ -868,19 +1132,82 @@ if executar_btn:
                     log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas}")
 
         elif st.session_state.tipo == "sequencia":
-            if st.session_state.fonte != "notion":
-                log_progress("AVISO: Sequencia didatica requer fonte Notion.")
-                st.warning("Sequencia didatica so funciona com dados do Notion.")
-            else:
-                log_progress("Executando sequencia didatica...")
-                from lancar_sequencia_didatica_sge import executar_lancamento_sequencia
+            from lancar_sequencia_didatica_sge import executar_lancamento_sequencia, SequenciaRegistro
 
+            registros = None
+            fonte = st.session_state.fonte
+
+            if fonte == "notion":
+                log_progress("Carregando dados do Notion...")
+
+            elif fonte in ("excel", "csv"):
+                log_progress("Carregando sequencias do arquivo...")
+                file_path = st.session_state.get("arquivo_path", "")
+                if not file_path:
+                    log_progress("ERRO: Nenhum arquivo selecionado para Sequencia Didatica.")
+                    st.session_state.executando = False
+                    st.stop()
+                raw = (
+                    ler_sequencias_excel(file_path, logger=log_progress)
+                    if fonte == "excel"
+                    else ler_sequencias_csv(file_path, logger=log_progress)
+                )
+                if not raw:
+                    log_progress("ERRO: Nenhuma sequencia valida encontrada no arquivo.")
+                    st.session_state.executando = False
+                    st.stop()
+                registros = [SequenciaRegistro(**r) for r in raw]
+                log_progress(f"{len(registros)} sequencia(s) carregada(s) do arquivo.")
+
+            elif fonte == "google_drive":
+                log_progress("Preparando lancamento via Google Drive...")
+                drive_links = st.session_state.get("seq_drive_links", [])
+                links_preenchidos = [e for e in drive_links if e.get("link", "").strip()]
+                if not links_preenchidos:
+                    log_progress("ERRO: Nenhum link preenchido. Adicione links na seção 'Filtros'.")
+                    st.session_state.executando = False
+                    st.stop()
+
+                periodo_inicio = st.session_state.get("seq_periodo_inicio", "").strip()
+                periodo_fim = st.session_state.get("seq_periodo_fim", "").strip()
+                titulo_base = st.session_state.get("seq_titulo_documento", "").strip() or "Sequencia Didatica"
+                n_aulas = int(st.session_state.get("seq_n_aulas", 4) or 4)
+
+                registros = []
+                for entry in links_preenchidos:
+                    ano = entry["ano"]
+                    link = entry["link"].strip()
+                    titulo_doc = f"{titulo_base} - {ano}"
+                    registros.append(SequenciaRegistro(
+                        page_id="",
+                        ano=ano,
+                        escola=st.session_state.get("escola", ""),
+                        turno=st.session_state.get("turno", ""),
+                        turma="",
+                        titulo_documento=titulo_doc,
+                        arquivo_nome=f"{ano}.pdf",
+                        arquivo_url=link,
+                        link_arquivo=link,
+                        periodo_inicio=periodo_inicio,
+                        periodo_fim=periodo_fim,
+                        n_aulas=n_aulas,
+                        status="",
+                    ))
+                log_progress(f"{len(registros)} registro(s) preparado(s) via Google Drive.")
+
+            else:
+                log_progress(f"AVISO: Fonte '{fonte}' nao suportada para sequencia didatica.")
+                st.warning("Use Notion, Excel, CSV ou Google Drive para sequencia didatica.")
+
+            if registros is not None or fonte == "notion":
+                log_progress("Executando sequencia didatica no SGE...")
                 resumo = executar_lancamento_sequencia(
                     escola=st.session_state.escola,
                     turno=st.session_state.turno,
                     turma=st.session_state.turma,
                     trimestre=st.session_state.trimestre or "2o Trimestre",
                     dry_run=dry_run,
+                    registros=registros,
                     logger=log_progress,
                 )
                 st.session_state.resultado = {
@@ -912,7 +1239,20 @@ if executar_btn:
             pass
 
 # === AREA DE LOGS ===
-st.markdown("### Logs da Execucao")
+col_log_header, col_log_export = st.columns([3, 1])
+with col_log_header:
+    st.markdown("### Logs da Execucao")
+with col_log_export:
+    if st.session_state.logs:
+        log_text = "\n".join(st.session_state.logs)
+        st.download_button(
+            "📥 Exportar logs",
+            data=log_text,
+            file_name=f"logs_bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
 log_container = st.container()
 
 with log_container:

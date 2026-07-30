@@ -1,0 +1,91 @@
+name: CI - Validacao de Codigo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Instalar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Verificar sintaxe (AST)
+        run: |
+          python -c "
+          import ast, os, sys
+          errors = []
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in ('.venv', 'build_venv', '.git', '__pycache__', 'build', 'dist', 'node_modules', '.github')]
+              for f in files:
+                  if f.endswith('.py'):
+                      path = os.path.join(root, f)
+                      try:
+                          with open(path, encoding='utf-8') as fh:
+                              ast.parse(fh.read())
+                      except SyntaxError as e:
+                          errors.append(f'{path}: {e}')
+          if errors:
+              for e in errors:
+                  print(e)
+              sys.exit(1)
+          print('Todos os arquivos .py compilam com sucesso.')
+          "
+
+      - name: Lint com Ruff
+        continue-on-error: true
+        run: |
+          ruff check --ignore=E501,F401,E402,F811 --line-length=160 . || true
+
+      - name: Testar geracao de templates
+        run: |
+          python -c "
+          import tempfile, os, sys
+          sys.path.insert(0, '.')
+          from leitor_planilhas import (
+              gerar_template_notas_xlsx, gerar_template_notas_csv,
+              gerar_template_sequencias_xlsx, gerar_template_sequencias_csv,
+              ler_sequencias_excel, ler_sequencias_csv,
+          )
+          for name, fn, ext in [
+              ('notas.xlsx', gerar_template_notas_xlsx, '.xlsx'),
+              ('notas.csv', gerar_template_notas_csv, '.csv'),
+              ('seq.xlsx', gerar_template_sequencias_xlsx, '.xlsx'),
+              ('seq.csv', gerar_template_sequencias_csv, '.csv'),
+          ]:
+              data = fn()
+              tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+              if ext == '.csv':
+                  tmp.close()
+                  with open(tmp.name, 'w', encoding='utf-8') as f:
+                      f.write(data)
+              else:
+                  tmp.write(data)
+                  tmp.close()
+
+              reader = None
+              if 'seq' in name and ext == '.xlsx':
+                  reader = ler_sequencias_excel
+              elif 'seq' in name and ext == '.csv':
+                  reader = ler_sequencias_csv
+              if reader:
+                  r = reader(tmp.name)
+                  assert len(r) > 0, f'{name}: leitura retornou vazio'
+              os.unlink(tmp.name)
+              print(f'{name}: OK ({len(data)} bytes)')
+          print('Todos os templates gerados e lidos com sucesso.')
+          "

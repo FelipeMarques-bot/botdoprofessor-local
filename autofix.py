@@ -9,8 +9,6 @@ import os
 import traceback as tb_mod
 from typing import Any, Dict, Optional
 
-import requests
-
 SAFE_FIX_TYPES = {
     "date_format",
     "timeout_increase",
@@ -25,6 +23,10 @@ MAX_AUTOFIX_ATTEMPTS = 3
 
 
 def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> Optional[str]:
+    try:
+        import requests
+    except ImportError:
+        return None
     try:
         resp = requests.post(
             f"{OLLAMA_BASE}/api/generate",

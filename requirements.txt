@@ -11,3 +11,6 @@ openai>=1.30
 anthropic>=0.25
 mercadopago>=2.0
 python-dotenv>=1.0
+streamlit>=1.30
+openpyxl>=3.1
+requests>=2.31

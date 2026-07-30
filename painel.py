@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 import streamlit as st
 
+from autofix import attempt_autofix, apply_fix
 from leitor_planilhas import (
     gerar_template_notas_xlsx, gerar_template_notas_csv,
     gerar_template_sequencias_xlsx, gerar_template_sequencias_csv,
@@ -707,6 +708,10 @@ with st.sidebar:
         dark_mode = st.checkbox("Modo escuro", value=st.session_state.dark_mode, key="dark_check")
         st.session_state.dark_mode = dark_mode
 
+    autofix_enabled = st.checkbox("Auto-fix IA", value=st.session_state.get("autofix_enabled", False), key="autofix_check",
+        help="Tenta corrigir erros automaticamente com IA local (Ollama)")
+    st.session_state.autofix_enabled = autofix_enabled
+
     dry_run = st.checkbox("Modo Dry-run (apenas validar)", value=True, key="dry_run_check")
     salvar = st.button("Salvar Configuracao")
 
@@ -770,7 +775,7 @@ if ajuda_btn:
     """)
 
 # === EXECUCAO ===
-if executar_btn:
+if executar_btn or st.session_state.pop("autofix_trigger", False):
     st.session_state.executando = True
     st.session_state.logs = []
     st.session_state.resultado = None
@@ -801,6 +806,45 @@ if executar_btn:
             status_text.text(msg)
         except Exception:
             pass
+
+    def _handle_exec_error(exc: Exception, lp: callable):
+        import traceback as _tb
+        tb_str = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
+        lp(f"ERRO: {exc}")
+        print(tb_str)
+
+        autofix_on = st.session_state.get("autofix_enabled", False)
+        attempts = st.session_state.get("autofix_attempts", 0)
+        if autofix_on and attempts < 3 and not str(exc).startswith("st."):
+            ctx = {
+                "escola": st.session_state.get("escola", ""),
+                "turno": st.session_state.get("turno", ""),
+                "turma": st.session_state.get("turma", ""),
+                "trimestre": st.session_state.get("trimestre", ""),
+                "tipo": st.session_state.get("tipo", ""),
+                "fonte": st.session_state.get("fonte", ""),
+                "seq_titulo_documento": st.session_state.get("seq_titulo_documento", ""),
+                "seq_periodo_inicio": st.session_state.get("seq_periodo_inicio", ""),
+                "seq_periodo_fim": st.session_state.get("seq_periodo_fim", ""),
+                "seq_n_aulas": st.session_state.get("seq_n_aulas", 4),
+                "link_url": st.session_state.get("link_url", ""),
+                "headless_mode": st.session_state.get("headless_mode", True),
+                "dry_run": st.session_state.get("dry_run", True),
+            }
+            result = attempt_autofix(str(exc), tb_str, ctx, logger=lp, attempt=attempts)
+            if result and result.get("fixable"):
+                applied = apply_fix(result, st.session_state)
+                if applied:
+                    lp(f"Autofix aplicado: {applied}")
+                    st.session_state.autofix_message = result.get("explanation", "Erro corrigido automaticamente.")
+                    st.session_state.autofix_attempts = attempts + 1
+                    st.session_state.autofix_trigger = True
+                    st.rerun()
+                else:
+                    lp("Autofix: correcao sugerida nao pode ser aplicada.")
+            else:
+                motivo = result.get("explanation", "Erro nao corrigivel automaticamente.") if result else "Sem resposta da IA."
+                lp(f"Autofix: {motivo}")
 
     try:
         # Prepara variaveis de ambiente
@@ -1223,13 +1267,9 @@ if executar_btn:
         if "Event loop is closed" in str(exc):
             log_progress("Execucao finalizada (limpeza async concluida).")
         else:
-            log_progress(f"ERRO: {exc}")
-            import traceback
-            traceback.print_exc()
+            _handle_exec_error(exc, log_progress)
     except Exception as exc:
-        log_progress(f"ERRO: {exc}")
-        import traceback
-        traceback.print_exc()
+        _handle_exec_error(exc, log_progress)
 
     finally:
         st.session_state.executando = False
@@ -1237,6 +1277,21 @@ if executar_btn:
             status.update(label="Finalizado", state="complete")
         except RuntimeError:
             pass
+
+# === MENSAGEM DE AUTOFIX ===
+autofix_msg = st.session_state.pop("autofix_message", None)
+if autofix_msg:
+    st.success(f"**Autofix:** {autofix_msg}")
+    col_retry1, col_retry2 = st.columns([1, 3])
+    with col_retry1:
+        if st.button("Tentar novamente", type="primary", key="autofix_retry_btn"):
+            st.session_state.autofix_trigger = True
+            st.session_state.autofix_attempts = st.session_state.get("autofix_attempts", 0)
+            st.rerun()
+    with col_retry2:
+        if st.button("Ignorar", key="autofix_ignore_btn"):
+            st.session_state.autofix_attempts = 0
+            st.rerun()
 
 # === AREA DE LOGS ===
 col_log_header, col_log_export = st.columns([3, 1])

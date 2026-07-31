@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
+import urllib.error
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -21,6 +24,8 @@ from typing import Dict, List, Optional
 import streamlit as st
 
 from autofix import attempt_autofix, apply_fix
+
+LICENSE_SERVER_URL = "https://botdoprofessor.onrender.com"
 from leitor_planilhas import (
     gerar_template_notas_xlsx, gerar_template_notas_csv,
     gerar_template_sequencias_xlsx, gerar_template_sequencias_csv,
@@ -306,9 +311,135 @@ if "dark_mode" not in st.session_state:
 if "headless_mode" not in st.session_state:
     st.session_state.headless_mode = True
 
+# === VALIDACAO DE LICENCA ===
+BOT_LOCAL_CONFIG = Path.home() / ".bot_local" / "config.json"
+
+def _load_license_cache():
+    if not BOT_LOCAL_CONFIG.exists():
+        return {}
+    try:
+        with open(BOT_LOCAL_CONFIG, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        key = cfg.get("license_key", "")
+        validated = cfg.get("license_validated_at", "")
+        plan = cfg.get("license_plan", "")
+        expires = cfg.get("license_expires_at", "")
+        if key and validated:
+            try:
+                dt = datetime.fromisoformat(validated)
+                if (datetime.utcnow() - dt).days < 7:
+                    return {"key": key, "plan": plan, "expires": expires}
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    return {}
+
+def _save_license_cache(key, plan, expires_at):
+    try:
+        BOT_LOCAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        cfg = {}
+        if BOT_LOCAL_CONFIG.exists():
+            with open(BOT_LOCAL_CONFIG, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        cfg["license_key"] = key.strip().upper()
+        cfg["license_plan"] = plan or ""
+        cfg["license_expires_at"] = expires_at or ""
+        cfg["license_validated_at"] = datetime.utcnow().isoformat()
+        with open(BOT_LOCAL_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _validate_license_online(key):
+    data = json.dumps({"license_key": key.strip().upper()}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{LICENSE_SERVER_URL}/api/license/public-validate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        result = json.loads(resp.read().decode("utf-8"))
+        return result.get("valid", False), result
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, {"error": str(e)}
+
+if "license_valid" not in st.session_state:
+    cached = _load_license_cache()
+    if cached:
+        st.session_state.license_valid = True
+        st.session_state.license_key = cached["key"]
+        st.session_state.license_plan = cached.get("plan", "")
+    else:
+        st.session_state.license_valid = False
+        st.session_state.license_key = ""
+        st.session_state.license_plan = ""
+
+if not st.session_state.license_valid:
+    st.markdown("""
+    <style>
+        .blocker-bg {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(135deg, #0a0e27, #1a1f3a);
+            z-index: -1;
+        }
+        .blocker-card {
+            background: #12162e; border-radius: 16px; padding: 32px;
+            max-width: 440px; margin: 0 auto; text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        .blocker-card h1 {
+            font-size: 1.8rem; font-weight: 700; margin-bottom: 4px;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .blocker-card p { color: #94a3b8; font-size: 0.95rem; }
+    </style>
+    <div class="blocker-bg"></div>
+    <div style="height:64px"></div>
+    <div class="blocker-card">
+        <h1>BotDoProfessor</h1>
+        <p>Ative sua licenca para acessar o painel</p>
+    </div>
+    """, unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        lic_key = st.text_input("Chave de licenca", key="lic_input",
+                                placeholder="Cole sua chave aqui")
+        if st.button("Validar", type="primary", use_container_width=True):
+            if not lic_key.strip():
+                st.error("Digite a chave de licenca")
+            else:
+                with st.spinner("Validando..."):
+                    valid, data = _validate_license_online(lic_key)
+                    if valid:
+                        _save_license_cache(lic_key, data.get("plan", ""), data.get("expires_at", ""))
+                        st.session_state.license_valid = True
+                        st.session_state.license_key = lic_key.upper()
+                        st.session_state.license_plan = data.get("plan", "")
+                        st.rerun()
+                    else:
+                        st.error(data.get("error", "Chave invalida ou expirada"))
+        st.markdown(
+            '<a href="https://botdoprofessor.onrender.com/checkout" target="_blank">'
+            'Nao tem chave? Compre aqui</a>',
+            unsafe_allow_html=True,
+        )
+    st.stop()
+
 
 # === BARRA LATERAL ===
 with st.sidebar:
+    plan_label = st.session_state.get("license_plan", "").capitalize() if st.session_state.get("license_plan") else ""
+    if plan_label:
+        st.markdown(
+            f"<div style='background:#1a2a1a;border:1px solid #2a5a2a;border-radius:8px;padding:6px 12px;margin-bottom:12px;font-size:0.85rem;color:#5ae05a;text-align:center;'>"
+            f"Licenca {plan_label}</div>",
+            unsafe_allow_html=True,
+        )
     st.markdown("### Configuracoes")
 
     with st.expander("Portal do Professor", expanded=True):
@@ -571,8 +702,6 @@ with st.sidebar:
             trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select")
             st.session_state.trimestre = trimestre
 
-
-
         if tipo == "sequencia":
             filtros_ativos = [k for k in ["escola", "turno", "turma"] if st.session_state.get(k, "")]
             if not filtros_ativos:
@@ -581,7 +710,6 @@ with st.sidebar:
                 st.caption(f"Filtros ativos: {', '.join(filtros_ativos)}")
 
             if st.session_state.get("fonte", "") == "google_drive":
-                st.markdown("---")
                 st.markdown("**Links do Google Drive por Ano**")
                 st.caption("Cole os links dos PDFs para cada ano. Deixe vazio o que nao for lancar.")
 
@@ -646,49 +774,69 @@ with st.sidebar:
                         placeholder="31/03/2026",
                     )
 
-        st.markdown("---")
-        st.markdown("**Imagem / Foto (extrair notas com IA)**")
-        img = st.file_uploader(
-            "Envie foto ou print com notas dos alunos",
-            type=["jpg", "jpeg", "png", "webp"],
-            key="imagem_upload",
-        )
-        if img:
-            tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
-            tmp_dir.mkdir(exist_ok=True)
-            tmp_path = tmp_dir / img.name
-            with open(tmp_path, "wb") as f:
-                f.write(img.getbuffer())
-            st.session_state["imagem_path"] = str(tmp_path)
-            st.success(f"Imagem salva: {img.name}")
-        else:
-            st.session_state.pop("imagem_path", None)
-
-        st.markdown("---")
-        st.markdown("**Atalho: Lançar apenas 1 avaliação** (reduz tempo drasticamente)")
-        col_a1, col_a2 = st.columns(2)
-        with col_a1:
-            avaliacao_nome = st.text_input(
-                "Nome da avaliação (ex: Prova 1, Trabalho 2)",
-                key="avaliacao_input",
-                help="Se preenchido, o bot ignora as outras avaliações e lança apenas esta."
+        if tipo == "notas":
+            st.markdown("---")
+            st.markdown("**Imagem / Foto (extrair notas com IA)**")
+            img = st.file_uploader(
+                "Envie foto ou print com notas dos alunos",
+                type=["jpg", "jpeg", "png", "webp"],
+                key="imagem_upload",
             )
-            st.session_state.avaliacao_nome = avaliacao_nome
-        with col_a2:
-            avaliacao_data = st.text_input(
-                "Data da avaliação (dd/mm/aaaa)",
-                key="avaliacao_data_input",
-                help="Data de realização para validação. Se vazio, usa a data do Notion."
-            )
-            st.session_state.avaliacao_data = avaliacao_data
+            if img:
+                tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+                tmp_dir.mkdir(exist_ok=True)
+                tmp_path = tmp_dir / img.name
+                with open(tmp_path, "wb") as f:
+                    f.write(img.getbuffer())
+                st.session_state["imagem_path"] = str(tmp_path)
+                st.success(f"Imagem salva: {img.name}")
+                st.caption("Informe abaixo o **nome da atividade** e a **data** para o bot localizar no portal:")
+                col_ia1, col_ia2 = st.columns(2)
+                with col_ia1:
+                    avaliacao_nome = st.text_input(
+                        "Nome da atividade (ex: Prova 1, Trabalho 2)",
+                        key="avaliacao_input",
+                        help="Nome da atividade que aparece no portal. O bot identifica por este nome."
+                    )
+                    st.session_state.avaliacao_nome = avaliacao_nome
+                with col_ia2:
+                    avaliacao_data = st.text_input(
+                        "Data da atividade (dd/mm/aaaa)",
+                        key="avaliacao_data_input",
+                        help="Data de realização para o bot localizar/validar no portal."
+                    )
+                    st.session_state.avaliacao_data = avaliacao_data
+            else:
+                st.session_state.pop("imagem_path", None)
+                st.session_state.pop("avaliacao_nome", None)
+                st.session_state.pop("avaliacao_data", None)
 
-        lote = st.checkbox(
-            "Modo Lote: processar todas as escolas, turmas e trimestres",
-            value=False,
-            key="lote_check",
-            help="Quando ativo, ignora os filtros acima e processa tudo que estiver no Notion (6o ao 9o ano)."
-        )
-        st.session_state.lote = lote
+            if st.session_state.get("fonte", "notion") != "imagem":
+                st.markdown("---")
+                st.markdown("**Atalho: Lançar apenas 1 avaliação** (reduz tempo drasticamente)")
+                col_a1, col_a2 = st.columns(2)
+                with col_a1:
+                    avaliacao_nome = st.text_input(
+                        "Nome da avaliação (ex: Prova 1, Trabalho 2)",
+                        key="avaliacao_atalho_input",
+                        help="Se preenchido, o bot ignora as outras avaliações e lança apenas esta."
+                    )
+                    st.session_state.avaliacao_nome = avaliacao_nome
+                with col_a2:
+                    avaliacao_data = st.text_input(
+                        "Data da avaliação (dd/mm/aaaa)",
+                        key="avaliacao_data_atalho_input",
+                        help="Data de realização para validação. Se vazio, usa a data do Notion."
+                    )
+                    st.session_state.avaliacao_data = avaliacao_data
+
+            lote = st.checkbox(
+                "Modo Lote: processar todas as escolas, turmas e trimestres",
+                value=False,
+                key="lote_check",
+                help="Quando ativo, ignora os filtros acima e processa tudo que estiver no Notion (6o ao 9o ano)."
+            )
+            st.session_state.lote = lote
 
     ia_opcao = st.radio(
         "Assistencia IA:",
@@ -1020,6 +1168,14 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         turno = st.session_state.get("turno", "")
                         turma = st.session_state.get("turma", "")
                         trimestre = st.session_state.get("trimestre", "")
+                        atividade = st.session_state.get("avaliacao_nome", "").strip()
+                        data_realizacao = st.session_state.get("avaliacao_data", "").strip()
+                        if not atividade:
+                            log_progress("ERRO: Informe o nome da atividade (abaixo da imagem) para o bot identificar no portal.")
+                            st.error("Informe o **nome da atividade** abaixo da imagem antes de executar.")
+                            st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
+                            st.stop()
+                        log_progress(f"[IMAGEM] Atividade: '{atividade}' | Data: {data_realizacao or 'nao informada'}")
 
                         from leitor_planilhas import RegistroNota
                         for item in extraidas:
@@ -1033,7 +1189,9 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                                 continue
                             registros.append(RegistroNota(
                                 escola=escola, turno=turno, turma=turma,
-                                trimestre=trimestre, aluno=aluno, nota=nota,
+                                trimestre=trimestre, aluno=aluno,
+                                atividade=atividade, nota=nota,
+                                data_realizacao=data_realizacao,
                             ))
 
                     except Exception as exc:
@@ -1110,6 +1268,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                             escola=r.escola, turno=r.turno, turma=r.turma,
                             trimestre=r.trimestre, aluno=r.aluno,
                             atividade=r.atividade, nota=r.nota,
+                            data_realizacao=r.data_realizacao,
                         )
                         for r in registros
                     ]

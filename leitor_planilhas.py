@@ -19,6 +19,7 @@ class RegistroNota:
     aluno: str
     atividade: str
     nota: float
+    data_realizacao: str = ""
 
 
 def _normalize(s: str) -> str:

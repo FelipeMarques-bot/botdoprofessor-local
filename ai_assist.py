@@ -66,13 +66,18 @@ def _get_provider() -> str:
     return os.environ.get("AI_PROVIDER", "local").strip().lower()
 
 
+def _ollama_primary_model() -> str:
+    """Modelo principal do Ollama, respeitando OLLAMA_MODEL definido em runtime."""
+    return os.environ.get("OLLAMA_MODEL", "").strip() or "llama3.2-vision"
+
+
 def _ai_assist_enabled() -> bool:
     return os.environ.get("AI_ASSIST", "0") == "1"
 
 
 def is_available() -> bool:
     provider = _get_provider()
-    if provider == "ollama":
+    if provider in ("local", "ollama"):
         return _is_ollama_running()
     elif provider == "openai":
         return bool(OPENAI_API_KEY)
@@ -165,20 +170,20 @@ def setup_ollama(logger: Optional[LogFn] = None) -> bool:
     avail_ram = _get_available_ram_gb()
     _log(logger, f"[Ollama] RAM disponivel: {avail_ram:.1f} GB")
 
-    primary_ok = _is_model_available(OLLAMA_MODEL, logger)
-    fallback_ok = _is_model_available(OLLAMA_FALLBACK_MODEL, logger)
+    primary_model = _ollama_primary_model()
+    primary_ok = _is_model_available(primary_model, logger)
 
     if not primary_ok:
-        _log(logger, f"[Ollama] Baixando modelo {OLLAMA_MODEL}...")
+        _log(logger, f"[Ollama] Baixando modelo {primary_model}...")
         _log(logger, f"[Ollama] Timeout configurado: {OLLAMA_PULL_TIMEOUT}s")
         try:
-            result = subprocess.run([exe, "pull", OLLAMA_MODEL], timeout=OLLAMA_PULL_TIMEOUT)
+            result = subprocess.run([exe, "pull", primary_model], timeout=OLLAMA_PULL_TIMEOUT)
             if result.returncode == 0:
-                _log(logger, f"[Ollama] Modelo {OLLAMA_MODEL} baixado com sucesso!")
+                _log(logger, f"[Ollama] Modelo {primary_model} baixado com sucesso!")
             else:
                 _log(logger, f"[Ollama] Erro ao baixar modelo (codigo {result.returncode}).")
         except subprocess.TimeoutExpired:
-            _log(logger, f"[Ollama] Timeout baixando {OLLAMA_MODEL} apos {OLLAMA_PULL_TIMEOUT}s.")
+            _log(logger, f"[Ollama] Timeout baixando {primary_model} apos {OLLAMA_PULL_TIMEOUT}s.")
         except Exception as exc:
             _log(logger, f"[Ollama] ERRO: {exc}")
 
@@ -201,7 +206,7 @@ def _ensure_fallback_model(logger: Optional[LogFn] = None) -> None:
         else:
             _log(logger, f"[Ollama] Aviso: nao foi possivel baixar {OLLAMA_FALLBACK_MODEL}.")
     except Exception:
-        _log(logger, f"[Ollama] Aviso: falha ao baixar modelo de fallback.")
+        _log(logger, "[Ollama] Aviso: falha ao baixar modelo de fallback.")
 
 
 def ensure_ollama(logger: Optional[LogFn] = None) -> bool:
@@ -394,18 +399,19 @@ def _pick_ollama_model(logger: Optional[LogFn] = None) -> str:
         _log(logger, f"[Ollama] RAM insuficiente para modelo de visao ({avail_ram:.1f}GB < 4GB). Desabilitando IA.")
         return ""
 
-    primary_ok = _is_model_available(OLLAMA_MODEL, logger)
+    primary_model = _ollama_primary_model()
+    primary_ok = _is_model_available(primary_model, logger)
     fallback_ok = _is_model_available(OLLAMA_FALLBACK_MODEL, logger)
 
     if primary_ok and avail_ram >= 10.0:
-        _ollama_active_model = OLLAMA_MODEL
-        _log(logger, f"[Ollama] Usando modelo principal: {OLLAMA_MODEL} ({avail_ram:.1f}GB disponiveis)")
+        _ollama_active_model = primary_model
+        _log(logger, f"[Ollama] Usando modelo principal: {primary_model} ({avail_ram:.1f}GB disponiveis)")
     elif fallback_ok:
         _ollama_active_model = OLLAMA_FALLBACK_MODEL
         _log(logger, f"[Ollama] Usando modelo leve: {OLLAMA_FALLBACK_MODEL} (RAM: {avail_ram:.1f}GB)")
     elif primary_ok:
-        _ollama_active_model = OLLAMA_MODEL
-        _log(logger, f"[Ollama] Tentando modelo principal: {OLLAMA_MODEL} (pode falhar por memoria)")
+        _ollama_active_model = primary_model
+        _log(logger, f"[Ollama] Tentando modelo principal: {primary_model} (pode falhar por memoria)")
     else:
         _log(logger, f"[Ollama] Nenhum modelo de visao disponivel. Rode: ollama pull {OLLAMA_FALLBACK_MODEL}")
         return ""
@@ -476,7 +482,6 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
     models_to_try = [model]
     if model != OLLAMA_FALLBACK_MODEL and _is_model_available(OLLAMA_FALLBACK_MODEL, logger):
         models_to_try.append(OLLAMA_FALLBACK_MODEL)
-
     # Timeout reduzido: 60s para imagens, 30s para texto puro
     ollama_timeout = 60 if all_images else 30
 
@@ -510,7 +515,7 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
     if _ollama_consecutive_errors >= 4:
         _ollama_disabled_until = _time.time() + 300
         _log(logger, "[Ollama] Desabilitado por 5 min (erros repetidos). O bot continua sem IA.")
-    elif _ollama_consecutive_errors >= 2 and model == OLLAMA_MODEL:
+    elif _ollama_consecutive_errors >= 2 and model == _ollama_primary_model():
         _ollama_active_model = OLLAMA_FALLBACK_MODEL if _is_model_available(OLLAMA_FALLBACK_MODEL, logger) else ""
         if _ollama_active_model:
             _log(logger, f"[Ollama] Alternando permanentemente para modelo leve: {_ollama_active_model}")
@@ -520,7 +525,7 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
 
 def _call_ai(prompt: str, image_bytes: Optional[bytes] = None, images: Optional[List[bytes]] = None) -> str:
     provider = _get_provider()
-    if provider == "ollama":
+    if provider in ("local", "ollama"):
         return _call_ollama(prompt, image_bytes, images)
     elif provider == "openai":
         return _call_openai(prompt, image_bytes, images)

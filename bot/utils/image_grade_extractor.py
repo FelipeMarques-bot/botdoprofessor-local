@@ -32,7 +32,7 @@ def _call_ai_with_image(prompt: str, image_bytes: bytes) -> str:
     """Call AI vision model with an image. Uses the same providers as ai_assist.py."""
     provider = os.environ.get("AI_PROVIDER", "local").strip().lower()
 
-    if provider == "ollama":
+    if provider in ("local", "ollama"):
         return _call_ollama(prompt, image_bytes)
     elif provider == "openai":
         return _call_openai(prompt, image_bytes)
@@ -280,7 +280,7 @@ def extract_grades_from_image(
 def is_available() -> bool:
     """Check if AI vision is available for image extraction."""
     provider = os.environ.get("AI_PROVIDER", "local").strip().lower()
-    if provider == "ollama":
+    if provider in ("local", "ollama"):
         try:
             import urllib.request
             host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip().rstrip("/")

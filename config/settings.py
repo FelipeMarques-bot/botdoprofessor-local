@@ -16,6 +16,7 @@ if _db_url and not _db_url.startswith("sqlite:///data/"):
     SQLALCHEMY_DATABASE_URI = _db_url
 else:
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATA_DIR / 'bot_local.db'}"
+SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
 SQLALCHEMY_TRACK_MODIFICATIONS = False
 SECRET_KEY = os.environ.get("SECRET_KEY", "bot-local-change-in-production")
 

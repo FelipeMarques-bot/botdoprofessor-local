@@ -1,6 +1,8 @@
+import time
 import uuid
 from datetime import datetime
 from flask import Blueprint, request, jsonify, g
+from sqlalchemy.exc import OperationalError
 from bot.models.database import db
 from bot.models.user import User
 from bot.models.license import License
@@ -17,6 +19,18 @@ admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 audit_bp = Blueprint("audit", __name__, url_prefix="/api/audit")
 
 
+def _find_license(key):
+    """Busca licenca com retry para erros transitorios de conexao (Postgres/Neon)."""
+    for attempt in range(3):
+        try:
+            return License.query.filter_by(license_key=key).first()
+        except OperationalError:
+            db.session.rollback()
+            if attempt < 2:
+                time.sleep(1.0)
+    return None
+
+
 @license_bp.route("/public-validate", methods=["POST"])
 def public_validate_license():
     """Validacao publica de licenca (sem autenticacao).
@@ -27,7 +41,7 @@ def public_validate_license():
     if not key:
         return jsonify({"valid": False, "error": "Chave obrigatoria"}), 400
 
-    lic = License.query.filter_by(license_key=key).first()
+    lic = _find_license(key)
     if not lic:
         return jsonify({"valid": False, "error": "Licenca nao encontrada"})
 

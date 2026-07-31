@@ -459,18 +459,23 @@ def load_config():
 
 def _validate_license_online(key):
     data = json.dumps({"license_key": key.strip().upper()}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{LICENSE_SERVER_URL}/api/license/public-validate",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        resp = urllib.request.urlopen(req, timeout=15)
-        result = json.loads(resp.read().decode("utf-8"))
-        return result.get("valid", False), result
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        return False, {"error": str(e)}
+    last_error = None
+    for attempt in range(3):
+        req = urllib.request.Request(
+            f"{LICENSE_SERVER_URL}/api/license/public-validate",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=25)
+            result = json.loads(resp.read().decode("utf-8"))
+            return result.get("valid", False), result
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+            last_error = e
+            log(f"Validacao de licenca: tentativa {attempt + 1} falhou: {e}")
+            time.sleep(1.5)
+    return False, {"error": str(last_error) or "Servidor indisponivel"}
 
 
 def _get_license_cache():

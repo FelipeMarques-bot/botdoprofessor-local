@@ -103,6 +103,9 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.5** — painel: em "Origem dos Dados" permanece somente a escolha da
+  origem; os links do Google Drive agora são informados na seção "Filtros"
+  (por ano, para sequência didática; link único do arquivo quando tipo = notas).
 - **v1.4.4** — correção do crash na abertura: o painel gravava `license_validated_at`
   em UTC *naive* (`datetime.utcnow()`) e o launcher subtraía de `datetime.now(timezone.utc)`
   (*aware*), lançando `TypeError` (terminal abria e fechava). Ambos os lados agora

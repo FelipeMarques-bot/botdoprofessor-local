@@ -631,18 +631,22 @@ with st.sidebar:
                     st.success("Template valido! Pronto para executar.")
                 for aviso in avisos:
                     st.warning(aviso)
-        elif fonte in ("google_sheets", "google_drive"):
-            nome_origem = "Google Sheets" if fonte == "google_sheets" else "Google Drive"
+        elif fonte == "google_sheets":
             st.info(
-                f"Cole o link compartilhavel do **{nome_origem}** abaixo.\n\n"
-                f"Ex: `https://docs.google.com/spreadsheets/d/...`"
+                "Cole o link compartilhavel do **Google Sheets** abaixo.\n\n"
+                "Ex: `https://docs.google.com/spreadsheets/d/...`"
             )
             link = st.text_input(
-                f"URL compartilhavel do {nome_origem}:",
+                "URL compartilhavel do Google Sheets:",
                 key="link_input",
                 placeholder="https://docs.google.com/spreadsheets/d/...",
             )
             st.session_state["link_url"] = link
+        elif fonte == "google_drive":
+            st.info(
+                "Cole os links dos arquivos do Drive na seção **'Filtros'** abaixo, "
+                "um para cada ano."
+            )
 
     with st.expander("Download de Templates", expanded=False):
         st.markdown("**Baixe o modelo, preencha, e use no bot:**")
@@ -703,6 +707,16 @@ with st.sidebar:
             st.session_state.turno = turno
             trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select")
             st.session_state.trimestre = trimestre
+
+        if st.session_state.get("fonte", "") == "google_drive" and tipo == "notas":
+            st.markdown("**Arquivo no Google Drive**")
+            st.caption("Cole o link do arquivo usado como origem das notas.")
+            link_drive_notas = st.text_input(
+                "Link do arquivo no Drive:",
+                key="link_input_drive_notas",
+                placeholder="https://drive.google.com/file/d/...",
+            )
+            st.session_state["link_url"] = link_drive_notas
 
         if tipo == "sequencia":
             filtros_ativos = [k for k in ["escola", "turno", "turma"] if st.session_state.get(k, "")]

@@ -517,9 +517,11 @@ def _get_license_cache():
     if key and validated:
         try:
             dt = datetime.fromisoformat(validated)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             if (datetime.now(timezone.utc) - dt).days < LICENSE_CACHE_DAYS:
                 return key, plan, expires
-        except ValueError:
+        except (ValueError, TypeError):
             pass
     return None, None, None
 

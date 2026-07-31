@@ -17,7 +17,7 @@ import time
 import urllib.request
 import urllib.error
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -327,9 +327,11 @@ def _load_license_cache():
         if key and validated:
             try:
                 dt = datetime.fromisoformat(validated)
-                if (datetime.utcnow() - dt).days < 7:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - dt).days < 7:
                     return {"key": key, "plan": plan, "expires": expires}
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
     except Exception:
         pass
@@ -345,7 +347,7 @@ def _save_license_cache(key, plan, expires_at):
         cfg["license_key"] = key.strip().upper()
         cfg["license_plan"] = plan or ""
         cfg["license_expires_at"] = expires_at or ""
-        cfg["license_validated_at"] = datetime.utcnow().isoformat()
+        cfg["license_validated_at"] = datetime.now(timezone.utc).isoformat()
         with open(BOT_LOCAL_CONFIG, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception:

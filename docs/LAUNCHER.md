@@ -103,6 +103,10 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.4** — correção do crash na abertura: o painel gravava `license_validated_at`
+  em UTC *naive* (`datetime.utcnow()`) e o launcher subtraía de `datetime.now(timezone.utc)`
+  (*aware*), lançando `TypeError` (terminal abria e fechava). Ambos os lados agora
+  normalizam datetimes *naive* para UTC ao ler, e o painel grava *aware*.
 - **v1.4.3** — endurecimento: no modo frozen o Streamlit roda com
   `PYTHONSAFEPATH=1` e `PYTHONPATH=~/.bot_local/app`, garantindo que o diretório
   de extração `_MEI` (com `.pyd` 3.11) nunca entre no `sys.path` do processo;

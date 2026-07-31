@@ -2,6 +2,11 @@
 
 Automacao de lancamento de notas do Notion para o portal SGE (sge8147.com.br).
 
+## Documentacao
+
+- `docs/LAUNCHER.md` — launcher (instalacao transparente, validacao de licenca, build do exe)
+- `docs/RUNBOOK_SGE.md` — operacao do painel e integracao com o SGE
+
 ## O que faz
 
 1. Le as notas de databases do Notion (por escola, turno, turma, trimestre e atividade)

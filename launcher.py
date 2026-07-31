@@ -725,7 +725,16 @@ def main():
                     sys_ver = r2.stdout.strip()
                     venv_ver = r.stdout.strip()
                     log(f"Venv={venv_ver} Sistema={sys_ver}")
-                    return venv_ver == sys_ver
+                    if venv_ver != sys_ver:
+                        return False
+                    r3 = subprocess.run(
+                        [str(VENV_PYTHON), "-c", "import streamlit"],
+                        capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
+                    )
+                    if r3.returncode != 0:
+                        log(f"streamlit nao importa no venv: {r3.stderr[:200]}")
+                        return False
+                    return True
                 log(f"Venv check falhou: rc={r.returncode} stderr={r.stderr[:200]}")
                 return False
             except Exception as e:

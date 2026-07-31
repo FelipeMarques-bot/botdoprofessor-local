@@ -46,6 +46,29 @@ Com `--server.address=127.0.0.1` o Streamlit pula essa detecção por completo:
 o painel abre direto em `localhost` (mais seguro — a porta não fica exposta na
 rede) e a falha deixa de ser possível nesse caminho.
 
+## Execução do painel fora do diretório de extração (`_MEI`)
+
+**Causa raiz dos erros de "python311.dll conflicts" e "LookupError: unknown
+encoding: idna" nos usuários:** o executável é compilado com Python 3.11 e o
+PyInstaller (onefile) extrai em `%TEMP%\_MEIxxxxx` um ambiente completo da 3.11,
+incluindo `unicodedata.pyd`, `_socket.pyd`, `_ssl.pyd`, `select.pyd`, etc.
+(build 3.11), junto com o `painel.py` e os demais módulos do app (`--add-data`).
+
+O launcher sobe o Streamlit com o Python 3.12 do venv do usuário. Como o script
+`painel.py` roda de dentro do `_MEI`, aquele diretório vira `sys.path[0]` e o
+interpretador 3.12 passa a carregar as extensões 3.11 ali dentro:
+
+- `import unicodedata` → `ImportError: Module use of python311.dll conflicts...`
+- `urllib → socket.getaddrinfo → codec idna → import encodings.idna → unicodedata`
+  → o `ImportError` é engolido pelo `encodings.search_function` e vira
+  `LookupError: unknown encoding: idna` (ex.: ao validar a licença no painel).
+
+**Solução:** `get_painel_path()` (apenas em modo frozen) copia os módulos do app
+do bundle para `~/.bot_local/app/` e retorna esse caminho. O Streamlit roda o
+`painel.py` de lá, então `sys.path[0]` passa a ser um diretório limpo (sem `.pyd`
+3.11) e todos os imports resolvem para o Python 3.12. Os arquivos são
+ressincronizados a cada execução quando a versão do bundle muda (compara `mtime`).
+
 ## Variáveis de ambiente do subprocesso
 
 Ambiente limpo para o processo do Streamlit:
@@ -80,6 +103,10 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.2** — `get_painel_path()` em modo frozen copia os módulos do bundle para
+  `~/.bot_local/app/`, evitando que o Streamlit (Python 3.12) importe as extensões
+  3.11 extraídas pelo PyInstaller no `_MEI` (causa do crash `python311.dll
+  conflicts` e do `LookupError: unknown encoding: idna` na validação de licença).
 - **v1.4.1** — adiciona `--server.address=127.0.0.1` (elimina o crash da detecção
   de IP externo); `_venv_works()` passa a testar `unicodedata`, `requests`,
   `charset_normalizer`, `idna` e `streamlit`.

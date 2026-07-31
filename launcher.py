@@ -307,10 +307,38 @@ def get_bundled_dir():
     return Path(__file__).parent
 
 
+APP_FILES = [
+    "painel.py", "autofix.py", "lancar_notas_sge.py",
+    "lancar_sequencia_didatica_sge.py", "leitor_planilhas.py",
+    "ai_assist.py", "status_store.py", ".env.example",
+]
+
+
 def get_painel_path():
-    bundled = get_bundled_dir() / "painel.py"
-    if bundled.exists():
-        return str(bundled)
+    if getattr(sys, "frozen", False):
+        bundled = get_bundled_dir()
+        app_dir = APP_DIR / "app"
+        try:
+            app_dir.mkdir(parents=True, exist_ok=True)
+            copied = 0
+            for name in APP_FILES:
+                src = bundled / name
+                dst = app_dir / name
+                if src.exists() and (
+                    not dst.exists() or src.stat().st_mtime != dst.stat().st_mtime
+                ):
+                    shutil.copy2(src, dst)
+                    copied += 1
+            if copied:
+                log(f"Arquivos do painel sincronizados em {app_dir}")
+            painel = app_dir / "painel.py"
+            if painel.exists():
+                return str(painel)
+        except Exception as e:
+            log(f"Falha ao preparar arquivos do painel: {e}")
+        bundled_painel = bundled / "painel.py"
+        if bundled_painel.exists():
+            return str(bundled_painel)
     local = Path(__file__).parent / "painel.py"
     if local.exists():
         return str(local)

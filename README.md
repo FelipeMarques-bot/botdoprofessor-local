@@ -108,6 +108,13 @@ BotDoProfessor/
   .env.example                  # Modelo de configuracao
 ```
 
+## Assinatura
+
+Para obter uma chave de licenca, acesse a pagina de assinatura:
+[https://botdoprofessor.onrender.com](https://botdoprofessor.onrender.com)
+
+Apos a compra, a chave sera enviada por email. Use-a no launcher para ativar o software.
+
 ## Solucao de problemas
 
 ### "Python nao encontrado"

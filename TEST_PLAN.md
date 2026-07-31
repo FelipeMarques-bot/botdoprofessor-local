@@ -1,5 +1,9 @@
 # Plano: Teste local completo do fluxo
 
+## Assinatura
+
+Pagina de assinatura: [https://botdoprofessor.onrender.com](https://botdoprofessor.onrender.com)
+
 ## O que pode ser testado localmente
 
 ### 1. Servidor Flask + Landing Page (100% testavel)

@@ -18,6 +18,7 @@ import zipfile
 import urllib.request
 import urllib.error
 import webbrowser
+from datetime import datetime, timezone
 from pathlib import Path
 
 APP_DIR = Path.home() / ".bot_local"
@@ -45,6 +46,9 @@ REQUIREMENTS = [
 PYTHON_VERSION = "3.11.9"
 PYTHON_ZIP_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
+
+LICENSE_SERVER_URL = "https://botdoprofessor.onrender.com"
+LICENSE_CACHE_DAYS = 7
 
 if os.name == "nt":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
@@ -453,6 +457,114 @@ def load_config():
     return {}
 
 
+def _validate_license_online(key):
+    data = json.dumps({"license_key": key.strip().upper()}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{LICENSE_SERVER_URL}/api/license/public-validate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        result = json.loads(resp.read().decode("utf-8"))
+        return result.get("valid", False), result
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, {"error": str(e)}
+
+
+def _get_license_cache():
+    config = load_config()
+    key = config.get("license_key", "")
+    validated = config.get("license_validated_at", "")
+    plan = config.get("license_plan", "")
+    expires = config.get("license_expires_at", "")
+    if key and validated:
+        try:
+            dt = datetime.fromisoformat(validated)
+            if (datetime.now(timezone.utc) - dt).days < LICENSE_CACHE_DAYS:
+                return key, plan, expires
+        except ValueError:
+            pass
+    return None, None, None
+
+
+def _save_license_cache(key, plan, expires_at):
+    config = load_config()
+    config["license_key"] = key.strip().upper()
+    config["license_plan"] = plan or ""
+    config["license_expires_at"] = expires_at or ""
+    config["license_validated_at"] = datetime.now(timezone.utc).isoformat()
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def _show_license_dialog():
+    import tkinter as tk
+    root = tk.Tk()
+    root.title("BotDoProfessor — Ativar Licenca")
+    root.overrideredirect(True)
+    root.attributes("-topmost", True)
+    w, h = 520, 330
+    sx = root.winfo_screenwidth()
+    sy = root.winfo_screenheight()
+    root.geometry(f"{w}x{h}+{(sx-w)//2}+{(sy-h)//2}")
+    bg, accent = "#0f3460", "#e94560"
+    root.configure(bg=bg)
+    result = {"key": None}
+    tk.Label(root, text="BotDoProfessor",
+             font=("Segoe UI", 18, "bold"), fg="white", bg=bg
+             ).pack(pady=(25, 2))
+    tk.Label(root, text="Ative sua licenca para continuar",
+             font=("Segoe UI", 10), fg="#94a3b8", bg=bg
+             ).pack()
+    tk.Label(root, text="Chave de licenca:",
+             font=("Segoe UI", 10, "bold"), fg="white", bg=bg
+             ).pack(pady=(20, 5))
+    key_var = tk.StringVar()
+    entry = tk.Entry(root, textvariable=key_var, font=("Consolas", 14),
+                     width=30, justify="center", bd=2, relief="solid")
+    entry.pack()
+    entry.focus()
+    error_var = tk.StringVar()
+    tk.Label(root, textvariable=error_var, font=("Segoe UI", 9),
+             fg=accent, bg=bg).pack(pady=(5, 0))
+
+    def validate():
+        key = key_var.get().strip().upper()
+        if not key:
+            error_var.set("Digite a chave de licenca")
+            return
+        error_var.set("Validando...")
+        root.update()
+        valid, data = _validate_license_online(key)
+        if valid:
+            result["key"] = key
+            _save_license_cache(key, data.get("plan", ""), data.get("expires_at", ""))
+            root.destroy()
+        else:
+            error_var.set(data.get("error", "Chave invalida ou expirada"))
+
+    def buy():
+        import webbrowser
+        webbrowser.open("https://botdoprofessor.onrender.com/checkout")
+
+    btn_frame = tk.Frame(root, bg=bg)
+    btn_frame.pack(pady=(15, 0))
+    tk.Button(btn_frame, text="Validar", command=validate,
+              font=("Segoe UI", 11, "bold"), bg=accent, fg="white",
+              bd=0, padx=25, pady=5, cursor="hand2"
+              ).pack(side="left", padx=5)
+    tk.Button(btn_frame, text="Comprar Chave", command=buy,
+              font=("Segoe UI", 10), bg="#1b2a4a", fg="#94a3b8",
+              bd=1, padx=15, pady=5, cursor="hand2"
+              ).pack(side="left", padx=5)
+    root.bind("<Return>", lambda e: validate())
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.mainloop()
+    return result["key"]
+
+
 def wait_for_streamlit(proc, port=8501, timeout=90, splash=None):
     """Aguarda Streamlit responder. Verifica se processo ainda esta vivo."""
     url = f"http://localhost:{port}"
@@ -528,6 +640,16 @@ def main():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log("=" * 40)
     log("BotDoProfessor — Iniciando...")
+
+    cached_key, cached_plan, _ = _get_license_cache()
+    if cached_key:
+        log(f"Licenca validada em cache: {cached_plan}")
+    else:
+        log("Nenhuma licenca em cache — exibindo dialogo de ativacao")
+        key = _show_license_dialog()
+        if not key:
+            log("Usuario fechou o dialogo de licenca")
+            sys.exit(0)
 
     splash = SplashScreen()
 

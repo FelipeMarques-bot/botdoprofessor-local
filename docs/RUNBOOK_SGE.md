@@ -213,6 +213,10 @@ HEADLESS=0 MANUAL_LOGIN=1 python lancar_notas_sge.py --dry-run --escola "Tancred
 
 ---
 
+## Assinatura
+
+Pagina de assinatura: [https://botdoprofessor.onrender.com](https://botdoprofessor.onrender.com)
+
 ## Estrutura de arquivos
 
 ```

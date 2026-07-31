@@ -1,5 +1,8 @@
 # Deploy no Render — Guia Passo a Passo
 
+Apos o deploy, a landing page com assinaturas estara em:
+[https://botdoprofessor.onrender.com](https://botdoprofessor.onrender.com)
+
 ## Pre-requisitos
 - Conta no GitHub (repositorio do projeto)
 - Conta no Render (render.com)

@@ -18,6 +18,11 @@ pyinstaller --onefile --windowed --name "BotSGE" painel.py
 O arquivo `dist/BotSGE.exe` pode ser executado em qualquer computador Windows
 sem precisar instalar Python ou dependencias.
 
+## Assinatura
+
+Antes de distribuir o .exe, cada usuario precisa de uma chave de licenca.
+Acesse [https://botdoprofessor.onrender.com](https://botdoprofessor.onrender.com) para assinar.
+
 ## Observacoes
 
 - O .exe gerado funciona apenas no Windows

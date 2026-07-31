@@ -1,5 +1,10 @@
 # Plano: Executável .exe para distribuição
 
+## Assinatura
+
+Pagina de assinatura: [https://botdoprofessor.onrender.com](https://botdoprofessor.onrender.com)
+A chave de licenca e enviada por email apos a compra.
+
 ## Arquitetura atual
 
 ```

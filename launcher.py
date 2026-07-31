@@ -728,7 +728,8 @@ def main():
                     if venv_ver != sys_ver:
                         return False
                     r3 = subprocess.run(
-                        [str(VENV_PYTHON), "-c", "import streamlit"],
+                        [str(VENV_PYTHON), "-c",
+                         "import unicodedata, requests, charset_normalizer, idna, streamlit"],
                         capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
                     )
                     if r3.returncode != 0:
@@ -873,6 +874,7 @@ def main():
         proc = subprocess.Popen(
             [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
              "--server.headless", "true",
+             "--server.address", "127.0.0.1",
              "--server.port", str(port),
              "--browser.gatherUsageStats", "false"],
             cwd=str(APP_DIR),

@@ -333,11 +333,13 @@ def get_painel_path():
                 log(f"Arquivos do painel sincronizados em {app_dir}")
             painel = app_dir / "painel.py"
             if painel.exists():
+                log(f"Painel: {painel}")
                 return str(painel)
         except Exception as e:
             log(f"Falha ao preparar arquivos do painel: {e}")
         bundled_painel = bundled / "painel.py"
         if bundled_painel.exists():
+            log(f"Painel (fallback): {bundled_painel}")
             return str(bundled_painel)
     local = Path(__file__).parent / "painel.py"
     if local.exists():
@@ -886,7 +888,11 @@ def main():
         port = 8501
         streamlit_log = open(str(LOG_DIR / "streamlit.log"), "w", encoding="utf-8")
         clean_env = os.environ.copy()
-        clean_env.pop("PYTHONPATH", None)
+        if getattr(sys, "frozen", False):
+            clean_env["PYTHONSAFEPATH"] = "1"
+            clean_env["PYTHONPATH"] = str(APP_DIR / "app")
+        else:
+            clean_env.pop("PYTHONPATH", None)
         clean_env.pop("PYTHONHOME", None)
         clean_env.pop("PYTHONNOUSERSITE", None)
         clean_env["PYTHONDONTWRITEBYTECODE"] = "1"

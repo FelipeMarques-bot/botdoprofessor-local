@@ -103,6 +103,10 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.3** — endurecimento: no modo frozen o Streamlit roda com
+  `PYTHONSAFEPATH=1` e `PYTHONPATH=~/.bot_local/app`, garantindo que o diretório
+  de extração `_MEI` (com `.pyd` 3.11) nunca entre no `sys.path` do processo;
+  `get_painel_path()` registra em log o caminho escolhido.
 - **v1.4.2** — `get_painel_path()` em modo frozen copia os módulos do bundle para
   `~/.bot_local/app/`, evitando que o Streamlit (Python 3.12) importe as extensões
   3.11 extraídas pelo PyInstaller no `_MEI` (causa do crash `python311.dll

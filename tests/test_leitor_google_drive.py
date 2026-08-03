@@ -129,3 +129,80 @@ class TestLerNotasGoogleDrive:
         leitor_planilhas.ler_notas_google_drive("https://drive.google.com/file/d/ABC/view")
         assert criados, "esperava um arquivo temporario"
         assert not os.path.exists(criados[0])
+
+
+class TestGoogleSheets:
+    def test_sheets_export_xlsx_le_todas_as_abas(self, tmp_path, monkeypatch):
+        import io
+        import leitor_planilhas
+        import urllib.request
+
+        wb = _multi_tab_xlsx()
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        class FakeResp:
+            status = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return self._data
+
+        def fake_urlopen(url, timeout=0):
+            return FakeResp(buf.getvalue())
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        regs = leitor_planilhas.ler_notas_google_sheets("https://docs.google.com/spreadsheets/d/ABC123/edit")
+        assert len(regs) == 2
+        assert regs[0].aluno == "Ana Oliveira"
+        assert regs[1].aluno == "Joao Santos"
+
+    def test_sheets_ignora_aba_de_instrucoes(self):
+        from leitor_planilhas import _find_col_index
+
+        headers = ["INSTRUCOES - PLANILHA DE NOTAS", "", ""]
+        assert _find_col_index(headers, ["nome", "aluno", "estudante"]) is None
+
+    def test_csv_com_delimitador_ponto_e_virgula(self):
+        from leitor_planilhas import _ler_csv_content
+
+        content = "Nome do Aluno;Atividade 1\nAna Oliveira;8,5\nJoao Santos;7,0\n"
+        regs = _ler_csv_content(content)
+        assert len(regs) == 2
+        assert regs[0].nota == 8.5
+        assert regs[1].nota == 7.0
+
+    def test_csv_virgula_decimal_nao_quebra(self):
+        from leitor_planilhas import _ler_csv_content
+
+        content = "Nome do Aluno,Atividade 1\nAna Oliveira,8,5\nJoao Santos,7,0\n"
+        regs = _ler_csv_content(content)
+        assert len(regs) == 2
+        assert regs[0].aluno == "Ana Oliveira"
+        assert regs[0].nota == 8.5
+
+
+def _multi_tab_xlsx():
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "Instrucoes"
+    ws1.append(["INSTRUCOES - PLANILHA DE NOTAS", None, None])
+    ws1.append(["Coluna", "O que preencher", "Exemplo"])
+    ws1.append(["Escola", "Nome da escola", "Juvenal"])
+    ws1.append(["Atividade 1", "Nota da atividade", "8,5"])
+    ws2 = wb.create_sheet("6o Ano")
+    ws2.append(["Escola", "Turno", "Turma", "Trimestre", "Nome do Aluno", "Atividade 1"])
+    ws2.append(["Juvenal", "Matutino", "6o Ano", "1o Trimestre", "Ana Oliveira", "8,5"])
+    ws2.append(["Juvenal", "Matutino", "6o Ano", "1o Trimestre", "Joao Santos", "7,0"])
+    return wb

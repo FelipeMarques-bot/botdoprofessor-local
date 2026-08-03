@@ -172,63 +172,25 @@ def _csv_cell(row: Dict[str, Any], col: Optional[str]) -> str:
     return val or ""
 
 
+def _sniff_delimiter(content: str) -> str:
+    first_line = content.splitlines()[0] if content else ""
+    counts = {",": 0, ";": 0, "\t": 0}
+    for ch in counts:
+        counts[ch] = first_line.count(ch)
+    best = max(counts, key=counts.get)
+    return best if counts[best] > 0 else ","
+
+
 def ler_notas_csv(caminho: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
-    registros: List[RegistroNota] = []
     with open(caminho, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(_csv_skip_comments(f))
-        headers = reader.fieldnames or []
-
-        grade_cols = {h: h for h in headers if _is_grade_column(h) and _normalize(h) not in ("nome", "aluno")}
-        nome_col = _find_header(headers, ["nome", "aluno", "estudante"])
-        escola_col = _find_header(headers, ["escola"])
-        turno_col = _find_header(headers, ["turno"])
-        turma_col = _find_header(headers, ["turma", "classe", "sala"])
-        trimestre_col = _find_header(headers, ["trimestre", "bimestre", "periodo"])
-
-        if not nome_col:
-            if logger:
-                logger("CSV: coluna 'Nome' nao encontrada")
-            return registros
-
-        for row in reader:
-            nome = _csv_cell(row, nome_col).strip()
-            if not nome:
-                continue
-            for col_h, atividade in grade_cols.items():
-                raw = _csv_cell(row, col_h).strip()
-                nota = _to_float(raw)
-                if nota is None:
-                    continue
-                registros.append(RegistroNota(
-                    escola=_csv_cell(row, escola_col).strip() or "Nao informado",
-                    turno=_csv_cell(row, turno_col).strip() or "Nao informado",
-                    turma=_csv_cell(row, turma_col).strip() or "Nao informado",
-                    trimestre=_csv_cell(row, trimestre_col).strip() or "Nao informado",
-                    aluno=nome,
-                    atividade=atividade,
-                    nota=nota,
-                ))
-
-    if logger:
-        logger(f"CSV: {len(registros)} notas carregadas")
-    return registros
+        content = f.read()
+    return _ler_csv_content(content, logger=logger)
 
 
-def ler_notas_google_sheets(url_or_id: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
-    sheet_id = _extract_sheet_id(url_or_id)
-    if not sheet_id:
-        raise ValueError(f"URL/ID de planilha invalida: {url_or_id}")
-
-    export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-
-    try:
-        with urllib.request.urlopen(export_url, timeout=30) as resp:
-            content = resp.read().decode("utf-8-sig")
-    except Exception as exc:
-        raise RuntimeError(f"Falha ao baixar planilha do Google Sheets: {exc}")
-
+def _ler_csv_content(content: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
     registros: List[RegistroNota] = []
-    reader = csv.DictReader(io.StringIO(content))
+    delimiter = _sniff_delimiter(content)
+    reader = csv.DictReader(_csv_skip_comments(io.StringIO(content)), delimiter=delimiter)
     headers = reader.fieldnames or []
 
     grade_cols = {h: h for h in headers if _is_grade_column(h) and _normalize(h) not in ("nome", "aluno")}
@@ -240,44 +202,95 @@ def ler_notas_google_sheets(url_or_id: str, logger: Optional[LogFn] = None) -> L
 
     if not nome_col:
         if logger:
-            logger("Google Sheets: coluna 'Nome' nao encontrada")
+            logger("CSV: coluna 'Nome' nao encontrada")
         return registros
 
     for row in reader:
-        nome = (row.get(nome_col) or "").strip()
+        extra = row.pop(None, None)
+        if isinstance(extra, list) and extra and headers:
+            last = headers[-1]
+            sufixo = ",".join(str(v) for v in extra)
+            base = row.get(last)
+            row[last] = (base + "," + sufixo) if base else sufixo
+        nome = _csv_cell(row, nome_col).strip()
         if not nome:
             continue
         for col_h, atividade in grade_cols.items():
-            raw = (row.get(col_h) or "").strip()
+            raw = _csv_cell(row, col_h).strip()
             nota = _to_float(raw)
             if nota is None:
                 continue
             registros.append(RegistroNota(
-                escola=(row.get(escola_col) or "").strip() or "Nao informado",
-                turno=(row.get(turno_col) or "").strip() or "Nao informado",
-                turma=(row.get(turma_col) or "").strip() or "Nao informado",
-                trimestre=(row.get(trimestre_col) or "").strip() or "Nao informado",
+                escola=_csv_cell(row, escola_col).strip() or "Nao informado",
+                turno=_csv_cell(row, turno_col).strip() or "Nao informado",
+                turma=_csv_cell(row, turma_col).strip() or "Nao informado",
+                trimestre=_csv_cell(row, trimestre_col).strip() or "Nao informado",
                 aluno=nome,
                 atividade=atividade,
                 nota=nota,
             ))
 
     if logger:
-        logger(f"Google Sheets: {len(registros)} notas carregadas")
+        logger(f"CSV: {len(registros)} notas carregadas")
     return registros
+
+
+def ler_notas_google_sheets(url_or_id: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
+    sheet_id = _extract_sheet_id(url_or_id)
+    if not sheet_id:
+        raise ValueError(f"URL/ID de planilha invalida: {url_or_id}")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    tmp_path = tmp.name
+    tmp.close()
+
+    try:
+        # Exporta como XLSX: traz TODAS as abas (o export CSV so traz a primeira,
+        # o que fazia planilhas com aba de instrucoes retornarem 0 notas).
+        export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+        with urllib.request.urlopen(export_url, timeout=60) as resp:
+            with open(tmp_path, "wb") as f:
+                f.write(resp.read())
+
+        registros = ler_notas_excel(tmp_path, logger=logger)
+
+        # Fallback: exporta a primeira aba em CSV (planilhas que so tem uma aba
+        # ou que nao exportam xlsx por algum motivo).
+        if not registros:
+            export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            with urllib.request.urlopen(export_url, timeout=60) as resp:
+                content = resp.read().decode("utf-8-sig")
+            registros = _ler_csv_content(content, logger=logger)
+
+        os.unlink(tmp_path)
+        if logger:
+            logger(f"Google Sheets: {len(registros)} notas carregadas")
+        return registros
+    except RuntimeError:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise RuntimeError(f"Falha ao baixar planilha do Google Sheets: {exc}")
 
 
 def _find_header(headers: List[str], candidates: List[str]) -> Optional[str]:
     h_norm = {h: _normalize(h) for h in headers}
     for cand in candidates:
         cand_norm = _normalize(cand)
+        if not cand_norm:
+            continue
         for h, hn in h_norm.items():
-            if cand_norm == hn:
+            if hn and cand_norm == hn:
                 return h
     for cand in candidates:
         cand_norm = _normalize(cand)
+        if not cand_norm:
+            continue
         for h, hn in h_norm.items():
-            if cand_norm in hn or hn in cand_norm:
+            if hn and (cand_norm in hn or hn in cand_norm):
                 return h
     return None
 
@@ -286,13 +299,17 @@ def _find_col_index(headers: List[str], candidates: List[str]) -> Optional[int]:
     h_norm = {i: _normalize(h) for i, h in enumerate(headers)}
     for cand in candidates:
         cand_norm = _normalize(cand)
+        if not cand_norm:
+            continue
         for i, hn in h_norm.items():
-            if cand_norm == hn:
+            if hn and cand_norm == hn:
                 return i
     for cand in candidates:
         cand_norm = _normalize(cand)
+        if not cand_norm:
+            continue
         for i, hn in h_norm.items():
-            if cand_norm in hn or hn in cand_norm:
+            if hn and (cand_norm in hn or hn in cand_norm):
                 return i
     return None
 

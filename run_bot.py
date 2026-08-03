@@ -876,11 +876,15 @@ def main():
 
     if not lic_result.get("valid"):
         print()
-        print(f"[ER] Licenca invalida: {lic_result.get('error', 'desconhecido')}")
+        print(f"[ER] {lic_result.get('error', 'Licenca invalida')}")
+        print()
+        resubscribe_url = lic_result.get("resubscribe_url") or DOWNLOAD_URL
+        if resubscribe_url:
+            print(f"  Corrija o pagamento, assine ou reassine em: {resubscribe_url}")
         print()
         print("  Possiveis causas:")
         print("  - Chave incorreta (verifique o email)")
-        print("  - Licenca expirada")
+        print("  - Assinatura finalizada ou cancelada")
         print("  - Servidor temporariamente indisponivel")
         print()
         input("  Pressione Enter para sair...")

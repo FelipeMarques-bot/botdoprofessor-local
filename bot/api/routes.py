@@ -6,6 +6,7 @@ from sqlalchemy.exc import OperationalError
 from bot.models.database import db
 from bot.models.user import User
 from bot.models.license import License
+from bot.models.payment_request import PaymentRequest
 from bot.models.audit import AuditLog
 from bot.security.auth import (
     require_auth, require_permission, generate_token,
@@ -17,6 +18,33 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 license_bp = Blueprint("license", __name__, url_prefix="/api/license")
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 audit_bp = Blueprint("audit", __name__, url_prefix="/api/audit")
+
+LANDING_URL = "https://botdoprofessor.onrender.com"
+CHECKOUT_URL = f"{LANDING_URL}/checkout"
+
+
+def _get_revocation_reason(license_key):
+    """Retorna o motivo registrado na revogacao da assinatura, se houver."""
+    pay = PaymentRequest.query.filter_by(license_key=license_key)\
+        .order_by(PaymentRequest.id.desc()).first()
+    if not pay or not pay.admin_notes:
+        return None
+    for line in pay.admin_notes.splitlines():
+        line = line.strip()
+        if "[REVOGADO]" in line:
+            reason = line.split("[REVOGADO]", 1)[1].strip()
+            return reason or None
+    return None
+
+
+def _blocked_message(reason=None):
+    """Mensagem amigavel de assinatura finalizada/cancelada, com motivo e link."""
+    msg = "Sua assinatura foi finalizada ou cancelada."
+    if reason:
+        msg += f" Motivo: {reason}."
+    msg += (f" Acesse a pagina de assinatura ({LANDING_URL}) para corrigir o pagamento,"
+            f" assinar ou reassinar.")
+    return msg
 
 
 def _find_license(key):
@@ -43,13 +71,31 @@ def public_validate_license():
 
     lic = _find_license(key)
     if not lic:
-        return jsonify({"valid": False, "error": "Licenca nao encontrada"})
+        return jsonify({
+            "valid": False,
+            "error": "Licenca nao encontrada. Verifique a chave recebida por email.",
+            "resubscribe_url": CHECKOUT_URL,
+            "landing_url": LANDING_URL,
+        })
 
     if not lic.active:
-        return jsonify({"valid": False, "error": "Licenca desativada"})
+        reason = _get_revocation_reason(key)
+        return jsonify({
+            "valid": False,
+            "error": _blocked_message(reason),
+            "reason": reason,
+            "resubscribe_url": CHECKOUT_URL,
+            "landing_url": LANDING_URL,
+        })
 
     if lic.expires_at and lic.expires_at < datetime.utcnow():
-        return jsonify({"valid": False, "error": "Licenca expirada"})
+        return jsonify({
+            "valid": False,
+            "error": _blocked_message("assinatura expirada"),
+            "reason": "Assinatura expirada",
+            "resubscribe_url": CHECKOUT_URL,
+            "landing_url": LANDING_URL,
+        })
 
     days_remaining = -1
     if lic.expires_at:

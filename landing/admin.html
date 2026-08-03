@@ -788,7 +788,13 @@ async function revokeSub(id, name) {
     try {
         const d = await api('POST', `/api/admin/payments/${id}/revoke`, { reason: reason || 'Revogado pelo admin' });
         if (d.error) { toast(d.error, 'error'); return; }
-        toast('Assinatura revogada', 'success');
+        if (d.email_sent === false) {
+            toast('Assinatura revogada, mas o email ao usuario NAO foi enviado (verifique SMTP).', 'error');
+        } else if (d.email_sent) {
+            toast('Assinatura revogada e email enviado ao usuario.', 'success');
+        } else {
+            toast('Assinatura revogada', 'success');
+        }
         closeModal('detailModal');
         loadAll();
     } catch(e) { toast('Erro ao revogar', 'error'); }

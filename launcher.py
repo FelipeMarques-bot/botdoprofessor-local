@@ -508,6 +508,15 @@ def _validate_license_online(key):
     return False, {"error": str(last_error) or "Servidor indisponivel"}
 
 
+def _is_network_error(data):
+    """True se a falha for de rede/servidor (nao uma revogacao real de licenca)."""
+    err = (data or {}).get("error", "") or ""
+    lowered = err.lower()
+    markers = ("servidor", "indisponivel", "timed out", "connection",
+               "resolve", "network", "errno", "http error")
+    return (not err) or any(m in lowered for m in markers)
+
+
 def _get_license_cache():
     config = load_config()
     key = config.get("license_key", "")
@@ -542,7 +551,7 @@ def _show_license_dialog():
     root.title("BotDoProfessor — Ativar Licenca")
     root.overrideredirect(True)
     root.attributes("-topmost", True)
-    w, h = 520, 330
+    w, h = 540, 430
     sx = root.winfo_screenwidth()
     sy = root.winfo_screenheight()
     root.geometry(f"{w}x{h}+{(sx-w)//2}+{(sy-h)//2}")
@@ -565,7 +574,8 @@ def _show_license_dialog():
     entry.focus()
     error_var = tk.StringVar()
     tk.Label(root, textvariable=error_var, font=("Segoe UI", 9),
-             fg=accent, bg=bg).pack(pady=(5, 0))
+             fg=accent, bg=bg, wraplength=490, justify="center"
+             ).pack(pady=(5, 0))
 
     def validate():
         key = key_var.get().strip().upper()
@@ -592,7 +602,7 @@ def _show_license_dialog():
               font=("Segoe UI", 11, "bold"), bg=accent, fg="white",
               bd=0, padx=25, pady=5, cursor="hand2"
               ).pack(side="left", padx=5)
-    tk.Button(btn_frame, text="Comprar Chave", command=buy,
+    tk.Button(btn_frame, text="Assinar / Reassinar", command=buy,
               font=("Segoe UI", 10), bg="#1b2a4a", fg="#94a3b8",
               bd=1, padx=15, pady=5, cursor="hand2"
               ).pack(side="left", padx=5)
@@ -681,6 +691,19 @@ def main():
     cached_key, cached_plan, _ = _get_license_cache()
     if cached_key:
         log(f"Licenca validada em cache: {cached_plan}")
+        valid, data = _validate_license_online(cached_key)
+        if valid:
+            log("Revalidacao online da licenca OK")
+            _save_license_cache(cached_key, data.get("plan", ""), data.get("expires_at", ""))
+        elif _is_network_error(data):
+            log("Servidor indisponivel — usando cache offline")
+        else:
+            log("Licenca invalida detectada (revogada/expirada) — exibindo dialogo")
+            _save_license_cache("", "", "")
+            key = _show_license_dialog()
+            if not key:
+                log("Usuario fechou o dialogo de licenca")
+                sys.exit(0)
     else:
         log("Nenhuma licenca em cache — exibindo dialogo de ativacao")
         key = _show_license_dialog()

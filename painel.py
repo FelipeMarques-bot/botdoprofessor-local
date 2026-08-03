@@ -368,12 +368,32 @@ def _validate_license_online(key):
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         return False, {"error": str(e)}
 
+def _is_network_error(data):
+    """True se a falha for de rede/servidor (nao uma revogacao real de licenca)."""
+    err = (data or {}).get("error", "") or ""
+    lowered = err.lower()
+    markers = ("servidor", "indisponivel", "timed out", "connection",
+               "resolve", "network", "errno", "http error")
+    return (not err) or any(m in lowered for m in markers)
+
 if "license_valid" not in st.session_state:
     cached = _load_license_cache()
     if cached:
-        st.session_state.license_valid = True
-        st.session_state.license_key = cached["key"]
-        st.session_state.license_plan = cached.get("plan", "")
+        valid, data = _validate_license_online(cached["key"])
+        if valid:
+            st.session_state.license_valid = True
+            st.session_state.license_key = cached["key"]
+            st.session_state.license_plan = data.get("plan", cached.get("plan", ""))
+        elif _is_network_error(data):
+            st.session_state.license_valid = True
+            st.session_state.license_key = cached["key"]
+            st.session_state.license_plan = cached.get("plan", "")
+        else:
+            st.session_state.license_valid = False
+            st.session_state.license_key = ""
+            st.session_state.license_plan = ""
+            st.session_state.license_error = data.get("error", "Assinatura finalizada ou cancelada")
+            st.session_state.license_resubscribe_url = data.get("resubscribe_url", "")
     else:
         st.session_state.license_valid = False
         st.session_state.license_key = ""
@@ -409,6 +429,9 @@ if not st.session_state.license_valid:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
+        err_msg = st.session_state.get("license_error", "")
+        if err_msg:
+            st.error(err_msg)
         lic_key = st.text_input("Chave de licenca", key="lic_input",
                                 placeholder="Cole sua chave aqui")
         if st.button("Validar", type="primary", use_container_width=True):
@@ -425,9 +448,21 @@ if not st.session_state.license_valid:
                         st.rerun()
                     else:
                         st.error(data.get("error", "Chave invalida ou expirada"))
+                        url = data.get("resubscribe_url")
+                        if url:
+                            st.markdown(
+                                f'<a href="{url}" target="_blank" '
+                                'style="display:inline-block;margin-top:6px;">'
+                                '<button style="background:#e94560;color:white;border:none;'
+                                'padding:10px 18px;border-radius:8px;font-weight:bold;'
+                                'cursor:pointer;width:100%;">'
+                                'Corrigir pagamento / Assinar / Reassinar</button></a>',
+                                unsafe_allow_html=True,
+                            )
+        resub = st.session_state.get("license_resubscribe_url") or "https://botdoprofessor.onrender.com/checkout"
         st.markdown(
-            '<a href="https://botdoprofessor.onrender.com/checkout" target="_blank">'
-            'Nao tem chave? Compre aqui</a>',
+            f'<a href="{resub}" target="_blank">'
+            'Nao tem chave? Compre ou reassine aqui</a>',
             unsafe_allow_html=True,
         )
     st.stop()

@@ -265,7 +265,7 @@ def create_manual_subscription():
 @require_auth
 @require_permission("admin")
 def revoke_subscription(payment_id):
-    """Revoga/exclui uma assinatura. Desativa a licenca associada."""
+    """Revoga/exclui uma assinatura. Desativa a licenca associada e notifica o usuario."""
     payment = PaymentRequest.query.get_or_404(payment_id)
     data = request.get_json() or {}
     reason = data.get("reason", "Revogado pelo admin")
@@ -288,10 +288,92 @@ def revoke_subscription(payment_id):
                   details=f"Motivo: {reason}", status="success",
                   ip=request.remote_addr)
 
+    email_sent = False
+    if payment.email:
+        email_sent = _send_revocation_email(payment.email, payment.name, reason, payment.plan)
+
     return jsonify({
         "message": "Assinatura revogada",
+        "email_sent": email_sent,
         "payment": payment.to_dict(),
     })
+
+
+def _send_revocation_email(email, name, reason, plan="basico"):
+    """Envia email avisando que a assinatura foi finalizada/cancelada, com motivo e link."""
+    from config.settings import PLANOS
+    plan_info = PLANOS.get(plan, {})
+    plan_label = plan_info.get("label", plan)
+
+    landing_url = "https://botdoprofessor.onrender.com"
+    checkout_url = f"{landing_url}/checkout"
+
+    html = f"""
+    <html>
+    <head>
+    <style>
+        body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.7; padding: 20px; max-width: 640px; margin: 0 auto; }}
+        .header {{ background: #0f3460; color: white; padding: 28px; border-radius: 10px 10px 0 0; text-align: center; }}
+        .header h1 {{ margin: 0; font-size: 1.5em; }}
+        .header p {{ margin: 6px 0 0; font-size: 0.9em; opacity: 0.85; }}
+        .content {{ padding: 28px; background: #ffffff; border: 1px solid #e2e8f0; }}
+        .warn {{ background: #fffbeb; border-left: 4px solid #f59e0b; padding: 14px 18px; border-radius: 0 8px 8px 0; margin: 18px 0; font-size: 0.95em; color: #92400e; }}
+        .warn strong {{ display: block; margin-bottom: 4px; color: #92400e; }}
+        .btn {{ display: inline-block; padding: 14px 32px; background: #e94560; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 16px 0; }}
+        .section {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 18px 0; }}
+        .section h3 {{ margin: 0 0 10px; color: #0f3460; font-size: 1em; }}
+        .footer {{ padding: 18px 24px; background: #f8fafc; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 10px 10px; text-align: center; font-size: 0.85em; color: #94a3b8; }}
+        .footer a {{ color: #e94560; text-decoration: none; }}
+    </style>
+    </head>
+    <body>
+    <div class="header">
+        <h1>BotDoProfessor</h1>
+        <p>Sua assinatura foi finalizada</p>
+    </div>
+    <div class="content">
+        <p>Ola <strong>{name}</strong>,</p>
+        <p>Sua assinatura do plano <strong>{plan_label}</strong> foi <strong>finalizada ou cancelada</strong> e o acesso ao programa foi bloqueado.</p>
+
+        <div class="warn">
+            <strong>Motivo:</strong>
+            {reason}
+        </div>
+
+        <p style="text-align:center">
+            <a href="{checkout_url}" class="btn">Corrigir pagamento / Assinar / Reassinar</a>
+        </p>
+
+        <div class="section">
+            <h3>O QUE FAZER?</h3>
+            <p style="color:#475569;font-size:0.92em">
+                Para continuar usando o BotDoProfessor, acesse a pagina de assinatura e <strong>corrija o pagamento, assine ou reassine</strong> seu plano:
+            </p>
+            <p style="color:#475569;font-size:0.92em">
+                <a href="{landing_url}">{landing_url}</a>
+            </p>
+            <p style="color:#475569;font-size:0.92em">
+                Assim que o novo pagamento for confirmado, uma nova chave de licenca sera enviada para este email.
+            </p>
+        </div>
+
+        <p style="color:#475569;font-size:0.92em">
+            Se voce acredita que isso foi um engano, responda este email ou envie uma mensagem para
+            <a href="mailto:labintelligenceappoiments@gmail.com">labintelligenceappoiments@gmail.com</a>.
+        </p>
+    </div>
+    <div class="footer">
+        Duvidas? Responda este email ou envie para <a href="mailto:labintelligenceappoiments@gmail.com">labintelligenceappoiments@gmail.com</a><br>
+        BotDoProfessor — Automatize suas notas
+    </div>
+    </body>
+    </html>
+    """
+
+    subject = "BotDoProfessor — Assinatura finalizada/cancelada"
+
+    from bot.utils.email_sender import send_email
+    return send_email(email, subject, html)
 
 
 def _send_license_email(email, name, license_key, plan):

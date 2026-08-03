@@ -103,6 +103,10 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.6** — revogação de assinatura: o admin revoga e o usuário recebe email
+  com o motivo e o link da landing page para corrigir o pagamento/assinar/reassinar;
+  o launcher revalida a licença em cache online (revogação passa a valer
+  imediatamente) e o painel/dialogo exibem o motivo + link de reassinatura.
 - **v1.4.5** — painel: em "Origem dos Dados" permanece somente a escolha da
   origem; os links do Google Drive agora são informados na seção "Filtros"
   (por ano, para sequência didática; link único do arquivo quando tipo = notas).

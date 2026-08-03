@@ -103,6 +103,8 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.7** — extração de notas por foto: a IA agora organiza a lista de alunos
+  em ordem alfabética (A-Z, ignorando acentos) no painel local e na API do servidor.
 - **v1.4.6** — revogação de assinatura: o admin revoga e o usuário recebe email
   com o motivo e o link da landing page para corrigir o pagamento/assinar/reassinar;
   o launcher revalida a licença em cache online (revogação passa a valer

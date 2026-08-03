@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -754,6 +755,268 @@ def _safe_json_parse(text: str, fallback: Optional[Dict] = None) -> Dict[str, An
             except json.JSONDecodeError:
                 pass
         return fallback if fallback is not None else {"error": f"JSON invalido: {text[:200]}"}
+
+
+# =====================================================================
+#  EXTRACAO DE NOTAS POR IMAGEM (reforco da leitura pela IA)
+#  - Leitura robusta (letra de mao, virgula/ponto, totais/rodapes)
+#  - Fallback automatico entre provedores configurados
+#  - Parsing tolerante a code fences e texto ao redor
+#  - Validacao e normalizacao de aluno/nota + ordem alfabetica
+# =====================================================================
+
+EXTRAIR_NOTAS_IMAGEM_PROMPT = """\
+Voce e um assistente de leitura de diarios de classe e boletins escolares.
+Analise a imagem com muita atencao e extraia TODOS os alunos com as notas desta atividade.
+
+Regras:
+- Leia linha por linha: o nome completo do aluno e a nota correspondente.
+- A nota pode aparecer com virgula (8,5) ou ponto (8.5). Preserve o valor original.
+- Se um nome estiver abreviado ou com sobrenome incompleto, mantenha exatamente como esta.
+- NAO invente nomes nem notas: se uma linha estiver ilegivel, omita-a.
+- Ignore cabecalhos, totais, medias, rodapes e nomes de disciplinas.
+- Nao troque a nota de um aluno pela de outro.
+
+Responda APENAS com um JSON array, sem texto antes ou depois, no formato:
+[{"aluno": "Nome Completo", "nota": "8,5"}, {"aluno": "Outro Aluno", "nota": "7.0"}]
+Se nao houver nada para extrair, retorne apenas [].
+"""
+
+EXTRAIR_NOTAS_IMAGEM_REFINAR = """\
+A leitura anterior desta imagem nao retornou alunos/notas validos.
+Tente novamente com mais cuidado: observe todas as linhas da tabela ou da folha
+e copie EXATAMENTE o nome de cada aluno e a sua nota (aceita virgula ou ponto).
+
+Retorne APENAS um JSON array: [{"aluno": "...", "nota": "..."}]
+Se realmente nao for possivel ler nada, retorne [].
+"""
+
+
+def _refresh_ai_env() -> None:
+    """Sincroniza as constantes de IA com o ambiente em tempo de execucao.
+
+    O painel Streamlit define AI_PROVIDER e as chaves/APIs somente quando o
+    usuario executa o lancamento, entao reler o os.environ evita valores
+    obsoletos capturados no import do modulo.
+    """
+    global GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
+    global AI_MODEL, AI_TEMPERATURE, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+    AI_MODEL = os.environ.get("AI_MODEL", "gemini-2.5-flash")
+    AI_TEMPERATURE = float(os.environ.get("AI_TEMPERATURE", "0.2"))
+    OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip().rstrip("/")
+    OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2-vision")
+    OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "openbmb/minicpm-v4.6")
+
+
+def _configured_ai_providers(preferred: str) -> List[str]:
+    """Ordem de tentativa: o provedor escolhido primeiro, depois os demais."""
+    base = ("local", "gemini", "openai", "anthropic")
+    p = (preferred or "").strip().lower()
+    if p in ("ollama",):
+        p = "local"
+    order = [p] if p else []
+    order.extend(x for x in base if x != p)
+    return order
+
+
+def _provider_configured(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    if p in ("local", "ollama"):
+        return _is_ollama_running()
+    if p == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY", "")) and genai is not None
+    if p == "openai":
+        return bool(os.environ.get("OPENAI_API_KEY", ""))
+    if p == "anthropic":
+        return bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+    return False
+
+
+def _call_provider(provider: str, prompt: str, image_bytes: bytes) -> str:
+    p = (provider or "").strip().lower()
+    if p in ("local", "ollama"):
+        return _call_ollama(prompt, image_bytes)
+    if p == "gemini":
+        return _call_gemini(prompt, image_bytes)
+    if p == "openai":
+        return _call_openai(prompt, image_bytes)
+    if p == "anthropic":
+        return _call_anthropic(prompt, image_bytes)
+    raise AIAssistError(f"Provedor de IA desconhecido: {provider}")
+
+
+def _call_ai_with_fallback(prompt: str, image_bytes: bytes, logger: Optional[LogFn] = None) -> str:
+    """Chama a IA do provedor escolhido; se falhar, tenta os demais configurados.
+
+    Suporta IA local (Ollama) e IAS web (Gemini/OpenAI/Anthropic) sempre que a
+    chave estiver disponivel em runtime.
+    """
+    _refresh_ai_env()
+    preferred = _get_provider()
+    erros: List[str] = []
+    tentados: List[str] = []
+
+    for provider in _configured_ai_providers(preferred):
+        if not _provider_configured(provider):
+            continue
+        tentados.append(provider)
+        try:
+            _log(logger, f"[AI-Extracao] Tentando provedor: {provider}")
+            text = _call_provider(provider, prompt, image_bytes)
+            if text and text.strip():
+                if provider != preferred:
+                    _log(logger, f"[AI-Extracao] Fallback: '{provider}' usado no lugar de '{preferred}'.")
+                return text
+        except Exception as exc:  # noqa: BLE001
+            erros.append(f"{provider}: {exc}")
+            _log(logger, f"[AI-Extracao] Falha no provedor '{provider}': {exc}")
+
+    if erros:
+        raise AIAssistError(
+            "Todos os provedores de IA falharam (" + ", ".join(tentados) + "): " + "; ".join(erros)
+        )
+    raise AIAssistError("Nenhum provedor de IA configurado para extracao de notas.")
+
+
+def _normalize_nota(value: Any) -> Optional[str]:
+    """Normaliza a nota extraida pela IA para string numerica com ponto."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        num = float(value)
+        if num < 0 or num > 1000:
+            return None
+        if num.is_integer():
+            return str(int(num))
+        return str(num)
+    text = str(value).strip().replace(" ", "")
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    try:
+        num = float(text)
+    except ValueError:
+        return None
+    if num < 0 or num > 1000:
+        return None
+    if num.is_integer():
+        return str(int(num))
+    return str(num)
+
+
+def _extract_grade_records(text: str) -> List[Dict[str, str]]:
+    """Converte a resposta da IA em uma lista valida de {aluno, nota}."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    raw = raw.strip()
+    if not raw:
+        return []
+
+    data: Any = None
+    # 1) Texto inteiro como JSON
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+    # 2) Array JSON em qualquer lugar do texto (code fences, explicacoes)
+    if data is None:
+        arr = re.search(r"\[[\s\S]*\]", raw)
+        if arr:
+            try:
+                data = json.loads(arr.group(0))
+            except json.JSONDecodeError:
+                data = None
+    # 3) Objeto JSON como ultimo recurso
+    if data is None:
+        data = _safe_json_parse(raw, None)
+    if data is None:
+        return []
+
+    items = data if isinstance(data, list) else (
+        data.get("alunos") if isinstance(data, dict) else None
+    )
+    if not isinstance(items, list):
+        return []
+
+    records: List[Dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aluno = str(item.get("aluno", "") or "").strip()
+        if not aluno:
+            continue
+        nota = _normalize_nota(item.get("nota"))
+        if nota is None:
+            continue
+        records.append({"aluno": aluno, "nota": nota})
+    return records
+
+
+def _alphabetical_key(name: str) -> str:
+    """Chave de ordenacao alfabetica (A-Z), ignorando maiusculas e acentos."""
+    if not isinstance(name, str):
+        return ""
+    return unicodedata.normalize("NFD", name).strip().lower()
+
+
+def extrair_notas_imagem(
+    image_bytes: bytes,
+    logger: Optional[LogFn] = None,
+    prompt: Optional[str] = None,
+    retries: int = 1,
+) -> List[Dict[str, str]]:
+    """Extrai alunos + notas de uma imagem usando a IA configurada (local ou web).
+
+    Reforcos implementados:
+    - Prompt detalhado para leitura de letra de mao e tabelas.
+    - Fallback automatico entre provedores configurados (local/Gemini/OpenAI/Anthropic).
+    - Parsing tolerante a code fences e texto ao redor.
+    - Validacao e normalizacao de aluno e nota.
+    - Retry com prompt de refinamento quando a leitura vem vazia.
+    - Ordem alfabetica (A-Z) ignorando acentos.
+
+    Returns:
+        Lista de dicts {"aluno": str, "nota": str} ordenada alfabeticamente.
+    """
+    if not image_bytes:
+        return []
+
+    p_prompt = (prompt or "").strip() or EXTRAIR_NOTAS_IMAGEM_PROMPT
+    _log(logger, f"[AI-Extracao] Enviando imagem ({len(image_bytes)} bytes) para extracao de notas...")
+
+    try:
+        resposta = _call_ai_with_fallback(p_prompt, image_bytes, logger=logger)
+    except AIAssistError as exc:
+        _log(logger, f"[AI-Extracao] ERRO: {exc}")
+        return []
+
+    _log(logger, f"[AI-Extracao] Resposta bruta ({len(resposta)} chars): {resposta[:300]}")
+    registros = _extract_grade_records(resposta)
+    _log(logger, f"[AI-Extracao] 1a leitura: {len(registros)} aluno(s) validos.")
+
+    for tentativa in range(max(0, retries)):
+        if registros:
+            break
+        _log(logger, f"[AI-Extracao] Leitura vazia/invalida. Refinando ({(tentativa + 1)}/{retries})...")
+        try:
+            resposta = _call_ai_with_fallback(EXTRAIR_NOTAS_IMAGEM_REFINAR, image_bytes, logger=logger)
+        except AIAssistError as exc:
+            _log(logger, f"[AI-Extracao] ERRO no refinamento: {exc}")
+            break
+        registros = _extract_grade_records(resposta)
+        _log(logger, f"[AI-Extracao] Refinamento: {len(registros)} aluno(s) validos.")
+
+    registros.sort(key=lambda r: _alphabetical_key(r.get("aluno", "")))
+    return registros
 
 
 def record_demonstration_step(

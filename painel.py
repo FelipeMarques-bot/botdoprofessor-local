@@ -1188,37 +1188,16 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
                         st.stop()
 
-                    log_progress("Extraindo notas da imagem com IA...")
+                    log_progress("Extraindo notas da imagem com IA (reforcada)...")
                     try:
-                        from ai_assist import _call_ai
+                        from ai_assist import extrair_notas_imagem
                         with open(fonte_path, "rb") as f:
                             image_bytes = f.read()
 
-                        prompt = (
-                            "Extraia as notas/alunos desta imagem de diario de classe ou boletim. "
-                            "Ordene os alunos em ORDEM ALFABETICA (A-Z), ignorando acentos. "
-                            "Responda APENAS com um JSON array onde cada item tem: "
-                            "aluno (nome completo), nota (valor numerico com virgula ou ponto). "
-                            "Exemplo: [{\"aluno\": \"Joao Silva\", \"nota\": \"8,5\"}]. "
-                            "Se nao conseguir extrair, retorne []."
+                        extraidas = extrair_notas_imagem(
+                            image_bytes,
+                            logger=log_progress,
                         )
-                        resposta = _call_ai(prompt, image_bytes=image_bytes)
-                        log_progress(f"Resposta da IA: {resposta[:200]}...")
-
-                        import json as _json
-                        import unicodedata as _unicodedata
-                        extraidas = _json.loads(resposta)
-                        if not isinstance(extraidas, list):
-                            extraidas = []
-
-                        def _chave_alfabetica(nome):
-                            if not isinstance(nome, str):
-                                return ""
-                            return _unicodedata.normalize("NFD", nome).lower()
-
-                        extraidas.sort(key=lambda item: _chave_alfabetica(
-                            item.get("aluno", "") if isinstance(item, dict) else ""
-                        ))
 
                         if not extraidas:
                             log_progress("AVISO: IA nao conseguiu extrair notas da imagem.")

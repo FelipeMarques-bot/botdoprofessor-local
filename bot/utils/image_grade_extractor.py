@@ -246,6 +246,14 @@ def extract_grades_from_image(
 ) -> Dict[str, Any]:
     """Extract student grades from a photo/image using AI vision.
 
+    Delega para ai_assist.extrair_notas_imagem, que reforca a leitura com:
+    - Prompt detalhado (letra de mao, virgula/ponto, totais/rodapes)
+    - Fallback automatico entre provedores configurados (local/Gemini/OpenAI/Anthropic)
+    - Parsing tolerante a code fences e texto ao redor
+    - Validacao e normalizacao de aluno e nota
+    - Retry com prompt de refinamento quando a leitura vem vazia
+    - Ordem alfabetica (A-Z) ignorando acentos
+
     Args:
         image_bytes: Raw bytes of the image (JPEG, PNG, etc.)
         logger: Optional logging function
@@ -261,36 +269,25 @@ def extract_grades_from_image(
             logger(msg)
         log.info(msg)
 
-    _log("[ImageExtractor] Enviando imagem para analise de IA...")
+    _log("[ImageExtractor] Enviando imagem para analise de IA (pipeline reforcado)...")
     _log(f"[ImageExtractor] Tamanho da imagem: {len(image_bytes)} bytes")
 
     try:
-        raw_response = _call_ai_with_image(EXTRACT_GRADES_PROMPT, image_bytes)
-        _log(f"[ImageExtractor] Resposta recebida ({len(raw_response)} chars)")
+        from ai_assist import extrair_notas_imagem
+        alunos = extrair_notas_imagem(image_bytes, logger=_log)
     except Exception as e:
         _log(f"[ImageExtractor] ERRO ao chamar IA: {e}")
         return {"alunos": [], "total_encontrados": 0, "error": str(e)}
 
-    result = _safe_json_parse(raw_response, {
-        "alunos": [],
-        "total_encontrados": 0,
-        "confianca": "baixa",
-        "observacoes": "Falha ao processar resposta da IA",
-    })
+    total = len(alunos)
+    _log(f"[ImageExtractor] {total} aluno(s) extraidos em ordem alfabetica.")
 
-    if "alunos" not in result:
-        result["alunos"] = []
-    if "total_encontrados" not in result:
-        result["total_encontrados"] = len(result["alunos"])
-
-    result["alunos"] = _sort_alunos_alphabetically(result["alunos"])
-
-    _log(f"[ImageExtractor] {result['total_encontrados']} alunos encontrados (confianca: {result.get('confianca', '?')})")
-
-    if result.get("observacoes"):
-        _log(f"[ImageExtractor] Observacoes: {result['observacoes']}")
-
-    return result
+    return {
+        "alunos": alunos,
+        "total_encontrados": total,
+        "confianca": "alta" if total else "baixa",
+        "observacoes": "" if total else "Nenhum aluno/nota lido na imagem.",
+    }
 
 
 def is_available() -> bool:

@@ -13,9 +13,10 @@ class TestImageGradesAlphabeticSort:
         assert nomes == ["ana oliveira", "Álvaro Souza", "Beatriz Lima", "Maria Silva"]
 
     def test_extract_grades_returns_sorted(self, monkeypatch):
+        import ai_assist
         from bot.utils import image_grade_extractor as ige
 
-        def fake_ai(prompt, image_bytes):
+        def fake_ai(prompt, image_bytes, logger=None):
             return (
                 '{"alunos":[{"aluno":"Maria Silva","nota":"8.5"},'
                 '{"aluno":"Joao Santos","nota":"7.0"},'
@@ -23,7 +24,7 @@ class TestImageGradesAlphabeticSort:
                 '"total_encontrados":3,"confianca":"alta"}'
             )
 
-        monkeypatch.setattr(ige, "_call_ai_with_image", fake_ai)
+        monkeypatch.setattr(ai_assist, "_call_ai_with_fallback", fake_ai)
         result = ige.extract_grades_from_image(b"fake-image-bytes")
         nomes = [a["aluno"] for a in result["alunos"]]
         assert nomes == ["Ana Oliveira", "Joao Santos", "Maria Silva"]

@@ -103,6 +103,15 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.8** — lançamento de notas no SGE: `_select_activity` passou a procurar o
+  `GRIDAGENDA` em todos os frames (página principal + iframes). A tela de avaliação
+  abre em iframe e o grid não era encontrado no frame principal, resultando em
+  "Atividade não encontrada no SGE / GRIDAGENDA não encontrado" e 0 notas lançadas.
+  Também: pre-check da atividade em todos os frames, confirmação da grade de
+  lançamento tolerante a URL (ou indicadores do grid), e captura automática de
+  diagnóstico (screenshot + URL + frames) em `artifacts/sge-login` se ainda falhar.
+  O painel passou a respeitar o retorno `atividade_encontrada` (antes dependia só
+  de `data_sge`/`posicao_grid`).
 - **v1.4.7** — extração de notas por foto: a IA agora organiza a lista de alunos
   em ordem alfabética (A-Z, ignorando acentos) no painel local e na API do servidor.
 - **v1.4.6** — revogação de assinatura: o admin revoga e o usuário recebe email

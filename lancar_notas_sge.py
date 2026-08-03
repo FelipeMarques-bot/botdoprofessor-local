@@ -2916,60 +2916,102 @@ def _activity_match(target: str, link_text: str) -> bool:
     return False
 
 
+def _find_gridagenda_scope(page, timeout_ms: int = 9000):
+    """Retorna o scope (pagina principal ou iframe) onde table#GRIDAGENDA esta presente."""
+    for scope in _iter_scopes(page):
+        try:
+            scope.wait_for_selector("table#GRIDAGENDA", timeout=timeout_ms)
+            return scope
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _grade_entry_indicators_visible(page) -> bool:
+    """True se algum sinal da grade de lancamento estiver visivel em qualquer frame."""
+    for scope in _iter_scopes(page):
+        try:
+            if scope.locator("table#GRIDAGENDA").count() > 0:
+                return True
+            if scope.locator("input[name*='_POSICAO_0001']").count() > 0:
+                return True
+            if scope.locator("input[name='_AVALIACAOPROFDT']").count() > 0:
+                return True
+            if scope.locator("#span__AVALIACAO").count() > 0:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[bool, str, int]:
     _log(logger, f"Selecionando avaliacao: {atividade}")
 
     max_grid_retries = 2
+    agenda_scope = None
     for grid_attempt in range(1, max_grid_retries + 1):
-        try:
-            page.wait_for_selector("table#GRIDAGENDA", timeout=10000)
+        # GRIDAGENDA pode estar na pagina principal OU em um iframe do portal.
+        agenda_scope = _find_gridagenda_scope(page, timeout_ms=9000)
+        if agenda_scope is not None:
             _log(logger, "GRIDAGENDA visivel.")
             break
-        except Exception:
-            _log(logger, f"GRIDAGENDA nao encontrado em 10s (tentativa {grid_attempt}/{max_grid_retries}).")
-            url_atual = (page.url or "").lower()
-            if "hdiscturalunonota" in url_atual:
-                try:
-                    span_atual = page.locator("#span__AVALIACAO")
-                    if span_atual.count() > 0:
-                        texto_atual = (span_atual.first.inner_text(timeout=2000) or "").strip()
-                        if texto_atual and _activity_match(atividade, texto_atual):
-                            _log(logger, f"[PRE-CHECK] Atividade '{atividade}' ja esta aberta.")
-                            posicao = 0
-                            try:
-                                posicao_input = page.locator("input[name*='_POSICAO_0001']")
-                                if posicao_input.count() > 0:
-                                    posicao = int(posicao_input.first.input_value(timeout=500) or "0")
-                            except Exception:
-                                pass
-                            data_sge = ""
-                            try:
-                                dt_input = page.locator("input[name='_AVALIACAOPROFDT']")
-                                if dt_input.count() > 0:
-                                    data_sge = _normalize_sge_date(dt_input.first.input_value(timeout=500) or "")
-                            except Exception:
-                                pass
-                            return True, data_sge, posicao
-                except Exception:
-                    pass
-            if grid_attempt < max_grid_retries:
-                _log(logger, "Recarregando pagina para tentar encontrar GRIDAGENDA...")
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                    page.wait_for_timeout(1500)
-                except Exception:
-                    pass
+        _log(logger, f"GRIDAGENDA nao encontrado em 9s (tentativa {grid_attempt}/{max_grid_retries}).")
+
+        # Pre-check: a atividade pode ja estar aberta (grid de lancamento na tela).
+        for scope in _iter_scopes(page):
+            try:
+                span_atual = scope.locator("#span__AVALIACAO")
+                if span_atual.count() > 0:
+                    texto_atual = (span_atual.first.inner_text(timeout=2000) or "").strip()
+                    if texto_atual and _activity_match(atividade, texto_atual):
+                        _log(logger, f"[PRE-CHECK] Atividade '{atividade}' ja esta aberta.")
+                        posicao = 0
+                        try:
+                            posicao_input = scope.locator("input[name*='_POSICAO_0001']")
+                            if posicao_input.count() > 0:
+                                posicao = int(posicao_input.first.input_value(timeout=500) or "0")
+                        except Exception:
+                            pass
+                        data_sge = ""
+                        try:
+                            dt_input = scope.locator("input[name='_AVALIACAOPROFDT']")
+                            if dt_input.count() > 0:
+                                data_sge = _normalize_sge_date(dt_input.first.input_value(timeout=500) or "")
+                        except Exception:
+                            pass
+                        return True, data_sge, posicao
+            except Exception:
+                pass
+
+        if grid_attempt < max_grid_retries:
+            _log(logger, "Recarregando pagina para tentar encontrar GRIDAGENDA...")
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
 
     def _esperar_grade_lancamento() -> bool:
         try:
-            page.wait_for_url("**/hdiscturalunonota.aspx**", timeout=10000)
+            page.wait_for_url("**/hdiscturalunonota.aspx**", timeout=6000)
             return True
         except Exception:
-            return False
+            pass
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if _grade_entry_indicators_visible(page):
+                return True
+            page.wait_for_timeout(250)
+        return False
+
+    if agenda_scope is None:
+        agenda_scope = _find_gridagenda_scope(page, timeout_ms=3000)
 
     # OTIMIZACAO: Uma unica avaliacao JS para extrair TODOS os elementos clicaveis da GRIDAGENDA
-    agenda = page.locator("table#GRIDAGENDA")
-    if agenda.count() > 0:
+    agenda = None
+    if agenda_scope is not None:
+        agenda = agenda_scope.locator("table#GRIDAGENDA")
+    if agenda is not None and agenda.count() > 0:
         js_elements = agenda.evaluate("""
             (table) => {
                 const out = [];
@@ -3024,7 +3066,7 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
                 if selector:
                     clicked = False
                     try:
-                        loc = page.locator(selector).first
+                        loc = agenda_scope.locator(selector).first
                         if loc.count() > 0:
                             loc.click(timeout=ACTION_TIMEOUT_MS)
                             clicked = True
@@ -3037,7 +3079,7 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
                     # Fallback: clique via JS
                     if not clicked:
                         try:
-                            el_js = page.locator(selector).first
+                            el_js = agenda_scope.locator(selector).first
                             if el_js.count() > 0:
                                 el_js.evaluate("el => el.click()")
                                 page.wait_for_timeout(300)
@@ -3063,6 +3105,17 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
         return True, "", 0
 
     _capture_stage_debug(page, stage="activity_not_found", logger=logger)
+    try:
+        debug_dir = "artifacts/sge-login"
+        os.makedirs(debug_dir, exist_ok=True)
+        page.screenshot(path=os.path.join(debug_dir, "activity_not_found.png"), full_page=True)
+        with open(os.path.join(debug_dir, "activity_not_found_url.txt"), "w", encoding="utf-8") as f:
+            f.write(f"url={page.url}\n")
+            f.write(f"title={page.title()}\n")
+            for idx, frame in enumerate(page.frames):
+                f.write(f"frame[{idx}] name={frame.name!r} url={frame.url}\n")
+    except Exception:  # noqa: BLE001
+        pass
     _log(logger, f"Aviso: avaliacao nao encontrada na tela: {atividade}")
     return False, "", 0
 

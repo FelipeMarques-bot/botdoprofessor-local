@@ -1346,9 +1346,9 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
                             _select_context(page, contexto, logger=log_progress)
                             _open_assessment_for_context(page, contexto, logger=log_progress)
-                            _, data_sge, posicao_grid = _select_activity(page, atividade, logger=log_progress)
+                            atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=log_progress)
 
-                            if not data_sge and posicao_grid == 0:
+                            if not atividade_encontrada:
                                 log_progress(f"  [AVISO] Atividade '{atividade}' nao encontrada no SGE. Pulando bloco.")
                                 falhas += len(itens)
                                 continue

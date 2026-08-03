@@ -8,6 +8,7 @@ Usage:
 import json
 import logging
 import os
+import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -17,12 +18,14 @@ LogFn = Callable[[str], None]
 EXTRACT_GRADES_PROMPT = """\
 Tarefa: Extrair nomes de alunos e notas desta imagem.
 
+Ordene a lista de alunos em ORDEM ALFABETICA (A-Z), ignorando acentos (ex.: "Álvaro" antes de "Beatriz").
+
 Retorne SOMENTE o JSON abaixo, preenchido com os dados da imagem. Nao explique nada.
 
 {"alunos":[{"aluno":"Nome Completo","nota":"valor"}],"total_encontrados":0,"confianca":"alta","observacoes":"breve"}
 
 Exemplo de saida:
-{"alunos":[{"aluno":"Maria Silva","nota":"8.5"},{"aluno":"Joao Santos","nota":"7.0"}],"total_encontrados":2,"confianca":"alta","observacoes":"imagem clara"}
+{"alunos":[{"aluno":"Ana Oliveira","nota":"9.2"},{"aluno":"Joao Santos","nota":"7.0"},{"aluno":"Maria Silva","nota":"8.5"}],"total_encontrados":3,"confianca":"alta","observacoes":"imagem clara"}
 
 IMPORTANTE: Retorne APENAS o JSON, sem texto antes ou depois.
 """
@@ -188,6 +191,17 @@ def _call_ollama(prompt: str, image_bytes: bytes) -> str:
     return data.get("response", "")
 
 
+def _alpha_key(name: str) -> str:
+    """Chave de ordenacao alfabetica (A-Z), insensivel a maiusculas e acentos."""
+    name = (name or "").strip().lower()
+    return unicodedata.normalize("NFD", name)
+
+
+def _sort_alunos_alphabetically(alunos: List[Dict]) -> List[Dict]:
+    """Ordena a lista de alunos em ordem alfabetica pelo nome."""
+    return sorted(alunos, key=lambda a: _alpha_key(a.get("aluno", "")))
+
+
 def _safe_json_parse(text: str, fallback: Any = None) -> Any:
     """Try to extract JSON from AI response text.
 
@@ -268,6 +282,8 @@ def extract_grades_from_image(
         result["alunos"] = []
     if "total_encontrados" not in result:
         result["total_encontrados"] = len(result["alunos"])
+
+    result["alunos"] = _sort_alunos_alphabetically(result["alunos"])
 
     _log(f"[ImageExtractor] {result['total_encontrados']} alunos encontrados (confianca: {result.get('confianca', '?')})")
 

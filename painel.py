@@ -1196,6 +1196,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
 
                         prompt = (
                             "Extraia as notas/alunos desta imagem de diario de classe ou boletim. "
+                            "Ordene os alunos em ORDEM ALFABETICA (A-Z), ignorando acentos. "
                             "Responda APENAS com um JSON array onde cada item tem: "
                             "aluno (nome completo), nota (valor numerico com virgula ou ponto). "
                             "Exemplo: [{\"aluno\": \"Joao Silva\", \"nota\": \"8,5\"}]. "
@@ -1205,9 +1206,19 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         log_progress(f"Resposta da IA: {resposta[:200]}...")
 
                         import json as _json
+                        import unicodedata as _unicodedata
                         extraidas = _json.loads(resposta)
                         if not isinstance(extraidas, list):
                             extraidas = []
+
+                        def _chave_alfabetica(nome):
+                            if not isinstance(nome, str):
+                                return ""
+                            return _unicodedata.normalize("NFD", nome).lower()
+
+                        extraidas.sort(key=lambda item: _chave_alfabetica(
+                            item.get("aluno", "") if isinstance(item, dict) else ""
+                        ))
 
                         if not extraidas:
                             log_progress("AVISO: IA nao conseguiu extrair notas da imagem.")

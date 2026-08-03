@@ -60,9 +60,17 @@ def _is_grade_column(col_name: str) -> bool:
     clean = col_name.strip()
     if not clean or clean in IGNORE_COLS:
         return False
-    lowered = clean.lower()
-    blacklist = ["status", "media", "obs", "coment", "nome", "id", "chamada", "frequencia"]
-    return all(word not in lowered for word in blacklist)
+    lowered = re.sub(r"[^a-z0-9]+", " ", clean.lower()).strip()
+    words = lowered.split()
+    if not words:
+        return False
+    prefix_blacklist = ("status", "media", "obs", "coment", "nome", "chamada", "frequencia")
+    for word in words:
+        if word == "id":
+            return False
+        if any(word.startswith(bw) for bw in prefix_blacklist):
+            return False
+    return True
 
 
 def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
@@ -155,6 +163,15 @@ def _csv_skip_comments(f):
         yield line
 
 
+def _csv_cell(row: Dict[str, Any], col: Optional[str]) -> str:
+    if col is None:
+        return ""
+    val = row.get(col)
+    if isinstance(val, list):
+        return ",".join(str(v) for v in val)
+    return val or ""
+
+
 def ler_notas_csv(caminho: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
     registros: List[RegistroNota] = []
     with open(caminho, encoding="utf-8-sig") as f:
@@ -174,19 +191,19 @@ def ler_notas_csv(caminho: str, logger: Optional[LogFn] = None) -> List[Registro
             return registros
 
         for row in reader:
-            nome = (row.get(nome_col) or "").strip()
+            nome = _csv_cell(row, nome_col).strip()
             if not nome:
                 continue
             for col_h, atividade in grade_cols.items():
-                raw = (row.get(col_h) or "").strip()
+                raw = _csv_cell(row, col_h).strip()
                 nota = _to_float(raw)
                 if nota is None:
                     continue
                 registros.append(RegistroNota(
-                    escola=(row.get(escola_col) or "").strip() or "Nao informado",
-                    turno=(row.get(turno_col) or "").strip() or "Nao informado",
-                    turma=(row.get(turma_col) or "").strip() or "Nao informado",
-                    trimestre=(row.get(trimestre_col) or "").strip() or "Nao informado",
+                    escola=_csv_cell(row, escola_col).strip() or "Nao informado",
+                    turno=_csv_cell(row, turno_col).strip() or "Nao informado",
+                    turma=_csv_cell(row, turma_col).strip() or "Nao informado",
+                    trimestre=_csv_cell(row, trimestre_col).strip() or "Nao informado",
                     aluno=nome,
                     atividade=atividade,
                     nota=nota,
@@ -280,11 +297,27 @@ def _find_col_index(headers: List[str], candidates: List[str]) -> Optional[int]:
     return None
 
 
+def _detect_spreadsheet_type(path: str) -> str:
+    """Detecta o tipo de planilha pelo conteudo do arquivo, nao pela extensao."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return "excel"
+    if head.startswith(b"PK\x03\x04"):
+        return "excel"
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        return "excel"
+    return "csv"
+
+
 def ler_notas_google_drive(url_or_id: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
     try:
         import gdown
     except ImportError:
-        raise RuntimeError("gdown nao instalado. Rode: pip install gdown")
+        raise RuntimeError(
+            "gdown nao instalado. Rode: pip install gdown"
+        )
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
     tmp_path = tmp.name
@@ -292,12 +325,26 @@ def ler_notas_google_drive(url_or_id: str, logger: Optional[LogFn] = None) -> Li
 
     try:
         if re.match(r"^https?://", url_or_id):
-            gdown.download(url_or_id, tmp_path, quiet=True)
+            output = gdown.download(url_or_id, tmp_path, quiet=True, fuzzy=True)
         else:
-            gdown.download(id=url_or_id, output=tmp_path, quiet=True)
+            output = gdown.download(id=url_or_id, output=tmp_path, quiet=True, fuzzy=True)
 
-        ext = os.path.splitext(url_or_id)[1].lower()
-        if ext == ".csv":
+        if output is None or not os.path.exists(tmp_path):
+            raise RuntimeError(
+                "Nao foi possivel baixar o arquivo do Google Drive. "
+                "Verifique se o link esta correto e se o arquivo esta compartilhado "
+                "como 'Qualquer um com o link pode ver'."
+            )
+
+        size = os.path.getsize(tmp_path)
+        if size == 0:
+            raise RuntimeError("O arquivo baixado do Google Drive esta vazio.")
+
+        if logger:
+            logger(f"Google Drive: download ok ({_fmt_size(size)})")
+
+        tipo = _detect_spreadsheet_type(tmp_path)
+        if tipo == "csv":
             registros = ler_notas_csv(tmp_path, logger=logger)
         else:
             registros = ler_notas_excel(tmp_path, logger=logger)
@@ -306,10 +353,26 @@ def ler_notas_google_drive(url_or_id: str, logger: Optional[LogFn] = None) -> Li
         if logger:
             logger(f"Google Drive: {len(registros)} notas carregadas")
         return registros
+    except RuntimeError:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
     except Exception as exc:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        raise RuntimeError(f"Falha ao baixar arquivo do Google Drive: {exc}")
+        raise RuntimeError(
+            f"Falha ao baixar arquivo do Google Drive: {exc}. "
+            "Confira se o link esta certo e o arquivo esta publico "
+            "('Qualquer um com o link pode ver')."
+        )
+
+
+def _fmt_size(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
 
 
 def _normalize_str(s: str) -> str:

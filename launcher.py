@@ -41,6 +41,7 @@ REQUIREMENTS = [
     "google-generativeai>=0.5",
     "openai>=1.30",
     "anthropic>=0.25",
+    "gdown>=5.2",
 ]
 
 PYTHON_VERSION = "3.11.9"

@@ -1369,8 +1369,8 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                             elif not data_sge and data_mais_comum:
                                 log_progress(f"  [DATA] Data da atividade nao encontrada no SGE. Prosseguindo sem validacao de data.")
 
-                            from lancar_notas_sge import _COLUNA_POR_POSICAO
-                            coluna_sge = _COLUNA_POR_POSICAO.get(posicao_grid, "")
+                            from lancar_notas_sge import _detect_coluna_from_page
+                            coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=log_progress, atividade=atividade)
 
                             novos = 0
                             for reg in itens:

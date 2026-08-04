@@ -144,46 +144,93 @@ def _reset_adaptive_timeout():
 _COLUNA_POR_POSICAO = {1: "N1S", 2: "N2S", 3: "N15S", 4: "PE"}
 
 
-def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None) -> str:
-    """Detecta o nome real da coluna de nota na pagina do SGE baseado na posicao da GRIDAGENDA.
+def _norm_coluna(value: str) -> str:
+    """Normaliza um token de coluna para comparacao (ex: 'N1S' == 'n1s'; 'NOTA 1' == 'nota1')."""
+    return _normalize_loose(value).replace(" ", "")
 
-    Escaneia os inputs de nota na pagina e retorna o prefixo correto (ex: 'N1S', 'NOTA1', etc).
-    Se nao conseguir detectar, retorna o valor padrao de _COLUNA_POR_POSICAO.
+
+def _coluna_token_from_atividade(atividade: str) -> str:
+    """Extrai o token de coluna a partir do nome da atividade (ex: 'N1S', 'NOTA 1', 'PE')."""
+    a = _normalize(atividade)
+    m = re.search(r"(?:^|[^a-z0-9])(n\s*\d+(?:\.\d+)?\s*s|nota\s*\d+|pe)(?:[^a-z0-9]|$)", a)
+    if not m:
+        return ""
+    return re.sub(r"\s+", "", m.group(1))
+
+
+def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None, atividade: str = "") -> str:
+    """Detecta o nome real da coluna de nota na pagina do SGE.
+
+    Escaneia os inputs de nota na pagina e retorna o prefixo correto (ex: 'N1S', 'NOTA1', 'PE').
+    Prioriza: (1) coluna que bate com o nome da atividade, (2) coluna padrao de _COLUNA_POR_POSICAO
+    se presente na pagina, (3) padrao mais comum, (4) coluna padrao.
     """
     coluna_default = _COLUNA_POR_POSICAO.get(posicao_grid, "")
 
+    patterns: List[Tuple[str, int]] = []
     try:
-        detected = page.evaluate("""
-            () => {
-                const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
-                const patterns = [];
-                for (const el of inputs) {
-                    const name = (el.getAttribute('name') || '').trim();
-                    const id = (el.getAttribute('id') || '').trim();
-                    const attrs = name + ' ' + id;
-                    // Procura por padroes de coluna: _N1S_, _NOTA1_, _NOTA_1_, etc
-                    const m = attrs.match(/(?:^|[_.])(N\d+S|NOTA\s*\d+|Nota\s*\d+|PE|N\d+(?:\.\d+)?S?)(?:[_\s]|$)/i);
-                    if (m) {
-                        patterns.push(m[1].toUpperCase());
+        for scope in _iter_scopes(page):
+            try:
+                counts = scope.evaluate("""
+                    () => {
+                        const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+                        const counts = {};
+                        for (const el of inputs) {
+                            const name = (el.getAttribute('name') || '').trim();
+                            const id = (el.getAttribute('id') || '').trim();
+                            const attrs = name + ' ' + id;
+                            // Procura por padroes de coluna: _N1S_, _NOTA1_, _NOTA_1_, etc
+                            const m = attrs.match(/(?:^|[_.])(N\d+S|NOTA\s*\d+|Nota\s*\d+|PE|N\d+(?:\.\d+)?S?)(?:[_\s]|$)/i);
+                            if (m) {
+                                const p = m[1].toUpperCase();
+                                counts[p] = (counts[p] || 0) + 1;
+                            }
+                        }
+                        return counts;
                     }
-                }
-                // Retorna o pattern mais comum
-                const counts = {};
-                for (const p of patterns) {
-                    counts[p] = (counts[p] || 0) + 1;
-                }
-                const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-                return sorted.length > 0 ? sorted[0][0] : '';
-            }
-        """)
-        if detected:
-            _log(logger, f"[COLUNA-DETECT] Coluna detectada na pagina: '{detected}' (posicao_grid={posicao_grid})")
-            return detected
-    except Exception:
+                """)
+                if isinstance(counts, dict):
+                    patterns.extend((str(k), int(v)) for k, v in counts.items())
+            except Exception:  # noqa: BLE001
+                continue
+        # Agrega contagens entre scopes e ordena por frequencia.
+        counts_tot: Dict[str, int] = {}
+        for pat, cnt in patterns:
+            counts_tot[pat] = counts_tot.get(pat, 0) + cnt
+        patterns = sorted(counts_tot.items(), key=lambda x: x[1], reverse=True)
+    except Exception:  # noqa: BLE001
         pass
 
-    _log(logger, f"[COLUNA-DETECT] Usando coluna padrao: '{coluna_default}' (posicao_grid={posicao_grid})")
-    return coluna_default
+    _log(logger, f"[COLUNA-DETECT] Padroes encontrados na pagina: {patterns} (posicao_grid={posicao_grid})")
+
+    chosen = ""
+    token = _coluna_token_from_atividade(atividade)
+    if token:
+        for pat, _count in patterns:
+            if _norm_coluna(pat) == token:
+                chosen = pat
+                break
+        if not chosen:
+            for pat, _count in patterns:
+                if token in _norm_coluna(pat) or _norm_coluna(pat) in token:
+                    chosen = pat
+                    break
+
+    if not chosen and coluna_default:
+        for pat, _count in patterns:
+            if _norm_coluna(pat) == _norm_coluna(coluna_default):
+                chosen = pat
+                break
+
+    if not chosen and patterns:
+        chosen = patterns[0][0]
+
+    if not chosen:
+        chosen = coluna_default
+
+    if chosen:
+        _log(logger, f"[COLUNA-DETECT] Coluna detectada: '{chosen}' (posicao_grid={posicao_grid}, atividade={atividade!r})")
+    return chosen
 MANUAL_LOGIN = os.environ.get("MANUAL_LOGIN", "0") == "1"
 MANUAL_LOGIN_TIMEOUT_SEC = int(os.environ.get("MANUAL_LOGIN_TIMEOUT_SEC", "300"))
 DEBUG_LOGIN = os.environ.get("SGE_DEBUG_LOGIN", "1" if os.environ.get("GITHUB_ACTIONS") == "true" else "0") == "1"
@@ -3516,7 +3563,8 @@ def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[L
     Caso contrario, busca por todos os suffixes do aluno (fallback).
     Nota: so retorna True se o campo estiver PREENCHIDO com valor NAO-ZERO.
     Valores zero/vazio sao considerados falha (podem indicar campo nao gravado).
-    Tenta primeiro com coluna_sge, depois sem filtro como fallback.
+    Verifica somente dentro da coluna_sge quando ela esta definida (sem fallback
+    para leitura sem filtro, que poderia gerar falso positivo).
     """
     def _try_verify(cols: str) -> bool:
         if filled_suffix:
@@ -3544,9 +3592,8 @@ def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[L
 
     if _try_verify(coluna_sge):
         return True
-    if coluna_sge and _try_verify(""):
-        _log(logger, f"[DEBUG] Verificacao sem filtro de coluna funcionou para '{aluno}'")
-        return True
+    # NAO confia na verificacao SEM filtro de coluna: poderia ler o valor de
+    # outra avaliacao da mesma pagina e gerar um falso [VERIFICADO].
     return False
 
 
@@ -3690,18 +3737,9 @@ def _try_fill_grade_for_student_on_current_page(page, aluno: str, nota_texto: st
             if result in ("filled", "already"):
                 return suffix
 
-    # Fallback: tenta SEM filtro de coluna caso o anterior tenha falhado
-    if coluna_sge:
-        for scope in _iter_scopes(page):
-            slots = _wait_student_slots(scope)
-            if not slots:
-                continue
-            suffixes = _candidate_suffixes_for_student(aluno, slots)
-            for suffix in suffixes:
-                result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge="")
-                if result in ("filled", "already"):
-                    return suffix
-
+    # NAO usa fallback SEM filtro de coluna quando coluna_sge esta definida:
+    # escrever sem o filtro pode lancar a nota na coluna de OUTRA avaliacao
+    # exibida na mesma pagina (mesmo problema do falso [SGE-JA]).
     return ""
 
 
@@ -3771,8 +3809,9 @@ def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogF
         _log(logger, f"Aviso: aluno nao localizado na grade: {aluno}")
         return ""
 
-    # Tenta com coluna_sge primeiro, depois sem
-    for col in ([coluna_sge, ""] if coluna_sge else [""]):
+    # Tenta com coluna_sge primeiro; NAO cai em leitura sem filtro quando a
+    # coluna esta definida (evita preencher a coluna de outra avaliacao).
+    for col in ([coluna_sge] if coluna_sge else [""]):
         if col:
             inputs = row.locator(f"input[type='text'][name*='_{col}_'], input[type='number'][name*='_{col}_'], input[type='text'][id*='_{col}_'], input[type='number'][id*='_{col}_']")
         else:
@@ -3809,7 +3848,8 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
     """Le o valor atual da celula de nota no SGE para o aluno (via JS, rapido).
 
     Retorna o valor como string se preenchido com valor != zero, ou None.
-    Tenta primeiro com coluna_sge, depois sem filtro como fallback.
+    Tenta com coluna_sge; se definida, NAO usa fallback sem filtro (evita ler
+    o valor de outra avaliacao exibida na mesma pagina).
     """
     if not _normalize_loose(aluno):
         return None
@@ -3834,10 +3874,18 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
     if result is not None:
         return result
     if coluna_sge:
-        result = _try_read("")
-        if result is not None:
-            _log(logger, f"[DEBUG] Leitura sem filtro de coluna encontrou nota '{result}' para '{aluno}'")
-            return result
+        # IMPORTANTE: nao confiar em leitura sem filtro de coluna para decidir
+        # "ja lancada". Ela pode retornar o valor de OUTRA avaliacao exibida na
+        # mesma pagina (ex.: nota de avaliacao anterior), causando falso [SGE-JA]
+        # e pulando a gravacao da nota correta na coluna alvo.
+        other = _try_read("")
+        if other is not None:
+            _log(logger, f"[DEBUG] Coluna '{coluna_sge}' sem valor para '{aluno}' (outra coluna contem '{other}'; NAO tratado como ja lancado).")
+        return None
+    result = _try_read("")
+    if result is not None:
+        _log(logger, f"[DEBUG] Leitura sem filtro de coluna encontrou nota '{result}' para '{aluno}'")
+        return result
     return None
 
 
@@ -4297,7 +4345,7 @@ def executar_lancamento(
             regs_ausentes_bloco: List[RegistroNota] = []
             novos_preenchimentos = 0
             regs_ja_no_sge: List[RegistroNota] = []
-            coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger)
+            coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade)
             ai_calls_this_block = 0
             MAX_AI_CALLS_PER_BLOCK = 3
             for reg in itens:

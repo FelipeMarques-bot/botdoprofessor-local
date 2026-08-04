@@ -5,6 +5,8 @@ import re
 import tempfile
 import urllib.request
 from dataclasses import dataclass
+from datetime import date as _date_cls
+from datetime import datetime as _datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 LogFn = Callable[[str], None]
@@ -73,6 +75,83 @@ def _is_grade_column(col_name: str) -> bool:
     return True
 
 
+def _is_date_column(col_name: str) -> bool:
+    """Colunas de data (ex: 'Data realização 1'). Nao sao colunas de nota."""
+    return _normalize(col_name or "").startswith("data")
+
+
+def _date_suffix(col_name: str) -> Optional[int]:
+    """Extrai o numero final de uma coluna (ex: 'Data realização 2' -> 2)."""
+    norm = _normalize(col_name or "")
+    match = re.search(r"(\d+)\s*$", norm)
+    return int(match.group(1)) if match else None
+
+
+def _format_data_realizacao(value: object) -> str:
+    """Normaliza um valor de data para o formato DD/MM/AAAA."""
+    if value is None:
+        return ""
+    if isinstance(value, _datetime):
+        return value.strftime("%d/%m/%Y")
+    if isinstance(value, _date_cls):
+        return value.strftime("%d/%m/%Y")
+    text = str(value).strip()
+    if not text:
+        return ""
+    match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
+    if match:
+        return f"{int(match.group(1)):02d}/{int(match.group(2)):02d}/{match.group(3)}"
+    match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if match:
+        return f"{int(match.group(3)):02d}/{int(match.group(2)):02d}/{match.group(1)}"
+    return text
+
+
+def _pair_date_columns(activities, dates):
+    """Associa colunas 'Data realização N' as colunas de atividade.
+
+    activities: lista de (chave, nome_da_atividade) em ordem de coluna.
+    dates: lista de (chave, nome_da_coluna, sufixo_numerico_ou_None).
+    Retorna {chave_atividade: chave_data}.
+    """
+    mapping = {}
+    used = set()
+    assigned = set()
+
+    for dkey, _dname, suffix in dates:
+        if suffix is None:
+            continue
+        for akey, aname in activities:
+            if akey in used:
+                continue
+            if re.search(rf"(^|\D){suffix}(\D|$)", _normalize(aname)):
+                mapping[akey] = dkey
+                used.add(akey)
+                assigned.add(dkey)
+                break
+
+    for dkey, _dname, suffix in dates:
+        if dkey in assigned or suffix is None:
+            continue
+        pos = suffix - 1
+        if 0 <= pos < len(activities) and activities[pos][0] not in used:
+            mapping[activities[pos][0]] = dkey
+            used.add(activities[pos][0])
+            assigned.add(dkey)
+
+    for dkey, _dname, _suffix in dates:
+        if dkey in assigned:
+            continue
+        for akey, _aname in activities:
+            if akey not in used:
+                mapping[akey] = dkey
+                used.add(akey)
+                assigned.add(dkey)
+                break
+
+    return mapping
+
+
 def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[RegistroNota]:
     try:
         import openpyxl
@@ -96,8 +175,15 @@ def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[Regist
         col_trimestre = _find_col_index(headers, ["trimestre", "trimestre", "bimestre", "periodo"])
         col_nome = _find_col_index(headers, ["nome", "nome", "aluno", "estudante", "nome aluno"])
 
+        meta_cols = {
+            c for c in (col_escola, col_turno, col_turma, col_trimestre, col_nome) if c is not None
+        }
         grade_cols = {}
         for i, h in enumerate(headers):
+            if i in meta_cols:
+                continue
+            if _is_date_column(h):
+                continue
             if _is_grade_column(h):
                 grade_cols[i] = h.strip()
 
@@ -129,6 +215,15 @@ def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[Regist
         if not trimestre:
             trimestre = "Nao informado"
 
+        date_map = _pair_date_columns(
+            [(i, grade_cols[i]) for i in sorted(grade_cols)],
+            [
+                (i, headers[i], _date_suffix(headers[i]))
+                for i in range(len(headers))
+                if _is_date_column(headers[i])
+            ],
+        )
+
         for row in info_rows:
             nome = str(row[col_nome] or "").strip()
             if not nome:
@@ -138,6 +233,10 @@ def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[Regist
                 nota = _to_float(row[col_idx] if col_idx < len(row) else None)
                 if nota is None:
                     continue
+                data_col = date_map.get(col_idx)
+                data_realizacao = ""
+                if data_col is not None and data_col < len(row):
+                    data_realizacao = _format_data_realizacao(row[data_col])
                 registros.append(RegistroNota(
                     escola=escola,
                     turno=turno,
@@ -146,6 +245,7 @@ def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[Regist
                     aluno=nome,
                     atividade=atividade,
                     nota=nota,
+                    data_realizacao=data_realizacao,
                 ))
 
         if logger:
@@ -193,7 +293,6 @@ def _ler_csv_content(content: str, logger: Optional[LogFn] = None) -> List[Regis
     reader = csv.DictReader(_csv_skip_comments(io.StringIO(content)), delimiter=delimiter)
     headers = reader.fieldnames or []
 
-    grade_cols = {h: h for h in headers if _is_grade_column(h) and _normalize(h) not in ("nome", "aluno")}
     nome_col = _find_header(headers, ["nome", "aluno", "estudante"])
     escola_col = _find_header(headers, ["escola"])
     turno_col = _find_header(headers, ["turno"])
@@ -204,6 +303,21 @@ def _ler_csv_content(content: str, logger: Optional[LogFn] = None) -> List[Regis
         if logger:
             logger("CSV: coluna 'Nome' nao encontrada")
         return registros
+
+    meta_cols = {c for c in (nome_col, escola_col, turno_col, turma_col, trimestre_col) if c}
+    grade_cols = {
+        h: h
+        for h in headers
+        if h not in meta_cols
+        and _is_grade_column(h)
+        and not _is_date_column(h)
+        and _normalize(h) not in ("nome", "aluno")
+    }
+
+    date_map = _pair_date_columns(
+        [(h, h) for h in grade_cols],
+        [(h, h, _date_suffix(h)) for h in headers if _is_date_column(h)],
+    )
 
     for row in reader:
         extra = row.pop(None, None)
@@ -220,6 +334,8 @@ def _ler_csv_content(content: str, logger: Optional[LogFn] = None) -> List[Regis
             nota = _to_float(raw)
             if nota is None:
                 continue
+            data_h = date_map.get(col_h)
+            data_realizacao = _format_data_realizacao(_csv_cell(row, data_h)) if data_h else ""
             registros.append(RegistroNota(
                 escola=_csv_cell(row, escola_col).strip() or "Nao informado",
                 turno=_csv_cell(row, turno_col).strip() or "Nao informado",
@@ -228,6 +344,7 @@ def _ler_csv_content(content: str, logger: Optional[LogFn] = None) -> List[Regis
                 aluno=nome,
                 atividade=atividade,
                 nota=nota,
+                data_realizacao=data_realizacao,
             ))
 
     if logger:

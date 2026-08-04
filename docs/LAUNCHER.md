@@ -103,7 +103,14 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
-- **v1.4.8** — lançamento de notas no SGE: `_select_activity` passou a procurar o
+- **v1.4.9** — leitor de planilhas (Excel/CSV/Google Sheets/Google Drive): a coluna
+  `Data realização N` agora é lida e associada à atividade correspondente
+  (`data_realizacao` no registro), permitindo que a data aplicada no SGE seja a
+  real (antes usava a data de hoje). Colunas de metadados (`Escola`, `Turno`,
+  `Turma`, `Trimestre`) deixaram de ser contadas como atividade. O painel agora
+  valida a data do SGE contra a da planilha (pula bloco se divergirem, como o CLI
+  já fazia) e informa a data ao salvar (`_confirm_save`). Testes novos em
+  `tests/test_leitor_datas.py`.
   `GRIDAGENDA` em todos os frames (página principal + iframes). A tela de avaliação
   abre em iframe e o grid não era encontrado no frame principal, resultando em
   "Atividade não encontrada no SGE / GRIDAGENDA não encontrado" e 0 notas lançadas.

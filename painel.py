@@ -1332,8 +1332,9 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                             escola, turno, turma, trimestre, atividade = key
                             log_progress(f"[{idx}/{len(grouped)}] {escola} | {turno} | {turma} | {trimestre} | {atividade}")
 
-                            from lancar_notas_sge import _date_diff_days
+                            from lancar_notas_sge import _date_diff_days, _dates_match
                             datas_bloco = [r.data_realizacao for r in itens if r.data_realizacao]
+                            data_mais_comum = ""
                             if datas_bloco:
                                 from collections import Counter
                                 data_mais_comum = Counter(datas_bloco).most_common(1)[0][0]
@@ -1342,6 +1343,12 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                                     log_progress(f"[DATA] Atividade com data futura ({data_mais_comum}). Pulando bloco.")
                                     falhas += len(itens)
                                     continue
+                                elif diff_dias is not None and diff_dias < -90:
+                                    log_progress(f"[DATA] Atencao: atividade com data antiga ({data_mais_comum}). Prosseguindo...")
+                                elif diff_dias is not None:
+                                    log_progress(f"[DATA] Data da atividade: {data_mais_comum} ({abs(diff_dias)} dia(s) atras)")
+                            else:
+                                log_progress("[DATA] Nenhuma data de realizacao definida na planilha para esta atividade.")
 
                             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
                             _select_context(page, contexto, logger=log_progress)
@@ -1352,6 +1359,15 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                                 log_progress(f"  [AVISO] Atividade '{atividade}' nao encontrada no SGE. Pulando bloco.")
                                 falhas += len(itens)
                                 continue
+
+                            if data_sge and data_mais_comum and not _dates_match(data_sge, data_mais_comum):
+                                log_progress(f"  [DATA] Validacao falhou: SGE {data_sge} ≠ planilha {data_mais_comum}. Pulando bloco.")
+                                falhas += len(itens)
+                                continue
+                            if data_sge and data_mais_comum:
+                                log_progress(f"  [DATA] Datas conferem: SGE {data_sge} = planilha {data_mais_comum}")
+                            elif not data_sge and data_mais_comum:
+                                log_progress(f"  [DATA] Data da atividade nao encontrada no SGE. Prosseguindo sem validacao de data.")
 
                             from lancar_notas_sge import _COLUNA_POR_POSICAO
                             coluna_sge = _COLUNA_POR_POSICAO.get(posicao_grid, "")
@@ -1382,7 +1398,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                                     ausentes_count += 1
 
                             if novos > 0:
-                                _confirm_save(page, logger=log_progress)
+                                _confirm_save(page, logger=log_progress, data_realizacao=data_mais_comum)
 
                         ctx.close()
                         browser.close()

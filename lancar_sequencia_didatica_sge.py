@@ -72,6 +72,7 @@ from lancar_notas_sge import (
     _iter_scopes,
     _list_children,
     _login_sge,
+    _match_turma,
     _normalize,
     _normalize_cpf_for_sge,
     _normalize_notion_id,
@@ -651,9 +652,7 @@ def _filter_contexts(
         if turno and _normalize(turno) not in {"", "todos"} and _normalize(ctx.turno) != _normalize(turno):
             continue
         if turma and _normalize(turma) not in {"", "todos"}:
-            ctx_turma_norm = _loose_turma(ctx.turma)
-            turma_norm = _loose_turma(turma)
-            if ctx_turma_norm != turma_norm:
+            if not _match_turma(turma, ctx.turma):
                 continue
         if trimestre and ctx.trimestre and _normalize(ctx.trimestre) != _normalize(trimestre):
             continue

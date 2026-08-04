@@ -1313,6 +1313,30 @@ def _is_probably_grade_column(col_name: str) -> bool:
     return True
 
 
+def _match_turma(expected: str, value: str) -> bool:
+    """Compara ano/turma de forma tolerante.
+
+    A database do Notion eh organizada por ano (ex.: '9o Ano') enquanto o filtro
+    pode incluir o numero da turma (ex.: '9o ano1'). A comparacao bate quando o
+    ano coincide e, se ambos informarem numero de turma, eles devem ser iguais.
+    """
+    exp = _normalize(expected)
+    val = _normalize(value)
+    if not exp:
+        return True
+    if exp in val:
+        return True
+    exp_ano = _extract_first_number(exp)
+    val_ano = _extract_first_number(val)
+    if not exp_ano or exp_ano != val_ano:
+        return False
+    exp_turma = _extract_turma_number(exp)
+    val_turma = _extract_turma_number(val)
+    if exp_turma and val_turma and exp_turma != val_turma:
+        return False
+    return True
+
+
 def _context_matches_filter(context: ContextoTurma, filtro: Optional[Dict[str, str]]) -> bool:
     if not filtro:
         return True
@@ -1321,6 +1345,8 @@ def _context_matches_filter(context: ContextoTurma, filtro: Optional[Dict[str, s
         expected = (filtro.get(key) or "").strip()
         if not expected:
             return True
+        if key == "turma":
+            return _match_turma(expected, value)
         return _normalize(expected) in _normalize(value)
 
     return (
@@ -1626,7 +1652,10 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
         expected = filtro.get(key)
         if not expected:
             return True
-        result = _normalize(expected) in _normalize(value)
+        if key == "turma":
+            result = _match_turma(expected, value)
+        else:
+            result = _normalize(expected) in _normalize(value)
         if not result:
             _log(logger, f"[FILTRO] Descartado por '{key}': esperado='{expected}', valor='{value}'")
         return result

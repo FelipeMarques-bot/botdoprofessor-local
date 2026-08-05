@@ -38,6 +38,8 @@ python -m PyInstaller ^
     --add-data "painel.py;." ^
     --add-data "autofix.py;." ^
     --add-data "lancar_notas_sge.py;." ^
+    --add-data "lancar_professor_online.py;." ^
+    --add-data "aprender_novo_portal.py;." ^
     --add-data "lancar_sequencia_didatica_sge.py;." ^
     --add-data "leitor_planilhas.py;." ^
     --add-data "ai_assist.py;." ^

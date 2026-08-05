@@ -1,6 +1,7 @@
 from typing import Optional
 from bot.core.portal_adapter import PortalAdapter
 from bot.core.sge_adapter import SGEAdapter
+from bot.core.professor_online_adapter import ProfessorOnlineAdapter
 from bot.core.custom_adapter import CustomPortalAdapter
 from bot.core.portal_discovery import PortalDiscovery
 from bot.core.portal_memory import PortalMemory
@@ -9,6 +10,7 @@ import json
 
 KNOWN_PORTALS = {
     "sge": SGEAdapter,
+    "professor_online": ProfessorOnlineAdapter,
 }
 
 MEMORY_DIR = Path.home() / ".bot_local" / "portal_memory"
@@ -26,6 +28,9 @@ def get_adapter(portal: str, config: dict = None) -> PortalAdapter:
     if key in KNOWN_PORTALS:
         adapter_class = KNOWN_PORTALS[key]
         if key == "sge":
+            url = (config or {}).get("url", "")
+            return adapter_class(base_url=url)
+        if key == "professor_online":
             url = (config or {}).get("url", "")
             return adapter_class(base_url=url)
         return adapter_class()

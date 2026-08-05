@@ -3,6 +3,7 @@ from bot.core.portal_adapter import (
     LessonPlan, LessonPlanResult,
 )
 from bot.core.sge_adapter import SGEAdapter
+from bot.core.professor_online_adapter import ProfessorOnlineAdapter
 from bot.core.custom_adapter import CustomPortalAdapter
 from bot.core.engine import BotEngine
 from bot.core.portal_memory import PortalMemory
@@ -16,6 +17,7 @@ __all__ = [
     "LessonPlan",
     "LessonPlanResult",
     "SGEAdapter",
+    "ProfessorOnlineAdapter",
     "CustomPortalAdapter",
     "BotEngine",
     "PortalMemory",

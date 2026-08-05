@@ -526,21 +526,80 @@ with st.sidebar:
     st.markdown("### Configuracoes")
 
     with st.expander("Portal do Professor", expanded=True):
-        sge_url = st.text_input(
+        portal_options = ["SGE", "Professor Online", "Novo Portal"]
+        portal_index = 0
+        saved_portal = st.session_state.get("portal_selecionado", "SGE")
+        if saved_portal in portal_options:
+            portal_index = portal_options.index(saved_portal)
+        portal_selecionado = st.selectbox(
+            "Portal",
+            options=portal_options,
+            index=portal_index,
+            key="portal_selecionar",
+            help="SGE ou Professor Online: bot ja conhece o acesso. Novo Portal: a IA local aprende o acesso."
+        )
+        st.session_state.portal_selecionado = portal_selecionado
+
+        if portal_selecionado == "Professor Online":
+            portal_default_url = "https://professoronline.sed.sc.gov.br/CadLoginProfCaptchaCopy1.aspx"
+            portal_url_key = "po_url_input"
+            portal_cpf_key = "po_cpf_input"
+            portal_senha_key = "po_senha_input"
+            portal_env = os.environ.get("PO_URL", os.environ.get("PO_BASE_URL", ""))
+        elif portal_selecionado == "Novo Portal":
+            portal_default_url = ""
+            portal_url_key = "np_url_input"
+            portal_cpf_key = "np_cpf_input"
+            portal_senha_key = "np_senha_input"
+            portal_env = os.environ.get("NP_URL", "")
+        else:
+            portal_default_url = "https://www.sge8147.com.br/hportalprofessor.aspx"
+            portal_url_key = "sge_url_input"
+            portal_cpf_key = "sge_cpf_input"
+            portal_senha_key = "sge_senha_input"
+            portal_env = carregar_env()
+
+        portal_url = st.text_input(
             "URL do Portal do Professor",
-            value=st.session_state.get("sge_url", carregar_env() or "https://www.sge8147.com.br/hportalprofessor.aspx"),
-            key="sge_url_input",
+            value=st.session_state.get("portal_url_value", portal_env or portal_default_url),
+            key=portal_url_key,
             placeholder="https://...",
         )
-        st.session_state.sge_url = sge_url
+        st.session_state.portal_url_value = portal_url
 
         col1, col2 = st.columns(2)
         with col1:
-            cpf = st.text_input("CPF", value=st.session_state.get("sge_cpf", ""), key="sge_cpf_input", type="password")
-            st.session_state.sge_cpf = cpf
+            cpf = st.text_input("CPF", value=st.session_state.get("portal_cpf_value", ""), key=portal_cpf_key, type="password")
+            st.session_state.portal_cpf_value = cpf
         with col2:
-            senha = st.text_input("Senha", value=st.session_state.get("sge_senha", ""), key="sge_senha_input", type="password")
-            st.session_state.sge_senha = senha
+            senha = st.text_input("Senha", value=st.session_state.get("portal_senha_value", ""), key=portal_senha_key, type="password")
+            st.session_state.portal_senha_value = senha
+
+        if portal_selecionado == "Novo Portal":
+            portal_nome = st.text_input(
+                "Nome do novo portal (opcional)",
+                value=st.session_state.get("portal_nome_value", ""),
+                key="np_nome_input",
+                help="Ex.: 'Prefeitura X', 'SGP Municipal'. Se vazio, o nome e derivado da URL.",
+            )
+            st.session_state.portal_nome_value = portal_nome
+            st.warning(
+                "Portal novo: o bot ainda nao conhece este acesso. "
+                "Marque **'Sim - Aprendizado'** na opcao **Assistencia IA** (abaixo, no painel principal) "
+                "antes de clicar em EXECUTAR. O navegador abrira visivel e voce fara o acesso "
+                "manualmente enquanto a IA local grava e aprende."
+            )
+
+        # Mantem compativeis com o fluxo existente (chaves SGE)
+        st.session_state.sge_url = portal_url
+        st.session_state.sge_cpf = cpf
+        st.session_state.sge_senha = senha
+        st.session_state.po_url = portal_url
+        st.session_state.po_cpf = cpf
+        st.session_state.po_senha = senha
+        st.session_state.np_url = portal_url
+        st.session_state.np_cpf = cpf
+        st.session_state.np_senha = senha
 
     with st.expander("API Keys", expanded=True):
         notion_token = st.text_input(
@@ -993,6 +1052,12 @@ with st.sidebar:
         key="ia_radio",
     )
 
+    if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal" and ia_opcao != "aprendizado":
+        st.error(
+            "Portal **Novo Portal**: e **obrigatorio** marcar **'Sim - Aprendizado'** aqui. "
+            "Assim a IA local grava seu acesso manual e ensina o bot a usar o novo portal."
+        )
+
     st.markdown("---")
     st.markdown("**Opcoes de execucao**")
 
@@ -1110,12 +1175,25 @@ st.markdown("---")
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
 
 with col_btn1:
-    pode_executar = (
-        st.session_state.get("sge_cpf", "")
-        and st.session_state.get("sge_senha", "")
-    )
+    portal_ativo = st.session_state.get("portal_selecionado", "SGE")
+    if portal_ativo == "Professor Online":
+        pode_executar = bool(
+            st.session_state.get("po_cpf", "")
+            and st.session_state.get("po_senha", "")
+        )
+    elif portal_ativo == "Novo Portal":
+        pode_executar = bool(
+            st.session_state.get("np_url", "")
+            and st.session_state.get("np_cpf", "")
+            and st.session_state.get("np_senha", "")
+        )
+    else:
+        pode_executar = bool(
+            st.session_state.get("sge_cpf", "")
+            and st.session_state.get("sge_senha", "")
+        )
     if not pode_executar:
-        st.warning("Preencha CPF e Senha do portal na barra lateral")
+        st.warning("Preencha URL, CPF e Senha do portal na barra lateral")
 
     executar_btn = st.button(
         "EXECUTAR LANCAMENTO",
@@ -1135,13 +1213,14 @@ with col_btn3:
 if ajuda_btn:
     st.markdown("### Como usar")
     st.markdown("""
-    1. **Portal do Professor**: Informe a URL, CPF e senha
-    2. **API Keys**: Cole o token do Notion e o ID da pagina raiz
-    3. **Origem**: Escolha de onde ler os dados (Notion, Excel, CSV, Google)
-    4. **Filtros**: Opcionais - para filtrar por escola/turma
-    5. **Modo Lote**: Marque para processar todas as escolas, turmas e trimestres automaticamente
-    6. **Dry-run**: Recomendado para testar antes do envio real
-    7. **Executar**: Clique no botao verde e acompanhe os logs
+    1. **Portal**: Escolha SGE, Professor Online ou Novo Portal
+    2. **Novo Portal**: informe URL, CPF e senha e marque **'Sim - Aprendizado'** na Assistencia IA. O navegador abre visivel, voce faz o acesso manualmente e a IA local aprende.
+    3. **API Keys**: Cole o token do Notion e o ID da pagina raiz
+    4. **Origem**: Escolha de onde ler os dados (Notion, Excel, CSV, Google)
+    5. **Filtros**: Opcionais - para filtrar por escola/turma
+    6. **Modo Lote**: Marque para processar todas as escolas, turmas e trimestres automaticamente
+    7. **Dry-run**: Recomendado para testar antes do envio real
+    8. **Executar**: Clique no botao verde e acompanhe os logs
     """)
 
 # === EXECUCAO ===
@@ -1219,9 +1298,18 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
     try:
         # Prepara variaveis de ambiente
         os.environ["HEADLESS"] = "1" if st.session_state.get("headless_mode", True) else "0"
-        os.environ["SGE_LOGIN_URL"] = st.session_state.sge_url
-        os.environ["SGE_CPF"] = st.session_state.sge_cpf
-        os.environ["SGE_SENHA"] = st.session_state.sge_senha
+        if st.session_state.get("portal_selecionado", "SGE") == "Professor Online":
+            os.environ["PO_BASE_URL"] = st.session_state.get("po_url", "")
+            os.environ["PO_CPF"] = st.session_state.get("po_cpf", "")
+            os.environ["PO_SENHA"] = st.session_state.get("po_senha", "")
+        elif st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
+            os.environ["NP_URL"] = st.session_state.get("np_url", "")
+            os.environ["NP_CPF"] = st.session_state.get("np_cpf", "")
+            os.environ["NP_SENHA"] = st.session_state.get("np_senha", "")
+        else:
+            os.environ["SGE_LOGIN_URL"] = st.session_state.sge_url
+            os.environ["SGE_CPF"] = st.session_state.sge_cpf
+            os.environ["SGE_SENHA"] = st.session_state.sge_senha
 
         if st.session_state.notion_token:
             os.environ["NOTION_TOKEN"] = st.session_state.notion_token
@@ -1283,9 +1371,39 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
             if not key_available:
                 log_progress(f"Aviso: API key para {ai_provider.upper()} nao fornecida. IA sera desabilitada.")
 
+        # ===== NOVO PORTAL: sessao de aprendizado do acesso =====
+        if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
+            if ia_opcao != "aprendizado":
+                log_progress("ERRO: Para ensinar um portal novo, marque a opcao 'Sim - Aprendizado' (Modo aprendizado) na Assistencia IA.")
+                st.error("Para o portal **Novo Portal**, marque **'Sim - Aprendizado'** na **Assistencia IA** antes de executar.")
+                st.session_state.resultado = {"ok": False, "steps": 0, "portal": "", "outdir": ""}
+                st.stop()
+
+            log_progress("Iniciando aprendizado do novo portal...")
+            log_progress("Navegador visivel: faca o acesso manualmente (login, turma, grade, salvar).")
+            log_progress("Cada tela sera gravada. Feche o navegador quando terminar.")
+            from aprender_novo_portal import executar_aprendizado
+
+            resultado = executar_aprendizado(
+                url=st.session_state.get("np_url", ""),
+                cpf=st.session_state.get("np_cpf", ""),
+                senha=st.session_state.get("np_senha", ""),
+                portal_name=st.session_state.get("portal_nome_value", ""),
+                outdir=os.environ.get("NP_OUTDIR", "artifacts/novo-portal"),
+                max_minutes=60,
+                logger=log_progress,
+            )
+            st.session_state.resultado = resultado
+            if resultado.get("ok"):
+                log_progress(f"[APRENDIZADO-OK] Portal '{resultado['portal']}' aprendido com {resultado.get('steps', 0)} passo(s).")
+                log_progress(f"Plano salvo em: {resultado.get('plan_path', '')}")
+            else:
+                log_progress(f"[APRENDIZADO] Concluido com {resultado.get('steps', 0)} passo(s) gravados, mas o plano nao foi gerado.")
+            st.stop()
+
         # Determina tipo de execucao
         if st.session_state.tipo == "notas":
-            if st.session_state.fonte == "notion":
+            if st.session_state.fonte == "notion" and st.session_state.get("portal_selecionado", "SGE") != "Professor Online":
                 log_progress("Carregando dados do Notion...")
                 from lancar_notas_sge import executar_lancamento
 
@@ -1417,7 +1535,37 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                     st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
                     st.stop()
 
-                if dry_run:
+                portal_ativo = st.session_state.get("portal_selecionado", "SGE")
+
+                if portal_ativo == "Professor Online" and fonte == "notion":
+                    log_progress("ERRO: Portal Professor Online nao usa fonte Notion. Use Excel/CSV/Google.")
+                    st.error("Portal Professor Online: use Excel, CSV ou Google Sheets como origem.")
+                    st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                    st.stop()
+
+                if portal_ativo == "Professor Online":
+                    log_progress("Portal Professor Online selecionado. Iniciando lancamento...")
+                    from lancar_professor_online import executar_lancamento as po_executar
+                    resultado = po_executar(
+                        fonte=fonte,
+                        fonte_path=fonte_path,
+                        filtro=None,
+                        logger=log_progress,
+                        dry_run=dry_run,
+                        cpf=st.session_state.get("po_cpf", ""),
+                        senha=st.session_state.get("po_senha", ""),
+                        base_url=st.session_state.get("po_url", ""),
+                        registros=registros,
+                    )
+                    st.session_state.resultado = resultado
+                    log_progress(
+                        f"Concluido! Notas: {resultado['notas']}, "
+                        f"Preenchidas: {resultado['notas_preenchidas']}, "
+                        f"Ausentes: {resultado.get('ausentes', 0)}, "
+                        f"Falhas: {resultado['falhas']}"
+                    )
+
+                elif dry_run:
                     log_progress("[DRY-RUN] Nenhum dado sera enviado ao SGE.")
                     from collections import Counter
                     contextos = set((r.escola, r.turno, r.turma, r.trimestre) for r in registros)

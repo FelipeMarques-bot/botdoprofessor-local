@@ -5,7 +5,7 @@ a = Analysis(
     ['launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('painel.py', '.'), ('autofix.py', '.'), ('lancar_notas_sge.py', '.'), ('lancar_sequencia_didatica_sge.py', '.'), ('leitor_planilhas.py', '.'), ('ai_assist.py', '.'), ('status_store.py', '.'), ('.env.example', '.')],
+    datas=[('painel.py', '.'), ('autofix.py', '.'), ('lancar_notas_sge.py', '.'), ('lancar_sequencia_didatica_sge.py', '.'), ('leitor_planilhas.py', '.'), ('ai_assist.py', '.'), ('status_store.py', '.'), ('lancar_chamada_sge.py', '.'), ('bot', 'bot'), ('.env.example', '.')],
     hiddenimports=['streamlit', 'playwright', 'playwright.sync_api', 'openpyxl', 'pandas', 'google.genai', 'openai', 'anthropic', 'requests', 'dotenv'],
     hookspath=[],
     hooksconfig={},

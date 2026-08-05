@@ -311,8 +311,19 @@ def get_bundled_dir():
 APP_FILES = [
     "painel.py", "autofix.py", "lancar_notas_sge.py",
     "lancar_sequencia_didatica_sge.py", "leitor_planilhas.py",
-    "ai_assist.py", "status_store.py", ".env.example",
+    "ai_assist.py", "status_store.py", "lancar_chamada_sge.py", "bot",
+    ".env.example",
 ]
+
+
+def _newest_mtime(path):
+    if path.is_file():
+        return path.stat().st_mtime
+    newest = 0.0
+    for p in path.rglob("*"):
+        if p.is_file():
+            newest = max(newest, p.stat().st_mtime)
+    return newest
 
 
 def get_painel_path():
@@ -325,9 +336,14 @@ def get_painel_path():
             for name in APP_FILES:
                 src = bundled / name
                 dst = app_dir / name
-                if src.exists() and (
-                    not dst.exists() or src.stat().st_mtime != dst.stat().st_mtime
-                ):
+                if not src.exists():
+                    continue
+                if src.is_dir():
+                    if not dst.exists() or _newest_mtime(src) != _newest_mtime(dst):
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                        copied += 1
+                    continue
+                if not dst.exists() or src.stat().st_mtime != dst.stat().st_mtime:
                     shutil.copy2(src, dst)
                     copied += 1
             if copied:

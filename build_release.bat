@@ -43,7 +43,9 @@ python -m PyInstaller ^
     --add-data "ai_assist.py;." ^
     --add-data "status_store.py;." ^
     --add-data "lancar_chamada_sge.py;." ^
+    --add-data "interpretar_pedido.py;." ^
     --add-data "bot;bot" ^
+    --add-data "docs;docs" ^
     --add-data ".env.example;." ^
     --hidden-import "streamlit" ^
     --hidden-import "playwright" ^

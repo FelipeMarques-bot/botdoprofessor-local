@@ -291,6 +291,52 @@ def carregar_env():
     return ""
 
 
+def _aplicar_pedido_ia(res):
+    """Preenche os campos do painel com o plano interpretado pela IA Primeiro."""
+    tipo = res.get("tipo")
+    if tipo in ("notas", "chamada", "sequencia"):
+        st.session_state["tipo_radio"] = tipo
+        st.session_state["tipo"] = tipo
+    fonte = res.get("fonte")
+    if fonte in ("notion", "imagem", "excel", "csv", "google_sheets", "google_drive"):
+        st.session_state["fonte_select"] = fonte
+        st.session_state["fonte"] = fonte
+    if res.get("escola"):
+        st.session_state["escola_input"] = res["escola"]
+        st.session_state["escola"] = res["escola"]
+    if res.get("turma"):
+        st.session_state["turma_input"] = res["turma"]
+        st.session_state["turma"] = res["turma"]
+    if res.get("turno") in ("", "Matutino", "Vespertino", "Noturno"):
+        st.session_state["turno_select"] = res["turno"]
+    if res.get("trimestre") in ("", "1o Trimestre", "2o Trimestre", "3o Trimestre"):
+        st.session_state["trimestre_select"] = res["trimestre"]
+    if res.get("atividade"):
+        st.session_state["avaliacao_atalho_input"] = res["atividade"]
+        st.session_state["avaliacao_nome"] = res["atividade"]
+    if res.get("data_realizacao"):
+        st.session_state["avaliacao_data_atalho_input"] = res["data_realizacao"]
+        st.session_state["avaliacao_data"] = res["data_realizacao"]
+    if res.get("chamada_dia"):
+        st.session_state["chamada_dia_input"] = res["chamada_dia"]
+        st.session_state["chamada_dia"] = res["chamada_dia"]
+    if res.get("chamada_disciplina"):
+        st.session_state["chamada_disciplina_input"] = res["chamada_disciplina"]
+        st.session_state["chamada_disciplina"] = res["chamada_disciplina"]
+    if res.get("lote") is not None:
+        st.session_state["lote_check"] = bool(res["lote"])
+        st.session_state["lote"] = bool(res["lote"])
+
+
+_PEDIDO_IA_LIMPAR_KEYS = [
+    "pedido_ia_resultado", "pedido_ia_resumo",
+    "tipo_radio", "fonte_select", "escola_input", "turma_input",
+    "turno_select", "trimestre_select", "avaliacao_atalho_input",
+    "avaliacao_data_atalho_input", "chamada_dia_input", "chamada_disciplina_input",
+    "lote_check",
+]
+
+
 # Carrega config salva para preencher campos automaticamente
 config_salva = carregar_config()
 for k, v in config_salva.items():
@@ -1007,6 +1053,58 @@ st.markdown(
     '<div class="sub-header">Lance notas do Notion/planilhas no portal do professor sem precisar de terminal</div>',
     unsafe_allow_html=True,
 )
+
+# === IA PRIMEIRO: interpreta o pedido antes do bot agir ===
+st.markdown("---")
+pedido_ia_resultado = st.session_state.get("pedido_ia_resultado")
+with st.expander("🤖 IA Primeiro — descreva o que quer fazer", expanded=not bool(pedido_ia_resultado)):
+    st.markdown(
+        "Escreva **com as suas palavras** o que o bot deve fazer. A IA entende "
+        "e **preenche os campos sozinha** — depois e so conferir e executar."
+    )
+    pedido_ia_texto = st.text_area(
+        "O que voce quer que o bot faca?",
+        key="pedido_ia_input",
+        placeholder=(
+            "Ex.: Lancar a chamada de hoje do 7o ano, turno da tarde. "
+            "ou: Lancar as notas da Prova 2 da turma 6o Ano A, 2o trimestre."
+        ),
+        height=80,
+    )
+    if st.button("Deixar a IA preparar tudo", key="pedido_ia_btn", type="secondary", use_container_width=True):
+        if not pedido_ia_texto.strip():
+            st.warning("Digite primeiro o que voce quer que o bot faca.")
+        else:
+            try:
+                os.environ.setdefault("AI_PROVIDER", "local")
+                from interpretar_pedido import interpretar_pedido
+
+                with st.spinner("IA Primeiro interpretando o pedido..."):
+                    plano = interpretar_pedido(pedido_ia_texto, logger=log)
+                if "error" in plano:
+                    st.error(f"Nao foi possivel interpretar o pedido: {plano['error']}")
+                else:
+                    _aplicar_pedido_ia(plano)
+                    st.session_state["pedido_ia_resultado"] = plano
+                    st.session_state["pedido_ia_resumo"] = plano.get("resumo", "")
+                    st.rerun()
+            except Exception as exc:
+                st.error(f"Erro ao interpretar o pedido com a IA: {exc}")
+
+if pedido_ia_resultado:
+    st.success(f"**IA Primeiro entendeu:** {pedido_ia_resultado.get('resumo', '')}")
+    if pedido_ia_resultado.get("duvidas"):
+        st.warning("**Confirme com o professor:** " + " ; ".join(pedido_ia_resultado["duvidas"]))
+    if pedido_ia_resultado.get("procedimentos"):
+        with st.expander("Procedimentos que o bot vai executar"):
+            for i, p in enumerate(pedido_ia_resultado["procedimentos"], 1):
+                st.markdown(f"{i}. {p}")
+    st.caption("Confira os campos preenchidos acima e clique em **EXECUTAR LANCAMENTO**.")
+    if st.button("Limpar preenchimento da IA", key="pedido_ia_limpar"):
+        for k in _PEDIDO_IA_LIMPAR_KEYS:
+            st.session_state.pop(k, None)
+        st.rerun()
+st.markdown("---")
 
 # === BOTAO PRINCIPAL ===
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])

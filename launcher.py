@@ -311,7 +311,8 @@ def get_bundled_dir():
 APP_FILES = [
     "painel.py", "autofix.py", "lancar_notas_sge.py",
     "lancar_sequencia_didatica_sge.py", "leitor_planilhas.py",
-    "ai_assist.py", "status_store.py", "lancar_chamada_sge.py", "bot",
+    "ai_assist.py", "status_store.py", "lancar_chamada_sge.py",
+    "interpretar_pedido.py", "bot", "docs",
     ".env.example",
 ]
 

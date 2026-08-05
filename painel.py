@@ -720,7 +720,17 @@ with st.sidebar:
             )
 
     with st.expander("Filtros"):
-        tipo = st.radio("Tipo de lancamento:", options=["notas", "sequencia"], horizontal=True, key="tipo_radio")
+        tipo = st.radio(
+            "Tipo de lancamento:",
+            options=["notas", "chamada", "sequencia"],
+            format_func=lambda x: {
+                "notas": "Notas",
+                "chamada": "Chamada (foto do diario)",
+                "sequencia": "Sequência Didática",
+            }.get(x, x),
+            horizontal=True,
+            key="tipo_radio",
+        )
         st.session_state.tipo = tipo
 
         col_f1, col_f2 = st.columns(2)
@@ -824,6 +834,46 @@ with st.sidebar:
                         key="seq_periodo_fim",
                         placeholder="31/03/2026",
                     )
+
+        if tipo == "chamada":
+            st.markdown("---")
+            st.markdown("**Chamada diaria por foto do diario de classe**")
+            st.caption(
+                "Envie a foto da chamada do dia. A IA le a grade (aluno x dia), o bot "
+                "compara com o que ja esta lancado no SGE e NAO repreenche dias/duplicados."
+            )
+            foto_chamada = st.file_uploader(
+                "Foto do diario de classe (chamada do dia)",
+                type=["jpg", "jpeg", "png", "webp"],
+                key="chamada_foto_upload",
+            )
+            if foto_chamada:
+                tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+                tmp_dir.mkdir(exist_ok=True)
+                tmp_path = tmp_dir / foto_chamada.name
+                with open(tmp_path, "wb") as f:
+                    f.write(foto_chamada.getbuffer())
+                st.session_state["chamada_foto_path"] = str(tmp_path)
+                st.success(f"Foto salva: {foto_chamada.name}")
+            else:
+                st.session_state.pop("chamada_foto_path", None)
+
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                chamada_dia = st.text_input(
+                    "Dia da chamada (dd/mm/aaaa)",
+                    key="chamada_dia_input",
+                    placeholder="05/08/2026",
+                    help="Data do dia da chamada no diario. Usada para abrir o dia no SGE.",
+                )
+                st.session_state.chamada_dia = chamada_dia
+            with col_c2:
+                chamada_disciplina = st.text_input(
+                    "Disciplina (opcional, ex: ENSINO RELIGIOSO)",
+                    key="chamada_disciplina_input",
+                    help="Se deixar vazio, o bot usa a disciplina da pagina aberta no SGE.",
+                )
+                st.session_state.chamada_disciplina = chamada_disciplina
 
         if tipo == "notas":
             st.markdown("---")
@@ -1413,6 +1463,62 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         "falhas": falhas,
                     }
                     log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas}")
+
+        elif st.session_state.tipo == "chamada":
+            from lancar_chamada_sge import executar_chamada as executar_chamada_sge
+
+            foto_path = st.session_state.get("chamada_foto_path", "")
+            if not foto_path:
+                log_progress("ERRO: Nenhuma foto do diario selecionada.")
+                st.error("Envie a foto da chamada do dia na seção 'Filtros' antes de executar.")
+                st.session_state.resultado = {"success": False, "mensagem": "Sem foto", "plano": [], "resumo": {}, "nao_encontrados": []}
+                st.stop()
+
+            dia_input = st.session_state.get("chamada_dia", "").strip()
+            if not dia_input:
+                log_progress("ERRO: Informe o dia da chamada (dd/mm/aaaa).")
+                st.error("Informe o **dia da chamada** no formato dd/mm/aaaa antes de executar.")
+                st.session_state.resultado = {"success": False, "mensagem": "Sem dia", "plano": [], "resumo": {}, "nao_encontrados": []}
+                st.stop()
+
+            m_data = re.search(r"(\d{2})[/\-](\d{2})[/\-](\d{4})", dia_input)
+            if not m_data:
+                log_progress(f"ERRO: Dia '{dia_input}' em formato invalido. Use dd/mm/aaaa.")
+                st.error(f"Dia '{dia_input}' em formato invalido. Use dd/mm/aaaa (ex.: 05/08/2026).")
+                st.session_state.resultado = {"success": False, "mensagem": "Data invalida", "plano": [], "resumo": {}, "nao_encontrados": []}
+                st.stop()
+            dia_sge = f"{m_data.group(3)}/{m_data.group(2)}/{m_data.group(1)}"
+
+            log_progress(f"[CHAMADA] Dia: {dia_sge} | Escola: {st.session_state.get('escola', '') or 'todas'}")
+            try:
+                resultado = executar_chamada_sge(
+                    filtro={
+                        "escola": st.session_state.get("escola", ""),
+                        "turno": st.session_state.get("turno", ""),
+                        "turma": st.session_state.get("turma", ""),
+                        "disciplina": st.session_state.get("chamada_disciplina", ""),
+                        "dia": dia_sge,
+                    },
+                    foto_path=foto_path,
+                    logger=log_progress,
+                    dry_run=dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log_progress(f"[CHAMADA] ERRO: {exc}")
+                st.error(f"Falha no lancamento da chamada: {exc}")
+                st.session_state.resultado = {"success": False, "mensagem": str(exc), "plano": [], "resumo": {}, "nao_encontrados": []}
+                st.stop()
+
+            st.session_state.resultado = resultado
+            resumo = resultado.get("resumo", {})
+            log_progress(
+                f"[CHAMADA] Concluido! {resumo.get('presentes', 0)} presentes, "
+                f"{resumo.get('faltas', 0)} falta(s), {resumo.get('ja_lancados', 0)} ja lancado(s)."
+            )
+            if resultado.get("nao_encontrados"):
+                log_progress(f"[CHAMADA] Sem match na grade: {', '.join(resultado['nao_encontrados'])}")
+            if dry_run:
+                log_progress("[CHAMADA] Dry-run: nada foi enviado ao SGE. Confira o plano antes de desmarcar.")
 
         elif st.session_state.tipo == "sequencia":
             from lancar_sequencia_didatica_sge import executar_lancamento_sequencia, SequenciaRegistro

@@ -16,6 +16,7 @@ from bot.payment.routes import payment_bp, webhook_bp
 from bot.api.lesson_plan_routes import lesson_plan_bp
 from bot.api.admin_payments import admin_payments_bp
 from bot.api.image_grades_routes import image_grades_bp
+from bot.api.chamada_routes import chamada_bp
 from bot.security.auth import require_auth, require_permission
 from bot.security.errors import register_error_handlers
 from bot.ops.monitoring import BackupManager, HealthChecker
@@ -44,6 +45,7 @@ def create_app():
     app.register_blueprint(lesson_plan_bp)
     app.register_blueprint(admin_payments_bp)
     app.register_blueprint(image_grades_bp)
+    app.register_blueprint(chamada_bp)
 
     @app.route("/api/health")
     def health():

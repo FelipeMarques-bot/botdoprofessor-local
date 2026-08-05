@@ -791,6 +791,45 @@ Retorne APENAS um JSON array: [{"aluno": "...", "nota": "..."}]
 Se realmente nao for possivel ler nada, retorne [].
 """
 
+EXTRAIR_CHAMADA_IMAGEM_PROMPT = """\
+Voce e um assistente de leitura de diarios de classe. Analise a foto do diario
+e extraia a CHAMADA (frequencia) de UM dia especifico da turma.
+
+A foto e uma grade: cada linha e um aluno; cada coluna e um dia da semana.
+Identifique a coluna do dia com chamada mais preenchida ou a unica coluna
+marcada e leia, para CADA aluno da linha, o simbolo da marcação.
+
+Legenda comum nos diarios (flexivel):
+- '.', 'C', 'v', espaco em branco ou traco = PRESENTE
+- 'F', 'x', 'A' = FALTA (injustificada)
+- 'J', 'FJ', 'F.J.', 'F Just.' = FALTA JUSTIFICADA
+Se uma coluna tiver numero (ex.: 'F2'), o aluno faltou e o numero e a
+quantidade de faltas. Anote em 'faltas'.
+
+Regras:
+- Copie o nome do aluno EXATAMENTE como esta na linha (mantendo abreviacoes).
+- Se uma linha estiver ilegivel, OMITA o aluno.
+- Ignore cabecalhos, rodapes, totais e nome da disciplina.
+- Se a imagem mostrar falta justificada e houver anotacao de motivo visivel
+  (médica/atestado, obito, suspensao, atividade extra classe), preencha 'motivo'.
+- Nao invente nomes nem marcacoes.
+
+Responda APENAS com um JSON, sem texto antes ou depois, no formato:
+{"data":"DD/MM/AAAA","alunos":[{"aluno":"Nome Completo","situacao":"presente|falta|falta_justificada","faltas":0,"motivo":"atestado_medico|obito|suspensao|falta_justificada|atividade_extra_classe","descricao":""}]}
+Se nao houver nada para extrair, retorne {"alunos":[]}.
+"""
+
+EXTRAIR_CHAMADA_IMAGEM_REFINAR = """\
+A leitura anterior desta foto de diario nao retornou chamada valida.
+Observe com calma TODAS as linhas da grade e a coluna do dia marcado.
+Para cada aluno informe: situacao (presente, falta ou falta_justificada),
+quantidade de faltas quando houver numero, e o motivo quando justificada.
+
+Retorne APENAS o JSON:
+{"data":"DD/MM/AAAA","alunos":[{"aluno":"...","situacao":"...","faltas":0,"motivo":"","descricao":""}]}
+Se nao for possivel ler nada, retorne {"alunos":[]}.
+"""
+
 
 def _refresh_ai_env() -> None:
     """Sincroniza as constantes de IA com o ambiente em tempo de execucao.
@@ -1014,6 +1053,164 @@ def extrair_notas_imagem(
             break
         registros = _extract_grade_records(resposta)
         _log(logger, f"[AI-Extracao] Refinamento: {len(registros)} aluno(s) validos.")
+
+    registros.sort(key=lambda r: _alphabetical_key(r.get("aluno", "")))
+    return registros
+
+
+CHAMADA_SITUACOES = {"presente", "falta", "falta_justificada"}
+
+CHAMADA_MOTIVOS = (
+    "atestado_medico", "obito", "suspensao",
+    "falta_justificada", "atividade_extra_classe",
+)
+
+
+def _normalize_chamada_situacao(value: Any) -> str:
+    """Normaliza o simbolo/rotulo da chamada para uma das situacoes suportadas."""
+    raw = (value or "").strip().lower()
+    if raw in ("presente", "presenca", "present", "compareceu", "presente."):
+        return "presente"
+    if raw in ("falta_justificada", "falta justificada", "justificada",
+               "faltajustificada", "fj", "f.j.", "fjust", "justificativo"):
+        return "falta_justificada"
+    if raw in ("falta", "ausente", "faltou", "ausencia", "faltas"):
+        return "falta"
+    norm = unicodedata.normalize("NFD", raw)
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    if norm in (".", "c", "v", "-", ""):
+        return "presente"
+    if norm in ("f", "x", "a", "aus", "falt", "f1", "f2", "f3", "f4", "f5"):
+        return "falta"
+    if norm in ("j", "fj", "f.j.", "fjust", "fjustificada"):
+        return "falta_justificada"
+    return ""
+
+
+def _normalize_chamada_motivo(value: Any) -> str:
+    """Mapeia a anotacao de motivo visivel para a chave de MOTIVO_JUSTIFICADO."""
+    raw = (value or "").strip().lower()
+    norm = unicodedata.normalize("NFD", raw)
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    if not norm:
+        return ""
+    if any(k in norm for k in ("atestado medico", "atestadomedico", "medico", "atestado")):
+        return "atestado_medico"
+    if "obito" in norm:
+        return "obito"
+    if "suspensao" in norm or "suspens" in norm:
+        return "suspensao"
+    if any(k in norm for k in ("atividade extra", "extra classe", "extraclasse", "atividadeextra")):
+        return "atividade_extra_classe"
+    if any(k in norm for k in ("justificada", "justificativ", "justific")):
+        return "falta_justificada"
+    return ""
+
+
+def _extract_chamada_records(text: str) -> List[Dict[str, str]]:
+    """Converte a resposta da IA (chamada) em lista valida de {aluno, situacao, ...}."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    raw = raw.strip()
+    if not raw:
+        return []
+
+    data: Any = None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+    if data is None:
+        arr = re.search(r"\[[\s\S]*\]", raw)
+        if arr:
+            try:
+                data = json.loads(arr.group(0))
+            except json.JSONDecodeError:
+                data = None
+    if data is None:
+        data = _safe_json_parse(raw, None)
+    if data is None:
+        return []
+
+    items = data if isinstance(data, list) else (
+        data.get("alunos") if isinstance(data, dict) else None
+    )
+    if not isinstance(items, list):
+        return []
+
+    records: List[Dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aluno = str(item.get("aluno", "") or "").strip()
+        if not aluno:
+            continue
+        situacao = _normalize_chamada_situacao(item.get("situacao"))
+        if situacao not in CHAMADA_SITUACOES:
+            continue
+        faltas = 0
+        if situacao != "presente":
+            try:
+                faltas = max(1, int(str(item.get("faltas") or "1").strip() or 1))
+            except (TypeError, ValueError):
+                faltas = 1
+        motivo = ""
+        if situacao == "falta_justificada":
+            motivo = _normalize_chamada_motivo(item.get("motivo"))
+        descricao = str(item.get("descricao", "") or "").strip()
+        records.append({
+            "aluno": aluno,
+            "situacao": situacao,
+            "faltas": str(faltas),
+            "motivo": motivo,
+            "descricao": descricao,
+        })
+    return records
+
+
+def extrair_chamada_imagem(
+    image_bytes: bytes,
+    logger: Optional[LogFn] = None,
+    retries: int = 1,
+) -> List[Dict[str, str]]:
+    """Extrai a chamada (frequencia de um dia) de uma foto do diario de classe.
+
+    Mesmo pipeline de extrair_notas_imagem: prompt detalhado, fallback entre
+    provedores, parsing tolerante e retry com refinamento.
+
+    Returns:
+        Lista de dicts {"aluno", "situacao", "faltas", "motivo", "descricao"}.
+    """
+    if not image_bytes:
+        return []
+
+    _log(logger, f"[AI-Chamada] Enviando imagem ({len(image_bytes)} bytes) para extracao de chamada...")
+
+    try:
+        resposta = _call_ai_with_fallback(EXTRAIR_CHAMADA_IMAGEM_PROMPT, image_bytes, logger=logger)
+    except AIAssistError as exc:
+        _log(logger, f"[AI-Chamada] ERRO: {exc}")
+        return []
+
+    _log(logger, f"[AI-Chamada] Resposta bruta ({len(resposta)} chars): {resposta[:300]}")
+    registros = _extract_chamada_records(resposta)
+    _log(logger, f"[AI-Chamada] 1a leitura: {len(registros)} aluno(s) validos.")
+
+    for tentativa in range(max(0, retries)):
+        if registros:
+            break
+        _log(logger, f"[AI-Chamada] Leitura vazia/invalida. Refinando ({(tentativa + 1)}/{retries})...")
+        try:
+            resposta = _call_ai_with_fallback(EXTRAIR_CHAMADA_IMAGEM_REFINAR, image_bytes, logger=logger)
+        except AIAssistError as exc:
+            _log(logger, f"[AI-Chamada] ERRO no refinamento: {exc}")
+            break
+        registros = _extract_chamada_records(resposta)
+        _log(logger, f"[AI-Chamada] Refinamento: {len(registros)} aluno(s) validos.")
 
     registros.sort(key=lambda r: _alphabetical_key(r.get("aluno", "")))
     return registros

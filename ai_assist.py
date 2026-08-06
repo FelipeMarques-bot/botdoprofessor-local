@@ -661,6 +661,51 @@ Retorne APENAS JSON:
         return {"found": False, "error": str(exc)}
 
 
+def verify_grade_on_screen(
+    screenshot_bytes: bytes,
+    expected_grade: str,
+    student_name: str,
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Revisao final: IA confere se a nota esperada do aluno aparece na tela.
+
+    Usada como arbtirio somente quando a re-leitura deterministica nao
+    confirmou o valor (nota divergente ou campo nao encontrado).
+    """
+    if not is_available():
+        return {"found": False, "confirmed": False, "error": "IA nao configurada"}
+
+    prompt = f"""
+Analise a imagem da tela do portal do professor.
+
+Contexto: apos o lancamento, preciso CONFERIR se a nota do aluno foi gravada corretamente.
+
+Aluno: {student_name}
+Nota esperada: {expected_grade}
+
+Na imagem pode aparecer a grade de notas da turma (colunas N1S/N2S/N15S/PE ou similar)
+ou a tela de lancamento individual com os campos de nota.
+
+Responda APENAS JSON:
+{{
+  "found": true/false,
+  "confirmed": true/false,
+  "read_value": "valor que voce leu para este aluno na imagem, ex: 8,5",
+  "notes": "observacoes curtas (ex: nota aparece na coluna N2S, campo vazio, aluno ausente)"
+}}
+Regras:
+- found=true somente se o aluno estiver visivel na imagem com campo/coluna de nota.
+- confirmed=true somente se o valor lido bate com a nota esperada ({expected_grade}).
+- Se o campo estiver vazio, confirmed=false e notes='campo vazio'.
+- Se o aluno nao aparecer na imagem, found=false e notes='aluno nao visivel'.
+"""
+    try:
+        text = _call_ai(prompt, screenshot_bytes)
+        return _safe_json_parse(text, {"found": False, "confirmed": False, "error": "Resposta nao-JSON da IA"})
+    except Exception as exc:
+        return {"found": False, "confirmed": False, "error": str(exc)}
+
+
 def compare_student_names(
     name_from_notion: str,
     name_from_sge: str,

@@ -1092,6 +1092,18 @@ with st.sidebar:
         autofix_enabled = st.checkbox("Corrigir erros automaticamente", value=st.session_state.get("autofix_enabled", False), key="autofix_check")
         st.session_state.autofix_enabled = autofix_enabled
 
+    with st.expander("Revisao final IA (conferir apos salvar)"):
+        st.markdown(
+            "Quando ativado, apos lancar as notas o programa **reabre cada avaliacao e confere** "
+            "se a nota gravou corretamente (re-leitura deterministica).\n\n"
+            "Se uma nota divergir ou o campo nao for encontrado, a **IA analisa a tela** "
+            "e decide se esta correta. Se nao estiver, o programa **tenta corrigir regravando**;\n"
+            "se ainda assim falhar, marca como **falha** (nao conta como lancada).\n\n"
+            "Usa a IA apenas em caso de duvida (maximo 3 consultas por avaliacao)."
+        )
+        revisar_apos = st.checkbox("Conferir notas apos salvar (recomendado)", value=st.session_state.get("revisar_apos", True), key="revisar_apos_check")
+        st.session_state.revisar_apos = revisar_apos
+
     with st.expander("Modo escuro"):
         st.markdown("Alterna entre tema claro e escuro da interface.")
         dark_mode = st.checkbox("Usar tema escuro", value=st.session_state.dark_mode, key="dark_check")
@@ -1298,6 +1310,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
     try:
         # Prepara variaveis de ambiente
         os.environ["HEADLESS"] = "1" if st.session_state.get("headless_mode", True) else "0"
+        os.environ["SGE_REVISAR_APOS"] = "1" if st.session_state.get("revisar_apos", True) else "0"
         if st.session_state.get("portal_selecionado", "SGE") == "Professor Online":
             os.environ["PO_BASE_URL"] = st.session_state.get("po_url", "")
             os.environ["PO_CPF"] = st.session_state.get("po_cpf", "")
@@ -1615,6 +1628,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
 
                     notas_ok = 0
                     falhas = 0
+                    blocos_lancados = []
 
                     with sync_playwright() as p:
                         browser = p.chromium.launch(headless=HEADLESS)
@@ -1695,6 +1709,21 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
 
                             if novos > 0:
                                 _confirm_save(page, logger=log_progress, data_realizacao=data_mais_comum)
+                                blocos_lancados.append({
+                                    "contexto": contexto,
+                                    "atividade": atividade,
+                                    "itens": [r for r in itens],
+                                    "data_realizacao": data_mais_comum,
+                                })
+
+                        if st.session_state.get("revisar_apos", True) and blocos_lancados:
+                            from lancar_notas_sge import _revisar_blocos_apos_lancamento
+                            log_progress(f"[REVISAO] Re-auditoria pos-lancamento de {len(blocos_lancados)} bloco(s)...")
+                            revisao = _revisar_blocos_apos_lancamento(page, blocos_lancados, logger=log_progress)
+                            log_progress(
+                                f"[REVISAO] Fim. Revisados: {revisao['revisados']} | Confirmados: {revisao['ok']} | "
+                                f"Corrigidos: {revisao['corrigidos']} | Falhas: {revisao['falhas']} | IA usada: {revisao['ai_usada']}"
+                            )
 
                         ctx.close()
                         browser.close()

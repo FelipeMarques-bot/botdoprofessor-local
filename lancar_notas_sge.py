@@ -39,6 +39,7 @@ try:
         analyze_login_screen,
         analyze_screen,
         find_element_on_screen,
+        verify_grade_on_screen,
         is_available as ai_is_available,
         is_enabled as ai_is_enabled,
         ensure_ollama,
@@ -74,6 +75,9 @@ except ImportError:
 
     def find_element_on_screen(*args, **kwargs):
         return {"found": False}
+
+    def verify_grade_on_screen(*args, **kwargs):
+        return {"found": False, "confirmed": False}
 
     def record_demonstration_step(*args, **kwargs):
         return None
@@ -4176,10 +4180,118 @@ def _group_for_launch(registros: List[RegistroNota]):
     return grouped
 
 
+def _revisar_blocos_apos_lancamento(
+    page,
+    blocos: List[Dict[str, Any]],
+    logger: Optional[LogFn] = None,
+) -> Dict[str, int]:
+    """Re-auditoria final pos-save: reabre cada bloco e confere as notas.
+
+    Para cada aluno lancado no bloco:
+      1) Rela o campo via JS (mesmo mecanismo do lancamento) e compara com o esperado.
+      2) Se divergir/nao encontrar, IA com visao (verify_grade_on_screen) confere
+         se a nota esta correta na tela — pega casos que seletores nao pegam.
+      3) Se a IA confirmar, conta como OK. Se NAO confirmar, tenta corrigir
+         regravando via _fill_grade_for_student + save; se ainda falhar, marca
+         como falha (retorno + status no Notion via thread).
+
+    Retorna resumo de revisao: revisados, ok, corrigidos, falhas, ai_usada.
+    """
+    resumo = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
+    MAX_AI_PER_BLOCO = 3
+
+    for bloco in blocos:
+        contexto = bloco.get("contexto")
+        atividade = bloco.get("atividade", "")
+        itens = bloco.get("itens", []) or []
+        data_realizacao = bloco.get("data_realizacao", "")
+        if not contexto or not itens:
+            continue
+
+        _log(logger, f"[REVISAO] Bloco: {contexto.escola} | {contexto.turma} | {atividade} ({len(itens)} aluno(s))")
+        try:
+            _select_context(page, contexto, logger=logger)
+        except Exception as exc:  # noqa: BLE001
+            _log(logger, f"[REVISAO] Erro ao navegar para o contexto: {exc}")
+            resumo["falhas"] += len(itens)
+            continue
+
+        try:
+            avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+        except Exception:  # noqa: BLE001
+            avaliacao_abriu = False
+        if _handle_assessment_period_page(page, contexto, logger=logger):
+            try:
+                avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+            except Exception:  # noqa: BLE001
+                avaliacao_abriu = False
+            _handle_assessment_period_page(page, contexto, logger=logger)
+
+        atividade_encontrada, _data_sge, posicao_grid = _select_activity(page, atividade, logger=logger)
+        if not atividade_encontrada:
+            _log(logger, f"[REVISAO] Atividade '{atividade}' nao reencontrada. Nao foi possivel re-auditar.")
+            resumo["falhas"] += len(itens)
+            continue
+
+        coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade)
+        ai_calls_bloco = 0
+
+        for reg in itens:
+            nota_texto = str(reg.nota).replace(".", ",")
+            resumo["revisados"] += 1
+            existing = _read_existing_grade_for_student(page, reg.aluno, logger=logger, coluna_sge=coluna_sge)
+            if existing is not None and _grade_value_matches_target(existing, nota_texto):
+                _log(logger, f"  [REVISAO-OK] {reg.aluno}: nota {nota_texto} confirmada.")
+                resumo["ok"] += 1
+                continue
+
+            if existing is not None:
+                _log(logger, f"  [REVISAO-DIVERGENTE] {reg.aluno}: esperado {nota_texto}, leu {existing}.")
+            else:
+                _log(logger, f"  [REVISAO-NAO-ENCONTRADO] {reg.aluno}: campo nao relido com filtro de coluna '{coluna_sge}'.")
+
+            confirmado_ia = False
+            if ai_is_enabled() and ai_calls_bloco < MAX_AI_PER_BLOCO:
+                ai_calls_bloco += 1
+                resumo["ai_usada"] += 1
+                try:
+                    shot = page.screenshot()
+                    ia = verify_grade_on_screen(shot, nota_texto, reg.aluno, logger=logger)
+                    if ia.get("confirmed") is True:
+                        confirmado_ia = True
+                        _log(logger, f"  [REVISAO-IA] IA confirmou {reg.aluno} = {nota_texto} na tela ({ia.get('read_value', '')}).")
+                        resumo["ok"] += 1
+                        continue
+                    _log(logger, f"  [REVISAO-IA] IA nao confirmou {reg.aluno}: {ia.get('notes', ia.get('error', ''))[:120]}")
+                except Exception as exc:  # noqa: BLE001
+                    _log(logger, f"  [REVISAO-IA] Erro ao consultar IA para {reg.aluno}: {exc}")
+
+            if confirmado_ia:
+                continue
+
+            # Tenta corrigir regravando (mesmo fluxo do lancamento)
+            _log(logger, f"  [REVISAO-CORRIGINDO] Regravando nota para {reg.aluno}...")
+            filled_suffix = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=logger, coluna_sge=coluna_sge)
+            if filled_suffix and _verify_fill_just_made(page, reg.aluno, nota_texto, logger=logger, coluna_sge=coluna_sge, filled_suffix=filled_suffix):
+                _confirm_save(page, logger=logger, data_realizacao=data_realizacao)
+                _log(logger, f"  [REVISAO-CORRIGIDO] {reg.aluno}: nota {nota_texto} regravada e confirmada.")
+                resumo["corrigidos"] += 1
+                t = threading.Thread(target=_update_launch_status_for_notes, args=([reg],), kwargs={"logger": logger}, daemon=True)
+                t.start()
+            else:
+                _log(logger, f"  [REVISAO-FALHA] {reg.aluno}: nao foi possivel corrigir.")
+                resumo["falhas"] += 1
+                t = threading.Thread(target=_mark_failed_launch_status_for_notes, args=([reg],), kwargs={"logger": logger}, daemon=True)
+                t.start()
+
+    return resumo
+
+
 def executar_lancamento(
     filtro: Optional[Dict[str, str]] = None,
     logger: Optional[LogFn] = print,
     dry_run: bool = False,
+    revisar_apos: Optional[bool] = None,
 ) -> Dict[str, int]:
     _log(logger, f"Runtime ref/sha: {os.environ.get('GITHUB_REF_NAME', 'local')} / {os.environ.get('GITHUB_SHA', 'local')[:7]}")
     cpf = _resolve_env_credential(SGE_CPF, "SGE_CPF", logger=logger, digits_only=True)
@@ -4241,6 +4353,8 @@ def executar_lancamento(
     notas_ok = 0
     falhas = 0
     ausentes = 0
+
+    blocos_lancados: List[Dict[str, Any]] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -4408,6 +4522,12 @@ def executar_lancamento(
                 _confirm_save(page, logger=logger, data_realizacao=data_mais_comum)
                 if AI_LEARN_MODE:
                     record_demonstration_step(999, page, f"confirmou salvamento do bloco {idx}", logger=logger)
+                blocos_lancados.append({
+                    "contexto": contexto,
+                    "atividade": atividade,
+                    "itens": [r for r in regs_ok_bloco if r not in regs_ja_no_sge],
+                    "data_realizacao": data_mais_comum,
+                })
             elif regs_ja_no_sge:
                 _log(logger, f"[SGE-JA] {len(regs_ja_no_sge)} nota(s) ja existiam no SGE. Apenas status marcado como Lancada.")
             else:
@@ -4435,6 +4555,29 @@ def executar_lancamento(
         context.close()
         browser.close()
 
+    if revisar_apos is None:
+        revisar_apos = os.environ.get("SGE_REVISAR_APOS", "1") == "1"
+
+    revisao_resumo = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
+    if not dry_run and revisar_apos and blocos_lancados:
+        _log(logger, f"[REVISAO] Re-auditoria pos-lancamento de {len(blocos_lancados)} bloco(s)...")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=HEADLESS)
+            context = browser.new_context()
+            page = context.new_page()
+            page.set_default_timeout(ACTION_TIMEOUT_MS)
+            _login_sge(page, cpf=cpf, senha=senha, logger=logger)
+            revisao_resumo = _revisar_blocos_apos_lancamento(
+                page, blocos_lancados, logger=logger,
+            )
+            context.close()
+            browser.close()
+        _log(logger, (
+            f"[REVISAO] Fim. Revisados: {revisao_resumo['revisados']} | "
+            f"Confirmados: {revisao_resumo['ok']} | Corrigidos: {revisao_resumo['corrigidos']} | "
+            f"Falhas: {revisao_resumo['falhas']} | IA usada: {revisao_resumo['ai_usada']}"
+        ))
+
     _log(logger, f"Finalizado. Notas preenchidas: {notas_ok} | Ausentes: {ausentes} | Falhas: {falhas}")
 
     if AI_LEARN_MODE and ai_is_available():
@@ -4456,6 +4599,7 @@ def executar_lancamento(
         "notas_preenchidas": notas_ok,
         "ausentes": ausentes,
         "falhas": falhas,
+        "revisao": revisao_resumo,
     }
 
 

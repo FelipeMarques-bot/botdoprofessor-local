@@ -225,8 +225,17 @@ def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = 
     if not chosen and patterns:
         chosen = patterns[0][0]
 
-    if not chosen:
+    if not chosen and patterns:
         chosen = coluna_default
+
+    if not chosen and not patterns:
+        # Pagina sem inputs com segmento de coluna (ex.: '_NOTA_0001' na pagina
+        # 'Notas da Avaliacao'). Retornar '' faz leitura/escrita usarem o caminho
+        # sem filtro de coluna, que e o correto para avaliacao unica na pagina.
+        # NAO retornar coluna_default aqui: filtrar por '_N1S_' inexistente faria
+        # todos os alunos aparecerem como 'nao casou' / ausentes.
+        _log(logger, f"[COLUNA-DETECT] Pagina sem segmento de coluna; usando caminho sem filtro de coluna (posicao_grid={posicao_grid}, atividade={atividade!r})")
+        return ""
 
     if chosen:
         _log(logger, f"[COLUNA-DETECT] Coluna detectada: '{chosen}' (posicao_grid={posicao_grid}, atividade={atividade!r})")

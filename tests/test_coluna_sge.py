@@ -80,7 +80,7 @@ class TestDetectColunaFromPage:
         result = m._detect_coluna_from_page(page, posicao_grid=2, atividade="")
         assert result == "N2S"
 
-    def test_sem_padroes_usa_default(self, monkeypatch):
+    def test_sem_padroes_retorna_vazio(self, monkeypatch):
         import lancar_notas_sge as m
 
         scope = FakeScope({})
@@ -91,7 +91,7 @@ class TestDetectColunaFromPage:
 
         monkeypatch.setattr(m, "_iter_scopes", fake_iter_scopes)
         result = m._detect_coluna_from_page(page, posicao_grid=4, atividade="")
-        assert result == "PE"
+        assert result == ""
 
     def test_mais_comum_como_fallback(self, monkeypatch):
         import lancar_notas_sge as m

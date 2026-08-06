@@ -91,6 +91,19 @@ class TestReadGradeValueJs:
 
         assert m._read_grade_value_js(BoomScope(), "0001") is None
 
+    def test_strict_ambiguo_retorna_none(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        class FakeStrictEvalScope:
+            def evaluate(self, js, arg=None):
+                if arg and arg.get("strict"):
+                    return None
+                return "9,2"
+
+        scope = FakeStrictEvalScope()
+        assert m._read_grade_value_js(scope, "0001") == "9,2"
+        assert m._read_grade_value_js(scope, "0001", strict=True) is None
+
 
 class TestDetectColunaFromPage:
     def test_prefere_coluna_da_atividade(self, monkeypatch):
@@ -203,7 +216,7 @@ class TestReadExistingGradeMulticoluna:
             lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ALUNO A"}],
         )
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_js", lambda scope, suffix, coluna="": value)
+        monkeypatch.setattr(m, "_read_grade_value_js", lambda scope, suffix, coluna="", strict=False: value)
         return m, page
 
     def test_pagina_multicoluna_nao_gera_sge_ja_falso(self, monkeypatch):

@@ -37,7 +37,6 @@ try:
         AI_PROVIDER,
         AIAssistError,
         analyze_login_screen,
-        analyze_screen,
         find_element_on_screen,
         verify_grade_on_screen,
         is_available as ai_is_available,
@@ -69,9 +68,6 @@ except ImportError:
 
     def analyze_login_screen(*args, **kwargs):
         return {"elements": [], "has_login_form": False}
-
-    def analyze_screen(*args, **kwargs):
-        return {"elements": []}
 
     def find_element_on_screen(*args, **kwargs):
         return {"found": False}
@@ -3907,7 +3903,7 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
 
                 suffixes = _candidate_suffixes_for_student(aluno, slots)
                 for suffix in suffixes[:3]:
-                    val = _read_grade_value_js(scope, suffix, cols)
+                    val = _read_grade_value_js(scope, suffix, cols, strict=True)
                     if val is not None:
                         return val
         except Exception:  # noqa: BLE001
@@ -3943,17 +3939,20 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
     return None
 
 
-def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "") -> Optional[str]:
+def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "", strict: bool = False) -> Optional[str]:
     """Le o valor de um campo de nota via JS (1 round-trip).
 
-    Retorna o valor somente quando existe EXATAMENTE um campo casando com o
-    suffix (e com a coluna, quando definida). Com mais de um campo (ex.: pagina
-    com varias avaliacoes usando '_NOTA_<suffix>'/'_AVAL..._' duplicado, ou grid
-    multicoluna lida sem filtro), retorna None: leitura ambigua, que NAO pode
-    decidir 'ja lancada' sem risco de [SGE-JA] falso.
+    strict=True: retorna o valor somente quando existe EXATAMENTE um campo
+    casando com o suffix/coluna. Com mais de um (ex.: pagina com varias
+    avaliacoes usando '_NOTA_<suffix>'/'_AVAL..._' duplicado) retorna None:
+    leitura ambigua, que NAO pode decidir 'ja lancada' sem risco de [SGE-JA]
+    falso. Usado em _read_existing_grade_for_student.
+
+    strict=False: retorna o valor do PRIMEIRO campo que casar (comportamento da
+    verificacao pos-preenchimento, quando o valor acabou de ser gravado ali).
     """
     js = """
-    ({suffix, coluna}) => {
+    ({suffix, coluna, strict}) => {
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
         const matches = [];
         for (const el of candidates) {
@@ -3964,12 +3963,12 @@ def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "") -> Optional[s
             if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
             matches.push((el.value || '').trim());
         }
-        if (matches.length !== 1) return null;
-        return matches[0];
+        if (strict && matches.length !== 1) return null;
+        return matches.length ? matches[0] : '';
     }
     """
     try:
-        raw = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge})
+        raw = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge, "strict": strict})
         if raw is None:
             return None
         val = str(raw)
@@ -4494,17 +4493,6 @@ def executar_lancamento(
 
             if not avaliacao_abriu:
                 _log(logger, f"Aviso: nao foi possivel abrir icone de avaliacao para {atividade}. Tentando navegacao direta...")
-
-            if ai_is_enabled() and idx == 1:
-                _log(logger, f"[AI] Verificando tela antes de selecionar atividade...")
-                try:
-                    ai_screenshot = page.screenshot()
-                    ai_screen = analyze_screen(ai_screenshot, objective=f"encontrar e clicar na avaliacao '{atividade}'", logger=logger)
-                    suggested = ai_screen.get("suggested_selector", "")
-                    if suggested:
-                        _log(logger, f"[AI] Sugestao de navegacao: {ai_screen.get('next_step', '')[:80]}")
-                except Exception:
-                    pass
 
             atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=logger)
             if not atividade_encontrada:

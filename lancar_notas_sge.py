@@ -162,15 +162,11 @@ def _coluna_token_from_atividade(atividade: str) -> str:
     return re.sub(r"\s+", "", m.group(1))
 
 
-def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None, atividade: str = "") -> str:
-    """Detecta o nome real da coluna de nota na pagina do SGE.
+def _collect_coluna_patterns(page) -> List[Tuple[str, int]]:
+    """Coleta contagens de padroes de coluna de nota (ex.: 'N1S', 'NOTA1', 'PE') em todos os scopes da pagina.
 
-    Escaneia os inputs de nota na pagina e retorna o prefixo correto (ex: 'N1S', 'NOTA1', 'PE').
-    Prioriza: (1) coluna que bate com o nome da atividade, (2) coluna padrao de _COLUNA_POR_POSICAO
-    se presente na pagina, (3) padrao mais comum, (4) coluna padrao.
+    Retorna lista de (coluna, contagem) ordenada por frequencia descrescente.
     """
-    coluna_default = _COLUNA_POR_POSICAO.get(posicao_grid, "")
-
     patterns: List[Tuple[str, int]] = []
     try:
         for scope in _iter_scopes(page):
@@ -204,6 +200,28 @@ def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = 
         patterns = sorted(counts_tot.items(), key=lambda x: x[1], reverse=True)
     except Exception:  # noqa: BLE001
         pass
+    return patterns
+
+
+def _distinct_grade_columns_on_page(page) -> List[str]:
+    """Colunas de nota distintas presentes na pagina (ex.: ['N1S', 'N2S']).
+
+    Usada para decidir se uma leitura/escrita SEM filtro de coluna e confiavel:
+    pagina com mais de uma coluna distinta pode conter o valor de outra avaliacao.
+    """
+    return [pat for pat, _cnt in _collect_coluna_patterns(page)]
+
+
+def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None, atividade: str = "") -> str:
+    """Detecta o nome real da coluna de nota na pagina do SGE.
+
+    Escaneia os inputs de nota na pagina e retorna o prefixo correto (ex: 'N1S', 'NOTA1', 'PE').
+    Prioriza: (1) coluna que bate com o nome da atividade, (2) coluna padrao de _COLUNA_POR_POSICAO
+    se presente na pagina, (3) padrao mais comum, (4) coluna padrao.
+    """
+    coluna_default = _COLUNA_POR_POSICAO.get(posicao_grid, "")
+
+    patterns = _collect_coluna_patterns(page)
 
     _log(logger, f"[COLUNA-DETECT] Padroes encontrados na pagina: {patterns} (posicao_grid={posicao_grid})")
 
@@ -227,10 +245,16 @@ def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = 
                 break
 
     if not chosen and patterns:
-        chosen = patterns[0][0]
-
-    if not chosen and patterns:
-        chosen = coluna_default
+        distinct = {_norm_coluna(p) for p, _c in patterns}
+        if coluna_default or len(distinct) == 1:
+            chosen = patterns[0][0]
+        else:
+            # Posicao fora de _COLUNA_POR_POSICAO e varias colunas na pagina sem
+            # token da atividade para desambiguar: nao adivinhar. Retornar '' faz
+            # a leitura de 'nota existente' nao confiar em coluna unica (evita
+            # [SGE-JA] falso ao ler o valor de outra avaliacao da mesma pagina).
+            _log(logger, f"[COLUNA-DETECT] Posicao {posicao_grid} fora do mapa com varias colunas ({sorted(distinct)}); coluna indefinida (atividade={atividade!r}).")
+            return ""
 
     if not chosen and not patterns:
         # Pagina sem inputs com segmento de coluna (ex.: '_NOTA_0001' na pagina
@@ -3793,6 +3817,13 @@ def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogF
     """Preenche a nota do aluno. Retorna o suffix preenchido ou '' se falhou."""
     nota_texto = str(nota).replace(".", ",")
 
+    if not coluna_sge and len(_distinct_grade_columns_on_page(page)) > 1:
+        # Sem coluna alvo definida numa pagina com varias colunas de nota, o
+        # preenchimento sem filtro poderia gravar na coluna de OUTRA avaliacao.
+        # Nao arriscar: marca como nao preenchido (o aluno segue como ausente).
+        _log(logger, f"[COLUNA-DETECT] Pagina com varias colunas e coluna alvo indefinida; NAO preenchendo '{aluno}' (evita escrever na coluna errada).")
+        return ""
+
     suffix = _fill_grade_for_student_by_indexed_inputs(page, aluno, nota_texto, coluna_sge=coluna_sge)
     if suffix:
         return suffix
@@ -3883,10 +3914,10 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
             pass
         return None
 
-    result = _try_read(coluna_sge)
-    if result is not None:
-        return result
     if coluna_sge:
+        result = _try_read(coluna_sge)
+        if result is not None:
+            return result
         # IMPORTANTE: nao confiar em leitura sem filtro de coluna para decidir
         # "ja lancada". Ela pode retornar o valor de OUTRA avaliacao exibida na
         # mesma pagina (ex.: nota de avaliacao anterior), causando falso [SGE-JA]
@@ -3894,6 +3925,16 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
         other = _try_read("")
         if other is not None:
             _log(logger, f"[DEBUG] Coluna '{coluna_sge}' sem valor para '{aluno}' (outra coluna contem '{other}'; NAO tratado como ja lancado).")
+        return None
+
+    # Sem coluna definida: leitura sem filtro so e confiavel se a pagina tiver
+    # no maximo UMA coluna de nota distinta (ex.: pagina 'Notas da Avaliacao'
+    # com '_NOTA_<suffix>'). Paginas com varias colunas podem retornar o valor de
+    # outra avaliacao (ex.: nota do 1o trimestre) no primeiro campo correspondente
+    # ao suffix do aluno, causando [SGE-JA] falso (nota 2o=0,0 lida como 9,2).
+    distinct = _distinct_grade_columns_on_page(page)
+    if len(distinct) > 1:
+        _log(logger, f"[DEBUG] Leitura sem filtro ignorada para '{aluno}': pagina com varias colunas de nota ({distinct}).")
         return None
     result = _try_read("")
     if result is not None:
@@ -4197,6 +4238,14 @@ def _revisar_blocos_apos_lancamento(
 
     Retorna resumo de revisao: revisados, ok, corrigidos, falhas, ai_usada.
     """
+    # Re-auditoria roda numa SEGUNDA sessao do navegador (novo login). Os caches
+    # globais de navegacao podem estar marcados com o contexto/sessao anterior:
+    # resetar garante que _select_context refaca a navegacao e que a busca de
+    # alunos por paginacao comece do zero nesta pagina nova.
+    global _current_context
+    _current_context = None
+    _student_page_cache.clear()
+
     resumo = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
     MAX_AI_PER_BLOCO = 3
 
@@ -4209,6 +4258,21 @@ def _revisar_blocos_apos_lancamento(
             continue
 
         _log(logger, f"[REVISAO] Bloco: {contexto.escola} | {contexto.turma} | {atividade} ({len(itens)} aluno(s))")
+
+        # Apos o login novo podem aparecer telas de selecao de escola/periodo
+        # antes do dashboard. Trata aqui por bloco (a escola/periodo do bloco).
+        try:
+            if _is_school_selection_page(page):
+                _log(logger, "[REVISAO] Tela de selecao de escola detectada. Selecionando escola do bloco...")
+                ctx_temp = ContextoTurma(escola=contexto.escola, turno="", turma="", trimestre="")
+                _select_school(page, ctx_temp, logger=logger)
+            if _is_period_selection_page(page):
+                _log(logger, "[REVISAO] Tela de selecao de periodo detectada. Selecionando periodo do bloco...")
+                ctx_temp = ContextoTurma(escola="", turno="", turma="", trimestre=contexto.trimestre)
+                _select_period(page, ctx_temp, logger=logger)
+        except Exception as exc:  # noqa: BLE001
+            _log(logger, f"[REVISAO] Erro ao tratar telas pos-login: {exc}")
+
         try:
             _select_context(page, contexto, logger=logger)
         except Exception as exc:  # noqa: BLE001
@@ -4567,6 +4631,21 @@ def executar_lancamento(
             page = context.new_page()
             page.set_default_timeout(ACTION_TIMEOUT_MS)
             _login_sge(page, cpf=cpf, senha=senha, logger=logger)
+            # Telas pos-login (escola/periodo) antes da re-auditoria. O bloco
+            # tambem trata por bloco dentro de _revisar_blocos_apos_lancamento;
+            # aqui garante o caso em que nao ha blocos para revisar.
+            if blocos_lancados:
+                primeiro_ctx = blocos_lancados[0].get("contexto")
+                if primeiro_ctx:
+                    try:
+                        if _is_school_selection_page(page):
+                            ctx_temp = ContextoTurma(escola=primeiro_ctx.escola, turno="", turma="", trimestre="")
+                            _select_school(page, ctx_temp, logger=logger)
+                        if _is_period_selection_page(page):
+                            ctx_temp = ContextoTurma(escola="", turno="", turma="", trimestre=primeiro_ctx.trimestre)
+                            _select_period(page, ctx_temp, logger=logger)
+                    except Exception as exc:  # noqa: BLE001
+                        _log(logger, f"[REVISAO] Erro ao tratar telas pos-login: {exc}")
             revisao_resumo = _revisar_blocos_apos_lancamento(
                 page, blocos_lancados, logger=logger,
             )

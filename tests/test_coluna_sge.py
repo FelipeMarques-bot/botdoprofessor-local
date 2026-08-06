@@ -105,3 +105,79 @@ class TestDetectColunaFromPage:
         monkeypatch.setattr(m, "_iter_scopes", fake_iter_scopes)
         result = m._detect_coluna_from_page(page, posicao_grid=2, atividade="")
         assert result == "N2S"
+
+    def test_posicao_fora_mapa_varias_colunas_sem_token_retorna_vazio(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        scope = FakeScope({"N1S": 30, "N2S": 30, "N15S": 30, "PE": 30})
+        page = FakePage([scope])
+
+        def fake_iter_scopes(page):
+            return page._scopes
+
+        monkeypatch.setattr(m, "_iter_scopes", fake_iter_scopes)
+        result = m._detect_coluna_from_page(page, posicao_grid=24, atividade="")
+        assert result == ""
+
+    def test_posicao_fora_mapa_uma_coluna_distinta_retorna_ela(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        scope = FakeScope({"N2S": 30})
+        page = FakePage([scope])
+
+        def fake_iter_scopes(page):
+            return page._scopes
+
+        monkeypatch.setattr(m, "_iter_scopes", fake_iter_scopes)
+        result = m._detect_coluna_from_page(page, posicao_grid=24, atividade="")
+        assert result == "N2S"
+
+    def test_posicao_fora_mapa_token_atividade_vence(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        scope = FakeScope({"N1S": 30, "N2S": 30})
+        page = FakePage([scope])
+
+        def fake_iter_scopes(page):
+            return page._scopes
+
+        monkeypatch.setattr(m, "_iter_scopes", fake_iter_scopes)
+        result = m._detect_coluna_from_page(page, posicao_grid=24, atividade="Avaliacao N2S")
+        assert result == "N2S"
+
+
+class TestReadExistingGradeMulticoluna:
+    """Leitura de 'nota existente' nao pode ler o valor de OUTRA coluna."""
+
+    def _setup(self, monkeypatch, counts, value="9,2"):
+        import lancar_notas_sge as m
+
+        scope = FakeScope(counts)
+        page = FakePage([scope])
+
+        def fake_iter_scopes(page):
+            return page._scopes
+
+        monkeypatch.setattr(m, "_iter_scopes", fake_iter_scopes)
+        monkeypatch.setattr(
+            m, "_wait_student_slots",
+            lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ALUNO A"}],
+        )
+        monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
+        monkeypatch.setattr(m, "_read_grade_value_js", lambda scope, suffix, coluna="": value)
+        return m, page
+
+    def test_pagina_multicoluna_nao_gera_sge_ja_falso(self, monkeypatch):
+        m, page = self._setup(monkeypatch, {"N1S": 30, "N2S": 30, "N15S": 30, "PE": 30})
+        result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="")
+        assert result is None
+
+    def test_pagina_uma_coluna_usa_leitura_sem_filtro(self, monkeypatch):
+        m, page = self._setup(monkeypatch, {"N2S": 30})
+        result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="")
+        assert result == "9,2"
+
+    def test_coluna_definida_ignora_valor_de_outra_coluna(self, monkeypatch):
+        m, page = self._setup(monkeypatch, {"N1S": 30, "N2S": 30}, value="8,5")
+        result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="N2S")
+        assert result == "8,5"

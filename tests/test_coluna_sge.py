@@ -53,6 +53,45 @@ class FakePage:
         return self._scopes
 
 
+class FakeEvalScope:
+    def __init__(self, value):
+        self._value = value
+
+    def evaluate(self, js, arg=None):
+        return self._value
+
+
+class TestReadGradeValueJs:
+    """Leitura via JS so confia quando existe exatamente UM campo casando com o suffix."""
+
+    def test_match_unico_retorna_valor(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        scope = FakeEvalScope("9,2")
+        assert m._read_grade_value_js(scope, "0001") == "9,2"
+
+    def test_zero_like_retorna_none(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        scope = FakeEvalScope("0,0")
+        assert m._read_grade_value_js(scope, "0001") is None
+
+    def test_sem_match_retorna_none(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        scope = FakeEvalScope(None)
+        assert m._read_grade_value_js(scope, "0001") is None
+
+    def test_erro_retorna_none(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        class BoomScope:
+            def evaluate(self, js, arg=None):
+                raise RuntimeError("boom")
+
+        assert m._read_grade_value_js(BoomScope(), "0001") is None
+
+
 class TestDetectColunaFromPage:
     def test_prefere_coluna_da_atividade(self, monkeypatch):
         import lancar_notas_sge as m
@@ -176,6 +215,11 @@ class TestReadExistingGradeMulticoluna:
         m, page = self._setup(monkeypatch, {"N2S": 30})
         result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="")
         assert result == "9,2"
+
+    def test_leitura_ambigua_nao_gera_sge_ja(self, monkeypatch):
+        m, page = self._setup(monkeypatch, {"N2S": 30}, value=None)
+        result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="")
+        assert result is None
 
     def test_coluna_definida_ignora_valor_de_outra_coluna(self, monkeypatch):
         m, page = self._setup(monkeypatch, {"N1S": 30, "N2S": 30}, value="8,5")

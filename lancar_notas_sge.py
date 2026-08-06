@@ -3944,24 +3944,35 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
 
 
 def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "") -> Optional[str]:
-    """Le o valor de um campo de nota via JS (1 round-trip)."""
+    """Le o valor de um campo de nota via JS (1 round-trip).
+
+    Retorna o valor somente quando existe EXATAMENTE um campo casando com o
+    suffix (e com a coluna, quando definida). Com mais de um campo (ex.: pagina
+    com varias avaliacoes usando '_NOTA_<suffix>'/'_AVAL..._' duplicado, ou grid
+    multicoluna lida sem filtro), retorna None: leitura ambigua, que NAO pode
+    decidir 'ja lancada' sem risco de [SGE-JA] falso.
+    """
     js = """
     ({suffix, coluna}) => {
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        const matches = [];
         for (const el of candidates) {
             const name = (el.getAttribute('name') || '').trim();
             const id = (el.getAttribute('id') || '').trim();
             const attrs = (name + ' ' + id).toLowerCase();
             if (!attrs.includes('_' + suffix)) continue;
             if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
-            const val = (el.value || '').trim();
-            return val || '';
+            matches.push((el.value || '').trim());
         }
-        return '';
+        if (matches.length !== 1) return null;
+        return matches[0];
     }
     """
     try:
-        val = str(scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge}))
+        raw = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge})
+        if raw is None:
+            return None
+        val = str(raw)
         if val and not _is_zero_like_value(val):
             return val
     except Exception:  # noqa: BLE001

@@ -542,6 +542,12 @@ def _normalize_cpf_for_sge(cpf: str, logger: Optional[LogFn] = None) -> str:
     if not digits:
         return ""
 
+    if len(digits) not in (10, 11):
+        raise LancamentoError(
+            f"SGE_CPF invalido: {len(digits)} digito(s) informados. "
+            "Informe o CPF completo (11 digitos) no painel."
+        )
+
     # Portal costuma esperar 11 digitos, com zeros a esquerda quando necessario.
     if len(digits) < 11:
         padded = digits.zfill(11)
@@ -2354,6 +2360,25 @@ def _confirm_logged_in(page, logger: Optional[LogFn]) -> None:
     )
 
 
+def _wait_login_outcome(page, timeout_sec: float = 15.0):
+    """Aguarda o resultado do login (postback AJAX do GeneXus).
+
+    Retorna (ainda_na_tela_de_login, mensagem_de_erro). Se a tela de login
+    sumiu (sucesso/redirect), retorna (False, ""). Se o .ErrorViewer apareceu
+    (falha), retorna (True, texto_do_erro).
+    """
+    deadline = time.time() + timeout_sec
+    err = ""
+    while time.time() < deadline:
+        if not _is_login_page(page):
+            return False, ""
+        err = _read_login_error_message(page)
+        if err:
+            return True, err
+        page.wait_for_timeout(250)
+    return True, err
+
+
 def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], attempt: int = 1) -> None:
     login_url = _resolve_sge_login_url(logger=logger)
     _log(logger, f"URL de login SGE resolvida: {login_url}")
@@ -2451,16 +2476,9 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
     _dismiss_cookie_banner(page, logger=logger)
     submit.click(timeout=ACTION_TIMEOUT_MS)
 
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=10000)
-    except PlaywrightTimeoutError:
-        pass
+    on_login, err = _wait_login_outcome(page)
 
-    page.wait_for_timeout(250)
-
-    if _is_login_page(page):
-        err = _read_login_error_message(page)
-
+    if on_login:
         senha_upper = senha.upper()
         if "senha inval" in _normalize(err) and senha_upper != senha:
             _log(logger, "Senha invalida no primeiro envio; tentando novamente com senha em maiusculas...")
@@ -2487,16 +2505,11 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
                 if submit2 is not None:
                     _dismiss_cookie_banner(page, logger=logger)
                     submit2.click(timeout=ACTION_TIMEOUT_MS)
-                    try:
-                        page.wait_for_load_state("domcontentloaded", timeout=10000)
-                    except PlaywrightTimeoutError:
-                        pass
-                    page.wait_for_timeout(250)
-                    if not _is_login_page(page):
+                    on_login, err = _wait_login_outcome(page)
+                    if not on_login:
                         _log(logger, "Login realizado. Iniciando lancamento...")
                         _confirm_logged_in(page, logger=logger)
                         return
-                    err = _read_login_error_message(page)
 
         _capture_stage_debug(page, stage="login_failed", logger=logger)
         detalhe = err if err else "permaneceu na tela de login apos submeter credenciais"

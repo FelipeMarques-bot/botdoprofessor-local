@@ -50,6 +50,27 @@ class TestIsLoginPage:
         assert _is_login_page(page) is False
 
 
+class TestNormalizeCpf:
+    def test_11_digitos_ok(self):
+        from lancar_notas_sge import _normalize_cpf_for_sge
+
+        assert _normalize_cpf_for_sge("123.456.789-01") == "12345678901"
+
+    def test_10_digitos_padrao_zero(self):
+        from lancar_notas_sge import _normalize_cpf_for_sge
+
+        assert _normalize_cpf_for_sge("9748010001") == "09748010001"
+
+    def test_digitos_invalidos_levanta(self):
+        from lancar_notas_sge import LancamentoError, _normalize_cpf_for_sge
+
+        try:
+            _normalize_cpf_for_sge("99748010")
+        except LancamentoError:
+            return
+        raise AssertionError("CPF com 8 digitos deveria levantar LancamentoError")
+
+
 class TestIsDashboardPage:
     def test_login_nao_e_dashboard(self):
         from lancar_notas_sge import _is_dashboard_page

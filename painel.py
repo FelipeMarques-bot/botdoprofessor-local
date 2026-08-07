@@ -1178,8 +1178,10 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
 
         autofix_on = st.session_state.get("autofix_enabled", False)
         attempts = st.session_state.get("autofix_attempts", 0)
-        erro_verificacao = "Nenhuma nota foi preenchida no SGE" in str(exc)
-        if autofix_on and attempts < 3 and not str(exc).startswith("st.") and not erro_verificacao:
+        msg_exc = str(exc)
+        erro_verificacao = "Nenhuma nota foi preenchida no SGE" in msg_exc
+        erro_login = any(k in msg_exc for k in ("Falha no login", "Credencial invalida", "SGE_CPF invalido"))
+        if autofix_on and attempts < 3 and not msg_exc.startswith("st.") and not erro_verificacao and not erro_login:
             ctx = {
                 "escola": st.session_state.get("escola", ""),
                 "turno": st.session_state.get("turno", ""),

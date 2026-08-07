@@ -3743,7 +3743,7 @@ def _verify_fill_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -
             if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
             const val = (el.value || '').trim().replace(',', '.');
             const target = nota.trim().replace(',', '.');
-            return val === target;
+            if (val === target) return true;
         }
         return false;
     }

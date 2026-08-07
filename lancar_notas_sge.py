@@ -1898,9 +1898,6 @@ def _find_login_inputs(page):
 
 
 def _capture_login_debug(page, logger: Optional[LogFn]) -> None:
-    if not DEBUG_LOGIN:
-        return
-
     try:
         os.makedirs(DEBUG_OUTPUT_DIR, exist_ok=True)
         screenshot_path = os.path.join(DEBUG_OUTPUT_DIR, "login_failure.png")
@@ -2360,7 +2357,7 @@ def _confirm_logged_in(page, logger: Optional[LogFn]) -> None:
     )
 
 
-def _wait_login_outcome(page, timeout_sec: float = 15.0):
+def _wait_login_outcome(page, timeout_sec: float = 40.0):
     """Aguarda o resultado do login (postback AJAX do GeneXus).
 
     Retorna (ainda_na_tela_de_login, mensagem_de_erro). Se a tela de login
@@ -2512,8 +2509,9 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
                         return
 
         _capture_stage_debug(page, stage="login_failed", logger=logger)
+        _capture_login_debug(page, logger=logger)
         detalhe = err if err else "permaneceu na tela de login apos submeter credenciais"
-        raise LancamentoError(f"Falha no login do SGE: {detalhe}")
+        raise LancamentoError(f"Falha no login do SGE: {detalhe} (URL: {page.url})")
 
     _log(logger, "Login realizado. Iniciando lancamento...")
     _confirm_logged_in(page, logger=logger)

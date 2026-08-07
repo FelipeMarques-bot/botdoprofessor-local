@@ -1323,6 +1323,9 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
         if st.session_state.tipo == "notas":
             if st.session_state.fonte == "notion" and st.session_state.get("portal_selecionado", "SGE") != "Professor Online":
                 log_progress("Carregando dados do Notion...")
+                import importlib
+                import lancar_notas_sge as _sge_mod
+                importlib.reload(_sge_mod)
                 from lancar_notas_sge import executar_lancamento
 
                 # Modo lote: ignora filtros, processa tudo

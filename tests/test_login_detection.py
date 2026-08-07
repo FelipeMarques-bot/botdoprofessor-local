@@ -49,6 +49,26 @@ class TestIsLoginPage:
         page = FakePage(present=("select[name='W0019_SECNUMFILTRODISC']",))
         assert _is_login_page(page) is False
 
+    def test_pos_login_com_formulario_no_dom_nao_e_login(self):
+        # SGE mantem o formulario de login (colapsado) no DOM mesmo apos logar:
+        # _NMRCPFSRV/_SENHAWEB continuam presentes mas a pagina ja e pos-login.
+        from lancar_notas_sge import _is_login_page
+
+        page = FakePage(present=(
+            "input[name='_NMRCPFSRV']",
+            "input[name='_SENHAWEB']",
+            "input[name='W0019_SERNOM']",
+            "input[name^='W0019_UECODNOM_']",
+            "#W0019REFRESH1",
+        ))
+        assert _is_login_page(page) is False
+
+    def test_nome_professor_logado_sozinho_nao_e_login(self):
+        from lancar_notas_sge import _is_login_page
+
+        page = FakePage(present=("input[name='W0019_SERNOM']",))
+        assert _is_login_page(page) is False
+
 
 class TestNormalizeCpf:
     def test_11_digitos_ok(self):
@@ -69,6 +89,26 @@ class TestNormalizeCpf:
         except LancamentoError:
             return
         raise AssertionError("CPF com 8 digitos deveria levantar LancamentoError")
+
+
+class TestIsSchoolSelectionPage:
+    def test_lista_escolas_w0019_uecodnom(self):
+        from lancar_notas_sge import _is_school_selection_page
+
+        page = FakePage(present=("input[name^='W0019_UECODNOM_']",))
+        assert _is_school_selection_page(page) is True
+
+    def test_nome_professor_logado(self):
+        from lancar_notas_sge import _is_school_selection_page
+
+        page = FakePage(present=("input[name='W0019_SERNOM']",))
+        assert _is_school_selection_page(page) is True
+
+    def test_login_puro_nao_e_selecao_de_escola(self):
+        from lancar_notas_sge import _is_school_selection_page
+
+        page = FakePage(present=("input[name='_NMRCPFSRV']",))
+        assert _is_school_selection_page(page) is False
 
 
 class TestIsDashboardPage:

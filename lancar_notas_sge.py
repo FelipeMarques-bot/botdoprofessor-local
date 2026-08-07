@@ -2135,6 +2135,23 @@ def _is_login_page(page) -> bool:
     if "hlogin8147.aspx" in url:
         return True
     try:
+        # Marcadores de pagina POS-login (dashboard do professor / selecao de escolas).
+        # O SGE mantem o formulario de login (colapsado) no DOM mesmo depois de logar,
+        # portanto a presenca de _NMRCPFSRV/_SENHAWEB NAO basta para dizer que e tela de login.
+        # Verificados empiricamente: na pagina de login pura esses elementos nao existem (=0).
+        if page.locator("input[name='W0019_SERNOM']").count() > 0:
+            return False
+        if page.locator("input[name^='W0019_UECODNOM_']").count() > 0:
+            return False
+        if page.locator("#W0019REFRESH1").count() > 0:
+            return False
+        if page.locator("select[name='W0019_SECNUMFILTRODISC']").count() > 0:
+            return False
+        if page.locator("input[name='W0019_TURNUMFILTRODISC']").count() > 0:
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         if page.locator("input[name='_USUCOD']").count() > 0:
             return True
         # SGE: formulario de login fica em hportalprofessor.aspx (sem _USUCOD).
@@ -2163,6 +2180,12 @@ def _is_school_selection_page(page) -> bool:
             return False
         if page.locator("select[name='W0019_SECNUMFILTRODISC']").count() > 0:
             return False
+        # Pos-login: lista de escolas do professor (W0019_UECODNOM_nnn) e nome do
+        # professor logado (W0019_SERNOM) sao marcadores diretos da tela de escolas.
+        if page.locator("input[name^='W0019_UECODNOM_']").count() > 0:
+            return True
+        if page.locator("input[name='W0019_SERNOM']").count() > 0:
+            return True
         # Procura links com nomes de escola ou texto indicativo
         links = page.locator("a")
         total = min(links.count(), 40)

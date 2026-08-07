@@ -4324,11 +4324,11 @@ def _revisar_blocos_apos_lancamento(
       1) Rela o campo via JS (mesmo mecanismo do lancamento) e compara com o esperado.
       2) Se divergir/nao encontrar, IA com visao (verify_grade_on_screen) confere
          se a nota esta correta na tela — pega casos que seletores nao pegam.
-      3) Se a IA confirmar, conta como OK. Se NAO confirmar, tenta corrigir
-         regravando via _fill_grade_for_student + save; se ainda falhar, marca
-         como falha (retorno + status no Notion via thread).
+      3) Se a IA confirmar, conta como OK. Se NAO confirmar, apenas registra no
+         log como nao confirmado (NAO regrava a nota e NAO marca 'Falha' no Notion:
+         a regravacao nesta fase pode escrever na coluna/avaliacao errada).
 
-    Retorna resumo de revisao: revisados, ok, corrigidos, falhas, ai_usada.
+    Retorna resumo de revisao: revisados, ok, corrigidos (sempre 0), falhas, ai_usada.
     """
     # Re-auditoria roda numa SEGUNDA sessao do navegador (novo login). Os caches
     # globais de navegacao podem estar marcados com o contexto/sessao anterior:
@@ -4425,20 +4425,12 @@ def _revisar_blocos_apos_lancamento(
             if confirmado_ia:
                 continue
 
-            # Tenta corrigir regravando (mesmo fluxo do lancamento)
-            _log(logger, f"  [REVISAO-CORRIGINDO] Regravando nota para {reg.aluno}...")
-            filled_suffix = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=logger, coluna_sge=coluna_sge)
-            if filled_suffix and _verify_fill_just_made(page, reg.aluno, nota_texto, logger=logger, coluna_sge=coluna_sge, filled_suffix=filled_suffix):
-                _confirm_save(page, logger=logger, data_realizacao=data_realizacao)
-                _log(logger, f"  [REVISAO-CORRIGIDO] {reg.aluno}: nota {nota_texto} regravada e confirmada.")
-                resumo["corrigidos"] += 1
-                t = threading.Thread(target=_update_launch_status_for_notes, args=([reg],), kwargs={"logger": logger}, daemon=True)
-                t.start()
-            else:
-                _log(logger, f"  [REVISAO-FALHA] {reg.aluno}: nao foi possivel corrigir.")
-                resumo["falhas"] += 1
-                t = threading.Thread(target=_mark_failed_launch_status_for_notes, args=([reg],), kwargs={"logger": logger}, daemon=True)
-                t.start()
+            # A re-auditoria NAO regrava a nota nem marca "Falha" no Notion nesta fase:
+            # roda numa sessao nova do navegador e a regravacao a partir de uma re-leitura
+            # duvidosa pode escrever na coluna/avaliacao errada (corrompendo a nota). Apenas
+            # registra no log para revisao manual.
+            _log(logger, f"  [REVISAO-NAO-CONFIRMADO] {reg.aluno}: nota {nota_texto} nao confirmada na tela. Deixando como esta (sem regravar, sem marcar Falha).")
+            resumo["falhas"] += 1
 
     return resumo
 

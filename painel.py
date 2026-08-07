@@ -175,6 +175,27 @@ def log(msg: str):
         st.session_state.logs.append(f"[{timestamp}] {msg}")
     except Exception:
         pass
+    try:
+        path = st.session_state.get("log_file", "")
+        if path:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _start_log_file() -> str:
+    """Cria (ou retorna) o arquivo de log persistente da execucao atual."""
+    log_dir = os.path.join(os.getcwd(), "artifacts", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(log_dir, f"execucao_{timestamp}.log")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"=== Execucao {datetime.now().isoformat()} ===\n")
+    except Exception:
+        pass
+    return path
 
 
 def _validar_template(fonte: str, caminho: str, tipo: str) -> tuple:
@@ -1141,6 +1162,7 @@ if ajuda_btn:
 if executar_btn or st.session_state.pop("autofix_trigger", False):
     st.session_state.executando = True
     st.session_state.logs = []
+    st.session_state.log_file = _start_log_file()
     st.session_state.resultado = None
 
     log("Iniciando execucao...")
@@ -1825,6 +1847,8 @@ if autofix_msg:
 col_log_header, col_log_export = st.columns([3, 1])
 with col_log_header:
     st.markdown("### Logs da Execucao")
+    if st.session_state.get("log_file"):
+        st.caption(f"Log completo salvo em: `{st.session_state['log_file']}`")
 with col_log_export:
     if st.session_state.logs:
         log_text = "\n".join(st.session_state.logs)

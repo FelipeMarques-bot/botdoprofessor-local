@@ -99,7 +99,7 @@ def test_revisao_divergente_sem_ia_marca_falha(monkeypatch):
     assert res["corrigidos"] == 0
 
 
-def test_revisao_divergente_ia_nao_confirma_mas_corrige(monkeypatch):
+def test_revisao_divergente_ia_nao_confirma_nao_regrava(monkeypatch):
     import lancar_notas_sge as m
     page = DummyPage()
     reg = _make_reg("ALUNO A", 8.5)
@@ -116,15 +116,12 @@ def test_revisao_divergente_ia_nao_confirma_mas_corrige(monkeypatch):
     def fake_verify_grade(shot, nota, aluno, logger=None):
         return {"found": True, "confirmed": False, "read_value": "6,0", "notes": "valor difere"}
     monkeypatch.setattr(m, "verify_grade_on_screen", fake_verify_grade)
-    monkeypatch.setattr(m, "_fill_grade_for_student", lambda *a, **k: "0001")
-    monkeypatch.setattr(m, "_verify_fill_just_made", lambda *a, **k: True)
-    monkeypatch.setattr(m, "_confirm_save", lambda *a, **k: True)
     monkeypatch.setattr(m, "threading", threading)
 
     res = _revisar_blocos_apos_lancamento(page, blo)
     assert res["revisados"] == 1
-    assert res["corrigidos"] == 1
-    assert res["falhas"] == 0
+    assert res["corrigidos"] == 0
+    assert res["falhas"] == 1
     assert res["ai_usada"] == 1
 
 

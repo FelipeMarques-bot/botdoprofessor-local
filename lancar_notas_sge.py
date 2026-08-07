@@ -2132,9 +2132,18 @@ def _is_login_page(page) -> bool:
     if "hlogin8147.aspx" in url:
         return True
     try:
-        return page.locator("input[name='_USUCOD']").count() > 0
+        if page.locator("input[name='_USUCOD']").count() > 0:
+            return True
+        # SGE: formulario de login fica em hportalprofessor.aspx (sem _USUCOD).
+        if page.locator("input[name='_NMRCPFSRV']").count() > 0:
+            return True
+        if page.locator("input[name='_SENHAWEB']").count() > 0:
+            return True
+        if page.locator("input[name='BTNLOGIN']").count() > 0:
+            return True
     except Exception:  # noqa: BLE001
-        return False
+        pass
+    return False
 
 
 def _is_school_selection_page(page) -> bool:
@@ -2305,6 +2314,9 @@ def _is_dashboard_page(page) -> bool:
     url = (page.url or "").lower()
     if "hlogin8147" in url:
         return False
+    # Nao confundir com a tela de login (que tem titulo "PORTAL DO PROFESSOR").
+    if _is_login_page(page):
+        return False
     try:
         # Elementos tipicos do dashboard do professor no SGE
         if page.locator("select[name='W0019_SECNUMFILTRODISC']").count() > 0:
@@ -2313,6 +2325,7 @@ def _is_dashboard_page(page) -> bool:
             return True
         if page.locator("#W0019REFRESH1").count() > 0:
             return True
+        # Fallback por texto (somente apos descartar a tela de login).
         if page.get_by_text("Professor", exact=False).count() > 0:
             return True
     except Exception:  # noqa: BLE001
@@ -2520,8 +2533,11 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
         except LancamentoError as exc:
             last_exception = exc
             error_msg = str(exc)
-            # Nao retenta se for erro de credencial (senha invalida).
-            if "senha inval" in _normalize(error_msg):
+            norm_msg = _normalize(error_msg)
+            # Nao retenta se for erro de credencial (senha invalida / CPF nao cadastrado).
+            if ("senha inval" in norm_msg
+                    or "senha nao confere" in norm_msg
+                    or "cpf nao cadastrado" in norm_msg):
                 _log(logger, "Credencial invalida detectada; sem retentativa.")
                 raise
             if attempt < max_attempts:

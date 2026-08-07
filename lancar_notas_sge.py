@@ -4029,6 +4029,28 @@ def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "", strict: bool 
     return None
 
 
+def _assessment_has_content(props: Dict[str, Dict], status_prop_real: str) -> bool:
+    """True se a avaliacao correspondente a 'Status lancamento N' tem conteudo no Notion.
+
+    A avaliacao N e considerada vazia quando a coluna 'Data realizacao N' esta sem data.
+    Usa a data (e nao o mapeamento por proximidade de colunas) porque a ordem das
+    propriedades retornada pela API do Notion e imprevisivel — o mapeamento por proximidade
+    pode associar colunas de nota reais a um 'Status lancamento N' de avaliacao vazia,
+    causando falso positivo. Isso evita marcar 'Lancada'/'Falha' em colunas de avaliacao
+    que existem no schema da database mas estao completamente vazias.
+    """
+    m = re.search(r"lancamento\s*(\d+)", _normalize(status_prop_real))
+    if not m:
+        return True
+    n = m.group(1)
+
+    for k, v in props.items():
+        if re.search(rf"data\s*realiza[çc][ãa]o\s*{re.escape(n)}", _normalize(k)):
+            return bool(_extract_plain_text(v).strip())
+
+    return False
+
+
 def _update_launch_status_for_notes(registros: List[RegistroNota], logger: Optional[LogFn]) -> None:
     if not registros:
         return
@@ -4076,6 +4098,11 @@ def _update_launch_status_for_notes(registros: List[RegistroNota], logger: Optio
 
             if not prop_info:
                 _log(logger, f"Aviso: propriedade '{status_prop}' (resolvida: '{status_prop_real}') nao existe para {reg.aluno}. Pulando.")
+                ignorados += 1
+                continue
+
+            if not _assessment_has_content(props, status_prop_real):
+                _log(logger, f"  [PROTECAO] Avaliacao vazia no Notion ('{status_prop_real}') para {reg.aluno}. NAO marcando Lancada.")
                 ignorados += 1
                 continue
 
@@ -4139,6 +4166,11 @@ def _mark_failed_launch_status_for_notes(registros: List[RegistroNota], logger: 
             status_prop_real = _resolve_existing_status_prop(props, status_prop)
             prop_info = props.get(status_prop_real, {})
             ptype = prop_info.get("type")
+
+            if not _assessment_has_content(props, status_prop_real):
+                _log(logger, f"  [PROTECAO] Avaliacao vazia no Notion ('{status_prop_real}') para {reg.aluno}. NAO marcando Falha.")
+                falhas += 1
+                continue
 
             if ptype == "select":
                 payload = {status_prop_real: {"select": {"name": "Falha"}}}

@@ -1299,9 +1299,9 @@ _IGNORE_COLS_NORM = frozenset(_normalize(c) for c in IGNORE_COLS)
 def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
     """Mapeia colunas de nota para 'Status lancamento N' usando estrutura do Notion.
 
-    Estrategia:
-    1) Encontra ancora "Data realização N" para cada coluna de nota (proximo no dict)
-    2) Fallback: tenta extrair numero do nome da coluna (ex: "Atividade 2" → 2)
+    Estrategia (por prioridade):
+    1) Numero explicito no nome da coluna (ex: "Atividade 3" → 3)
+    2) Encontra ancora "Data realização N" para cada coluna de nota (proximo no dict)
     3) Fallback: tenta extrair numero de padroes como "24 - Resolução 1" → 1
     4) Fallback: mapeia para a primeira Status lancamento disponivel (por ordem N)
     """
@@ -1314,17 +1314,31 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
         if m:
             existing_status_n.add(m.group(1))
 
-    # 1) Encontra ancora "Data realização N" → indice no dict
+    grade_status_map: Dict[str, str] = {}
+
+    # 1) Numero explicito no nome da coluna (ex.: "Atividade 3" → "Status lancamento 3").
+    #    Tem prioridade sobre a proximidade, que pode errar quando ha varias colunas de
+    #    nota juntas (ex.: '24-Resolução de Problemas', 'Atividade 3', '17-Simulado'),
+    #    mapeando a avaliacao para o Status lancamento errado (e mentindo no log).
+    for idx, name in enumerate(prop_names):
+        if not _is_probably_grade_column(name):
+            continue
+        num_match = re.search(r"(?:atividade|activity|avaliacao|prova|trabalho)\s*(\d+)", _normalize(name))
+        if num_match and num_match.group(1) in existing_status_n:
+            grade_status_map[name] = f"Status lancamento {num_match.group(1)}"
+
+    # 2) Encontra ancora "Data realização N" → indice no dict
     ancora_por_n: Dict[str, int] = {}
     for idx, name in enumerate(prop_names):
         m = re.search(r"data\s*realiza[çc][ãa]o\s*(\d+)", _normalize(name))
         if m:
             ancora_por_n[m.group(1)] = idx
 
-    # 2) Para cada coluna de nota, encontra a ancora mais proxima
+    # 3) Para cada coluna de nota sem numero no nome, encontra a ancora mais proxima
     #    (em caso de empate, menor N vence — garante mapeamento deterministico)
-    grade_status_map: Dict[str, str] = {}
     for idx, name in enumerate(prop_names):
+        if name in grade_status_map:
+            continue
         if not _is_probably_grade_column(name):
             continue
         best_n = ""
@@ -1337,7 +1351,7 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
         if best_n and best_n in existing_status_n:
             grade_status_map[name] = f"Status lancamento {best_n}"
 
-    # 3) Fallback para colunas sem ancora: extrai numero do nome (ex: "Atividade 2")
+    # 4) Fallback para colunas sem ancora: extrai numero do nome (ex: "Atividade 2")
     for idx, name in enumerate(prop_names):
         if name in grade_status_map:
             continue
@@ -1350,7 +1364,7 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
             if n in existing_status_n:
                 grade_status_map[name] = status_cand
 
-    # 3b) Fallback: tenta extrair ultimo digito de "XX - Nome Atividade N"
+    # 4b) Fallback: tenta extrair ultimo digito de "XX - Nome Atividade N"
     for idx, name in enumerate(prop_names):
         if name in grade_status_map:
             continue
@@ -1363,7 +1377,7 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
             if n in existing_status_n:
                 grade_status_map[name] = status_cand
 
-    # 4) Fallback final: colunas ainda sem mapeamento → primeira Status disponivel
+    # 5) Fallback final: colunas ainda sem mapeamento → primeira Status disponivel
     usados = set(grade_status_map.values())
     for idx, name in enumerate(prop_names):
         if name in grade_status_map:

@@ -270,7 +270,7 @@ class TestLeituraDeVoltaObrigatoria:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [scope])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_verify_fill_js", lambda *a, **k: True)
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": ("8,5", 1))
 
         class P:
             pass
@@ -281,7 +281,7 @@ class TestLeituraDeVoltaObrigatoria:
     def test_verificacao_nao_confia_sem_filtro_de_coluna(self, monkeypatch):
         import lancar_notas_sge as m
 
-        # _read_grade_value_js retorna None (campo nao relido na coluna) -> falha
+        # _read_grade_value_anchored_js retorna None (campo nao relido/ancorado) -> falha
         class NoReadScope:
             def evaluate(self, js, arg=None):
                 return None
@@ -289,10 +289,126 @@ class TestLeituraDeVoltaObrigatoria:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [NoReadScope()])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_verify_fill_js", lambda *a, **k: True)
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": None)
 
         class P:
             pass
 
         ok = m._verify_fill_just_made(P(), "ANA", "8,5", None, coluna_sge="N2S", filled_suffix="0001")
         assert ok is False
+
+    def test_verificacao_linha_ambigua_nao_confirma(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        # Linha com mais de um campo do suffix (coluna indefinida) -> NAO confirma.
+        monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
+        monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
+        monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": ("8,5", 2))
+
+        class P:
+            pass
+
+        ok = m._verify_fill_just_made(P(), "ANA", "8,5", None, filled_suffix="0001")
+        assert ok is False
+
+    def test_verificacao_zero_so_confirma_com_leitura_ancorada(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        # Nota alvo 0,0 NAO e auto-confirmada: exige releitura ancorada igual.
+        casos = [
+            (("0,0", 1), True),      # releu 0,0 na linha do aluno -> confirma
+            (("", 1), False),        # campo vazio na linha -> nao confirma 0,0
+            (("7,5", 1), False),     # valor diferente -> nao confirma
+            ((None, None), False),   # sem ancora -> nao confirma
+        ]
+        for releitura, esperado in casos:
+            monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
+            monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
+            monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
+            monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", _r=releitura: _r)
+
+            class P:
+                pass
+
+            ok = m._verify_fill_just_made(P(), "ANA", "0,0", None, filled_suffix="0001")
+            assert ok is esperado
+
+
+class TestLeituraAncorada:
+    def test_ancorada_converte_dict_do_js(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        class Scope:
+            def evaluate(self, js, arg=None):
+                return {"value": "0,0", "count": 1}
+
+        res = m._read_grade_value_anchored_js(Scope(), "VALESKA FRANCA DA SILVA", "0001", "")
+        assert res == ("0,0", 1)
+
+    def test_ancorada_none_quando_js_retorna_null(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        class Scope:
+            def evaluate(self, js, arg=None):
+                return None
+
+        assert m._read_grade_value_anchored_js(Scope(), "ALUNO", "0001", "") is None
+
+    def test_ancorada_linha_ambigua_retorna_count_maior_que_1(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        class Scope:
+            def evaluate(self, js, arg=None):
+                return {"value": "8,5", "count": 2}
+
+        res = m._read_grade_value_anchored_js(Scope(), "ALUNO", "0001", "")
+        assert res == ("8,5", 2)
+
+    def test_releitura_bruta_inclui_zero(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        # A releitura bruta (usada na re-auditoria) PRECISA ler '0,0' como valor,
+        # ao contrario de _read_existing_grade_for_student que descarta zeros.
+        monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
+        monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "VALESKA"}])
+        monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": ("0,0", 1))
+
+        val = m._read_grade_value_for_student_raw(FakePage([]), "VALESKA", "")
+        assert val == "0,0"
+
+    def test_releitura_bruta_none_sem_ancora(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
+        monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "VALESKA"}])
+        monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": None)
+
+        val = m._read_grade_value_for_student_raw(FakePage([]), "VALESKA", "")
+        assert val is None
+
+
+class TestColetaNaoConfirmado:
+    def test_item_nao_confirmado_tem_formato_da_fila(self, monkeypatch, tmp_path):
+        import lancar_notas_sge as m
+        from lancar_notas_sge import ContextoTurma
+
+        monkeypatch.setattr(m, "REVISAO_DIR", str(tmp_path / "revisao"))
+        monkeypatch.setattr(m, "_capturar_evidencia_divergencia", lambda *a, **k: None)
+
+        ctx = ContextoTurma(escola="E1", turno="V", turma="T2", trimestre="2")
+        item = m._coletar_nao_confirmado(None, ctx, "24-Resolucao de Problemas", "VALESKA FRANCA DA SILVA", "0,0", "7,5", "")
+        assert item["aluno"] == "VALESKA FRANCA DA SILVA"
+        assert item["nota_esperada"] == "0,0"
+        assert item["nota_lida"] == "7,5"
+        assert item["decisao"] is None
+        assert item["id"]
+        assert item["screenshot"].endswith(".png")
+
+    def test_ids_iguais_entre_modulos(self):
+        import lancar_notas_sge as m
+
+        id1 = m._revisao_item_id("E1", "T1", "1", "N1S", "ALUNO A")
+        assert id1 == m._revisao_item_id("e1", "t1", "1", "n1s", "aluno a")

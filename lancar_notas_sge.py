@@ -291,6 +291,9 @@ _slots_cache: Dict[int, List[Dict[str, str]]] = {}
 ESTRUTURA_DIR = os.environ.get("SGE_ESTRUTURA_DIR", "artifacts/estrutura")
 ESTRUTURA_OVERRIDE_PATH = os.path.join(ESTRUTURA_DIR, "estrutura_override.json")
 
+# Evidencias dos itens de revisao pos-lancamento (fila de confirmacao do painel)
+REVISAO_DIR = os.environ.get("SGE_REVISAO_DIR", "artifacts/revisao")
+
 
 def _load_estrutura_override() -> Dict[str, Any]:
     """Le o override local de estrutura salvo pelo usuario via 'Remodelar'.
@@ -3901,22 +3904,23 @@ def _classificar_leitura(existing: Optional[str], nota_esperada_texto: str) -> s
 def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[LogFn], coluna_sge: str = "", filled_suffix: str = "") -> bool:
     """Re-le os inputs do aluno apos o preenchimento e confere se o valor gravou.
 
-    Se filled_suffix for fornecido, verifica apenas esse campo (rapido).
-    Caso contrario, busca por todos os suffixes do aluno (fallback).
-    Nota: so retorna True se o campo estiver PREENCHIDO com valor NAO-ZERO.
-    Valores zero/vazio sao considerados falha (podem indicar campo nao gravado).
-    Verifica somente dentro da coluna_sge quando ela esta definida (sem fallback
-    para leitura sem filtro, que poderia gerar falso positivo).
+    VERIFICACAO RIGIDA (ancora de linha): so retorna True quando o campo relido
+    (a) esta dentro da LINHA que contem o nome do aluno e (b) tem exatamente UM
+    campo do suffix na linha (sem ambiguidade de coluna) e (c) o valor bate com o
+    esperado. Notas zero/0,0 NAO sao auto-confirmadas: precisam passar pela mesma
+    leitura ancorada, porque 0,0 num campo errado nao pode ser tratado como sucesso.
     """
     def _try_verify(cols: str) -> bool:
         if filled_suffix:
             for scope in _iter_scopes(page):
-                if _verify_fill_js(scope, filled_suffix, nota_texto, cols):
-                    val = _read_grade_value_js(scope, filled_suffix, cols)
-                    if val is not None and not _is_zero_like_value(val):
-                        return True
-                    if _is_zero_like_value(nota_texto):
-                        return True
+                res = _read_grade_value_anchored_js(scope, aluno, filled_suffix, cols)
+                if res is None:
+                    continue
+                val, count = res
+                if count != 1:
+                    continue
+                if val and _grade_value_matches_target(val, nota_texto):
+                    return True
             return False
         for scope in _iter_scopes(page):
             slots = _wait_student_slots(scope)
@@ -3924,18 +3928,18 @@ def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[L
                 continue
             suffixes = _candidate_suffixes_for_student(aluno, slots)
             for suffix in suffixes[:3]:
-                if _verify_fill_js(scope, suffix, nota_texto, cols):
-                    val = _read_grade_value_js(scope, suffix, cols)
-                    if val is not None and not _is_zero_like_value(val):
-                        return True
-                    if _is_zero_like_value(nota_texto):
-                        return True
+                res = _read_grade_value_anchored_js(scope, aluno, suffix, cols)
+                if res is None:
+                    continue
+                val, count = res
+                if count != 1:
+                    continue
+                if val and _grade_value_matches_target(val, nota_texto):
+                    return True
         return False
 
     if _try_verify(coluna_sge):
         return True
-    # NAO confia na verificacao SEM filtro de coluna: poderia ler o valor de
-    # outra avaliacao da mesma pagina e gerar um falso [VERIFICADO].
     return False
 
 
@@ -3968,73 +3972,73 @@ def _clear_slots_cache():
     _slots_cache.clear()
 
 
-def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> str:
+def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "", aluno: str = "") -> str:
     """Tenta preencher o campo de nota e retorna o resultado (1 round-trip JS).
+
+    Com 'aluno' informado, so preenche o campo cuja LINHA contem o nome do aluno
+    (ancora de linha): evita gravar a nota na coluna/linha de OUTRO aluno quando
+    o mesmo suffix aparece em varios campos da pagina. Sem a ancora, 'not_found'.
 
     Retorna:
       'filled'    - campo preenchido com sucesso
       'already'   - campo ja continha o valor desejado
-      'not_found' - campo nao encontrado
+      'not_found' - campo nao encontrado (ou nao ancorado na linha do aluno)
       'error'     - erro ao preencher
     """
     js = """
-    ({suffix, nota, coluna}) => {
+    ({suffix, nota, coluna, alvo}) => {
+        const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+        const tokenize = s => Array.from(new Set((norm(s).match(/[a-z0-9]{2,}/g) || [])));
+        const alvoTokens = alvo ? tokenize(alvo) : [];
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
-        // 1) Buscar por ID primeiro (mais confiavel para ASP.NET)
-        for (const el of candidates) {
-            const id = (el.getAttribute('id') || '').trim();
-            if (id && id.toLowerCase().includes('_' + suffix.toLowerCase())) {
-                if (coluna && !id.toLowerCase().includes('_' + coluna.toLowerCase() + '_')) continue;
-                const currentVal = (el.value || '').trim().replace(',', '.');
-                const target = nota.trim().replace(',', '.');
-                if (currentVal === target) return 'already';
-                try {
-                    const prevValue = el.value;
-                    el.value = nota;
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    // ASP.NET WebForms: __doPostBack para atualizar VIEWSTATE
-                    const updatePanel = el.closest('form');
-                    if (updatePanel && typeof __doPostBack === 'function') {
-                        try { __doPostBack('', ''); } catch(e) {}
-                    }
-                    // Tambem tentar onchange/onblur inline
-                    if (el.getAttribute('onchange')) {
-                        try { el.getAttribute('onchange').call(el); } catch(e) {}
-                    }
-                    return 'filled';
-                } catch (e) {
-                    return 'error';
-                }
-            }
-        }
-        // 2) Fallback: buscar por name
+        const matches = [];
         for (const el of candidates) {
             const name = (el.getAttribute('name') || '').trim();
-            if (name && name.toLowerCase().includes('_' + suffix.toLowerCase())) {
-                if (coluna && !name.toLowerCase().includes('_' + coluna.toLowerCase() + '_')) continue;
-                const currentVal = (el.value || '').trim().replace(',', '.');
-                const target = nota.trim().replace(',', '.');
-                if (currentVal === target) return 'already';
-                try {
-                    el.value = nota;
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    const updatePanel = el.closest('form');
-                    if (updatePanel && typeof __doPostBack === 'function') {
-                        try { __doPostBack('', ''); } catch(e) {}
-                    }
-                    return 'filled';
-                } catch (e) {
-                    return 'error';
+            const id = (el.getAttribute('id') || '').trim();
+            const attrs = norm(name + ' ' + id);
+            if (!attrs.includes('_' + suffix)) continue;
+            if (coluna && !attrs.includes('_' + norm(coluna) + '_')) continue;
+            let anchored = !alvoTokens.length;
+            if (!anchored) {
+                const row = el.closest('tr');
+                if (row) {
+                    const rowTokens = tokenize(row.innerText || '');
+                    let hit = 0;
+                    for (const t of alvoTokens) { if (rowTokens.includes(t)) hit += 1; }
+                    anchored = hit >= Math.max(1, Math.ceil(alvoTokens.length * 0.6));
                 }
             }
+            if (!anchored) continue;
+            matches.push({el: el, id: id, name: name});
         }
+        const fill = (el) => {
+            const currentVal = (el.value || '').trim().replace(',', '.');
+            const target = nota.trim().replace(',', '.');
+            if (currentVal === target) return 'already';
+            try {
+                el.value = nota;
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                const updatePanel = el.closest('form');
+                if (updatePanel && typeof __doPostBack === 'function') {
+                    try { __doPostBack('', ''); } catch(e) {}
+                }
+                if (el.getAttribute('onchange')) {
+                    try { el.getAttribute('onchange').call(el); } catch(e) {}
+                }
+                return 'filled';
+            } catch (e) { return 'error'; }
+        };
+        if (!matches.length) return 'not_found';
+        const byId = matches.find(m => m.id && norm(m.id).includes('_' + suffix));
+        if (byId) return fill(byId.el);
+        const byName = matches.find(m => m.name);
+        if (byName) return fill(byName.el);
         return 'not_found';
     }
     """
     try:
-        return str(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge}))
+        return str(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge, "alvo": aluno}))
     except Exception:  # noqa: BLE001
         return "error"
 
@@ -4075,7 +4079,7 @@ def _try_fill_grade_for_student_on_current_page(page, aluno: str, nota_texto: st
 
         suffixes = _candidate_suffixes_for_student(aluno, slots)
         for suffix in suffixes:
-            result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge=coluna_sge)
+            result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge=coluna_sge, aluno=aluno)
             if result in ("filled", "already"):
                 return suffix
 
@@ -4361,6 +4365,29 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
     # com '_NOTA_<suffix>'). Paginas com varias colunas podem retornar o valor de
     # outra avaliacao (ex.: nota do 1o trimestre) no primeiro campo correspondente
     # ao suffix do aluno, causando [SGE-JA] falso (nota 2o=0,0 lida como 9,2).
+    # Sem coluna definida: tenta primeiro a leitura ANCORADA na linha do aluno.
+    # Ela resolve a ambiguidade de paginas com varias colunas/avaliacoes usando o
+    # nome do aluno para isolar o campo certo (o mesmo suffix aparece em varias
+    # linhas; a <tr> do aluno desambigua).
+    try:
+        for scope in _iter_scopes(page):
+            slots = _wait_student_slots(scope)
+            if not slots:
+                continue
+            suffixes = _candidate_suffixes_for_student(aluno, slots)
+            for suffix in suffixes[:3]:
+                res = _read_grade_value_anchored_js(scope, aluno, suffix, "")
+                if res is None:
+                    continue
+                val, count = res
+                if count != 1:
+                    continue
+                if val and not _is_zero_like_value(val):
+                    _log(logger, f"[DEBUG] Leitura ancorada na linha encontrou nota '{val}' para '{aluno}'")
+                    return val
+    except Exception:  # noqa: BLE001
+        pass
+
     distinct = _distinct_grade_columns_on_page(page)
     if len(distinct) > 1:
         _log(logger, f"[DEBUG] Leitura sem filtro ignorada para '{aluno}': pagina com varias colunas de nota ({distinct}).")
@@ -4465,6 +4492,124 @@ def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "", strict: bool 
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def _read_grade_value_anchored_js(scope, aluno: str, suffix: str, coluna_sge: str = ""):
+    """Le o valor do campo de nota ancorando na LINHA que contem o nome do aluno.
+
+    Resolve a ambiguidade de paginas com varias colunas/avaliacoes (onde o mesmo
+    suffix aparece em varios campos): o campo valido e o que esta dentro da <tr>
+    cujo texto contem a maioria dos tokens do nome do aluno.
+
+    Retorna (valor, num_campos_na_linha) ou None se nao conseguir ancorar. O valor
+    e bruto (inclui '0,0' e vazio) para o chamador decidir; count>1 indica linha
+    com mais de um campo do suffix (ambiguo -> chamador deve NAO confirmar).
+    """
+    js = """
+    ({suffix, coluna, alvo}) => {
+        const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+        const tokenize = s => Array.from(new Set((norm(s).match(/[a-z0-9]{2,}/g) || [])));
+        const alvoTokens = alvo ? tokenize(alvo) : [];
+        if (!alvoTokens.length) return null;
+        const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        const hits = [];
+        for (const el of candidates) {
+            const attrs = norm((el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || ''));
+            if (!attrs.includes('_' + suffix)) continue;
+            if (coluna && !attrs.includes('_' + norm(coluna) + '_')) continue;
+            const row = el.closest('tr');
+            if (!row) continue;
+            const rowTokens = tokenize(row.innerText || '');
+            if (!rowTokens.length) continue;
+            let hit = 0;
+            for (const t of alvoTokens) { if (rowTokens.includes(t)) hit += 1; }
+            if (hit < Math.max(1, Math.ceil(alvoTokens.length * 0.6))) continue;
+            const rowInputs = Array.from(row.querySelectorAll('input[type="text"], input[type="number"]')).filter(i => {
+                const a = norm((i.getAttribute('name') || '') + ' ' + (i.getAttribute('id') || ''));
+                return a.includes('_' + suffix);
+            });
+            hits.push({value: (el.value || '').trim(), count: rowInputs.length, matched: hit});
+        }
+        if (!hits.length) return null;
+        hits.sort((a, b) => b.matched - a.matched || a.count - b.count);
+        return {value: hits[0].value, count: hits[0].count};
+    }
+    """
+    try:
+        raw = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge, "alvo": aluno})
+        if raw is None:
+            return None
+        return str(raw.get("value", "")), int(raw.get("count", 0))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _read_grade_value_for_student_raw(page, aluno: str, coluna_sge: str = "") -> Optional[str]:
+    """Rele o valor BRUTO (inclui '0,0' e vazio) do campo de nota do aluno.
+
+    Usa a ancora de linha para resolver ambiguidade. Retorna o valor quando ha
+    exatamente UM campo do suffix na linha do aluno; None se nao ancorar.
+    """
+    if not _normalize_loose(aluno):
+        return None
+    try:
+        for scope in _iter_scopes(page):
+            slots = _wait_student_slots(scope)
+            if not slots:
+                continue
+            suffixes = _candidate_suffixes_for_student(aluno, slots)
+            for suffix in suffixes[:3]:
+                res = _read_grade_value_anchored_js(scope, aluno, suffix, coluna_sge)
+                if res is None:
+                    continue
+                val, count = res
+                if count == 1:
+                    return val
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _revisao_item_id(escola: str, turma: str, trimestre: str, atividade: str, aluno: str) -> str:
+    """Mesmo id de item da fila de revisao usado pelo painel (hash sha1)."""
+    import hashlib
+    chave = "|".join([
+        str(escola).lower(), str(turma).lower(), str(trimestre).lower(),
+        str(atividade).lower(), str(aluno).lower(),
+    ])
+    return hashlib.sha1(chave.encode("utf-8")).hexdigest()[:12]
+
+
+def _coletar_nao_confirmado(page, contexto, atividade: str, aluno: str, nota_esperada: str,
+                            nota_lida: str, coluna_sge: str = "", logger: Optional[LogFn] = None) -> Dict[str, Any]:
+    """Monta um item de NAO-CONFIRMADO (com screenshot de evidencia) para a fila do painel."""
+    item_id = _revisao_item_id(contexto.escola, contexto.turma, contexto.trimestre, atividade, aluno)
+    try:
+        os.makedirs(REVISAO_DIR, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+    shot = os.path.join(REVISAO_DIR, f"{item_id}.png")
+    try:
+        _capturar_evidencia_divergencia(page, aluno, coluna_sge, shot, logger=logger)
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger(f"[REVISAO] Falha ao capturar evidencia: {exc}")
+    return {
+        "id": item_id,
+        "escola": contexto.escola,
+        "turno": contexto.turno,
+        "turma": contexto.turma,
+        "trimestre": contexto.trimestre,
+        "atividade": atividade,
+        "aluno": aluno,
+        "nota_esperada": nota_esperada,
+        "nota_lida": str(nota_lida or ""),
+        "screenshot": shot,
+        "coluna_sge": coluna_sge,
+        "decisao": None,
+        "valor_corrigido": "",
+        "resolvido": False,
+    }
 
 
 def _assessment_has_content(props: Dict[str, Dict], status_prop_real: str) -> bool:
@@ -4776,7 +4921,8 @@ def _revisar_blocos_apos_lancamento(
     _current_context = None
     _student_page_cache.clear()
 
-    resumo = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
+    resumo: Dict[str, Any] = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
+    resumo["itens_nao_confirmados"] = []
     MAX_AI_PER_BLOCO = 3
 
     for bloco in blocos:
@@ -4833,9 +4979,12 @@ def _revisar_blocos_apos_lancamento(
         for reg in itens:
             nota_texto = str(reg.nota).replace(".", ",")
             resumo["revisados"] += 1
-            existing = _read_existing_grade_for_student(page, reg.aluno, logger=logger, coluna_sge=coluna_sge)
+            # Leitura com ANCORA na linha do aluno: confere mesmo sem coluna
+            # detectada e consegue ler notas zero (0,0), que _read_existing_grade
+            # descarta de proposito para nao tratar zero como 'ja lancado'.
+            existing = _read_grade_value_for_student_raw(page, reg.aluno, coluna_sge=coluna_sge)
             if existing is not None and _grade_value_matches_target(existing, nota_texto):
-                _log(logger, f"  [REVISAO-OK] {reg.aluno}: nota {nota_texto} confirmada.")
+                _log(logger, f"  [REVISAO-OK] {reg.aluno}: nota {nota_texto} confirmada (leitura ancorada na linha).")
                 resumo["ok"] += 1
                 continue
 
@@ -4865,9 +5014,15 @@ def _revisar_blocos_apos_lancamento(
 
             # A re-auditoria NAO regrava a nota nem marca "Falha" no Notion nesta fase:
             # roda numa sessao nova do navegador e a regravacao a partir de uma re-leitura
-            # duvidosa pode escrever na coluna/avaliacao errada (corrompendo a nota). Apenas
-            # registra no log para revisao manual.
-            _log(logger, f"  [REVISAO-NAO-CONFIRMADO] {reg.aluno}: nota {nota_texto} nao confirmada na tela. Deixando como esta (sem regravar, sem marcar Falha).")
+            # duvidosa pode escrever na coluna/avaliacao errada (corrompendo a nota).
+            # O item entra na FILA DE CONFIRMACAO do painel (screenshot + esperado vs lido)
+            # para o professor decidir manualmente.
+            item = _coletar_nao_confirmado(
+                page, contexto, atividade, reg.aluno, nota_texto, existing, coluna_sge, logger=logger
+            )
+            resumo["itens_nao_confirmados"].append(item)
+            _log(logger, f"  [REVISAO-NAO-CONFIRMADO] {reg.aluno}: nota {nota_texto} nao confirmada na tela. "
+                         f"Enviada para confirmacao manual (id={item['id']}).")
             resumo["falhas"] += 1
 
     return resumo
@@ -4941,6 +5096,7 @@ def executar_lancamento(
     ausentes = 0
 
     blocos_lancados: List[Dict[str, Any]] = []
+    falhas_verificacao: List[Dict[str, Any]] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -5099,6 +5255,13 @@ def executar_lancamento(
                     else:
                         _log(logger, f"  [FALHA-VERIFICACAO] Nota {nota_texto} NAO confirmada no campo para '{reg.aluno}'. Pode ser campo errado.")
                         try:
+                            item_falha = _coletar_nao_confirmado(
+                                page, contexto, atividade, reg.aluno, nota_texto, None, coluna_sge, logger=logger
+                            )
+                            falhas_verificacao.append(item_falha)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
                             nome_arq = re.sub(r"[^a-zA-Z0-9_-]", "_", reg.aluno)
                             ev_path = os.path.join(ESTRUTURA_DIR, f"verificacao_falhou_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{nome_arq}.png")
                             os.makedirs(ESTRUTURA_DIR, exist_ok=True)
@@ -5202,6 +5365,12 @@ def executar_lancamento(
             "Nenhuma nota foi preenchida no SGE. Fluxo interrompido para evitar falso sucesso."
         )
 
+    itens_nao_confirmados = list(revisao_resumo.get("itens_nao_confirmados") or [])
+    itens_nao_confirmados.extend(falhas_verificacao)
+    revisao_resumo["itens_nao_confirmados"] = itens_nao_confirmados
+    if not revisao_resumo.get("falhas"):
+        revisao_resumo["falhas"] = len(itens_nao_confirmados)
+
     return {
         "blocos": total_blocos,
         "notas": total_notas,
@@ -5209,6 +5378,8 @@ def executar_lancamento(
         "ausentes": ausentes,
         "falhas": falhas,
         "revisao": revisao_resumo,
+        "itens_nao_confirmados": itens_nao_confirmados,
+        "divergencias": len(itens_nao_confirmados),
     }
 
 

@@ -353,6 +353,37 @@ def _coletar_divergencia(page, contexto, atividade: str, data_realizacao: str, a
     fila.append(item)
 
 
+def _alimentar_fila_revisao(resultado: dict, logger=None) -> None:
+    """Enfileira os itens NAO-CONFIRMADO retornados pela execucao (re-auditoria
+    pos-lancamento e falhas de verificacao pos-preenchimento) para confirmacao do usuario."""
+    itens = resultado.get("itens_nao_confirmados") or []
+    if not itens:
+        return
+    if "revisao_fila" not in st.session_state:
+        st.session_state.revisao_fila = []
+    fila = st.session_state.revisao_fila
+    novos = 0
+    for it in itens:
+        item_id = it.get("id")
+        if not item_id:
+            continue
+        encontrado = next((x for x in fila if x.get("id") == item_id), None)
+        if encontrado is not None:
+            if encontrado.get("decisao") is None:
+                encontrado.update(it)
+            continue
+        novo = dict(it)
+        novo.setdefault("decisao", None)
+        novo.setdefault("valor_corrigido", "")
+        novo.setdefault("resolvido", False)
+        fila.append(novo)
+        novos += 1
+    if novos > 0:
+        st.session_state.revisao_fase = "pendente"
+        if logger is not None:
+            logger(f"[REVISAO] {novos} item(ns) de revisao aguardando confirmacao manual.")
+
+
 def _aplicar_decisoes_revisao():
     """Coleta itens decididos (confirmar/corrigir) e agenda gravacao forcada no SGE."""
     fila = st.session_state.get("revisao_fila", [])
@@ -1731,6 +1762,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                     dry_run=dry_run,
                 )
                 st.session_state.resultado = resultado
+                _alimentar_fila_revisao(resultado, log_progress)
                 if resultado.get("estrutura_changed"):
                     st.session_state.estrutura_changed = resultado.get("estrutura_evidencia") or {}
                     st.session_state.revisao_fase = "estrutura_changed"

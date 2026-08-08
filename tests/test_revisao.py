@@ -1,4 +1,4 @@
-import threading
+﻿import threading
 
 from lancar_notas_sge import ContextoTurma, RegistroNota, _revisar_blocos_apos_lancamento
 
@@ -66,7 +66,7 @@ def test_revisao_ok_todos_confirmados(monkeypatch):
     monkeypatch.setattr(m, "_handle_assessment_period_page", lambda *a, **k: False)
     monkeypatch.setattr(m, "_select_activity", lambda *a, **k: (True, "", 1))
     monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "N1S")
-    monkeypatch.setattr(m, "_read_existing_grade_for_student", lambda *a, **k: "8,5")
+    monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: "8,5")
     monkeypatch.setattr(m, "ai_is_enabled", lambda: False)
 
     res = _revisar_blocos_apos_lancamento(page, blo)
@@ -87,7 +87,7 @@ def test_revisao_divergente_sem_ia_marca_falha(monkeypatch):
     monkeypatch.setattr(m, "_handle_assessment_period_page", lambda *a, **k: False)
     monkeypatch.setattr(m, "_select_activity", lambda *a, **k: (True, "", 1))
     monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "N1S")
-    monkeypatch.setattr(m, "_read_existing_grade_for_student", lambda *a, **k: "6,0")
+    monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: "6,0")
     monkeypatch.setattr(m, "ai_is_enabled", lambda: False)
     monkeypatch.setattr(m, "_fill_grade_for_student", lambda *a, **k: "")
     monkeypatch.setattr(m, "threading", threading)
@@ -110,7 +110,7 @@ def test_revisao_divergente_ia_nao_confirma_nao_regrava(monkeypatch):
     monkeypatch.setattr(m, "_handle_assessment_period_page", lambda *a, **k: False)
     monkeypatch.setattr(m, "_select_activity", lambda *a, **k: (True, "", 1))
     monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "N1S")
-    monkeypatch.setattr(m, "_read_existing_grade_for_student", lambda *a, **k: "6,0")
+    monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: "6,0")
     monkeypatch.setattr(m, "ai_is_enabled", lambda: True)
 
     def fake_verify_grade(shot, nota, aluno, logger=None):
@@ -136,7 +136,7 @@ def test_revisao_ia_confirma_mesmo_sem_ler_deterministico(monkeypatch):
     monkeypatch.setattr(m, "_handle_assessment_period_page", lambda *a, **k: False)
     monkeypatch.setattr(m, "_select_activity", lambda *a, **k: (True, "", 1))
     monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "")
-    monkeypatch.setattr(m, "_read_existing_grade_for_student", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: None)
     monkeypatch.setattr(m, "ai_is_enabled", lambda: True)
 
     def fake_verify_grade(shot, nota, aluno, logger=None):
@@ -156,3 +156,4 @@ def test_verify_grade_on_screen_sem_ia():
     res = verify_grade_on_screen(b"x", "8,5", "ALUNO A")
     assert res["found"] is False
     assert res["confirmed"] is False
+

@@ -886,79 +886,10 @@ with st.sidebar:
                     st.warning(aviso)
         elif fonte == "planilha":
             st.info(
-                "Edite as notas direto aqui ou carregue um arquivo **.xlsx/.csv** "
-                "para preencher a tabela automaticamente. A coluna **Status** "
+                "Edite as notas na aba **Planilha** (no corpo do painel) ou carregue "
+                "um arquivo **.xlsx/.csv** la para preencher a tabela. A coluna **Status** "
                 "(Lancada/Falha) pode ser editada por linha e fica salva entre execucoes."
             )
-            plan_arquivo = st.file_uploader(
-                "Carregar .xlsx ou .csv para preencher a tabela",
-                type=["xlsx", "xls", "csv"],
-                key="planilha_upload",
-            )
-            if plan_arquivo:
-                nome_arq = plan_arquivo.name
-                if nome_arq != st.session_state.get("planilha_ultimo_arquivo", ""):
-                    from leitor_planilhas import carregar_notas, registros_para_linhas
-                    tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
-                    tmp_dir.mkdir(exist_ok=True)
-                    tmp_path = tmp_dir / f"_painel_{nome_arq}"
-                    with open(tmp_path, "wb") as f:
-                        f.write(plan_arquivo.getbuffer())
-                    ext = nome_arq.rsplit(".", 1)[-1].lower()
-                    fonte_arq = "excel" if ext in ("xlsx", "xls") else "csv"
-                    try:
-                        registros_arq = carregar_notas(fonte_arq, str(tmp_path), logger=log)
-                    except Exception as exc:
-                        st.error(f"Erro ao ler o arquivo: {exc}")
-                        registros_arq = []
-                    linhas = registros_para_linhas(registros_arq)
-                    _aplicar_status_salvo(linhas)
-                    st.session_state.planilha_linhas = linhas
-                    st.session_state.planilha_ultimo_arquivo = nome_arq
-                    if registros_arq:
-                        st.success(f"{len(registros_arq)} nota(s) carregada(s). Edite se precisar e execute.")
-                    else:
-                        st.warning("Nenhuma nota encontrada no arquivo. Confira o cabecalho (Nome/Aluno + colunas de nota).")
-            else:
-                if st.session_state.get("planilha_ultimo_arquivo"):
-                    st.session_state.planilha_ultimo_arquivo = ""
-
-            if "planilha_linhas" not in st.session_state:
-                st.session_state.planilha_linhas = []
-
-            st.markdown("**Notas (edite as celulas; use **`+`** na ultima linha para adicionar)**")
-            plan_editor = st.data_editor(
-                st.session_state.planilha_linhas,
-                num_rows="dynamic",
-                key="planilha_editor",
-                use_container_width=True,
-                column_config={
-                    "escola": st.column_config.TextColumn("Escola"),
-                    "turno": st.column_config.TextColumn("Turno"),
-                    "turma": st.column_config.TextColumn("Turma"),
-                    "trimestre": st.column_config.TextColumn("Trimestre"),
-                    "aluno": st.column_config.TextColumn("Aluno"),
-                    "atividade": st.column_config.TextColumn("Atividade"),
-                    "nota": st.column_config.NumberColumn("Nota", min_value=0.0, max_value=10.0, format="%.2f"),
-                    "data_realizacao": st.column_config.TextColumn("Data realizacao"),
-                    "status": st.column_config.SelectboxColumn("Status", options=["", "Lancada", "Falha"]),
-                },
-            )
-            st.session_state.planilha_linhas = plan_editor
-            st.caption(f"{len(st.session_state.planilha_linhas)} linha(s) na tabela. Escola/Turno/Turma/Trimestre vazios usam os filtros acima.")
-
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                if st.button("Limpar tabela", key="planilha_limpar", use_container_width=True):
-                    st.session_state.planilha_linhas = []
-                    st.rerun()
-            with col_p2:
-                if st.button("Adicionar linha vazia", key="planilha_add_linha", use_container_width=True):
-                    st.session_state.planilha_linhas = st.session_state.planilha_linhas + [{
-                        "escola": "", "turno": "", "turma": "", "trimestre": "",
-                        "aluno": "", "atividade": "", "nota": "", "data_realizacao": "", "status": "",
-                    }]
-                    st.rerun()
         elif fonte == "google_sheets":
             st.info(
                 "Cole o link compartilhavel do **Google Sheets** abaixo.\n\n"
@@ -1319,7 +1250,106 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# === BOTAO PRINCIPAL ===
+# === ABAS DO PAINEL ===
+tab_plan, tab_rev, tab_logs = st.tabs(["Planilha", "Revisao IA", "Logs"])
+
+with tab_plan:
+    if st.session_state.get("fonte", "notion") == "planilha":
+        plan_arquivo = st.file_uploader(
+            "Carregar .xlsx ou .csv para preencher a tabela",
+            type=["xlsx", "xls", "csv"],
+            key="planilha_upload",
+        )
+        if plan_arquivo:
+            nome_arq = plan_arquivo.name
+            if nome_arq != st.session_state.get("planilha_ultimo_arquivo", ""):
+                from leitor_planilhas import carregar_notas, registros_para_linhas
+                tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+                tmp_dir.mkdir(exist_ok=True)
+                tmp_path = tmp_dir / f"_painel_{nome_arq}"
+                with open(tmp_path, "wb") as f:
+                    f.write(plan_arquivo.getbuffer())
+                ext = nome_arq.rsplit(".", 1)[-1].lower()
+                fonte_arq = "excel" if ext in ("xlsx", "xls") else "csv"
+                try:
+                    registros_arq = carregar_notas(fonte_arq, str(tmp_path), logger=log)
+                except Exception as exc:
+                    st.error(f"Erro ao ler o arquivo: {exc}")
+                    registros_arq = []
+                linhas = registros_para_linhas(registros_arq)
+                _aplicar_status_salvo(linhas)
+                st.session_state.planilha_linhas = linhas
+                st.session_state.planilha_ultimo_arquivo = nome_arq
+                if registros_arq:
+                    st.success(f"{len(registros_arq)} nota(s) carregada(s). Edite se precisar e execute.")
+                else:
+                    st.warning("Nenhuma nota encontrada no arquivo. Confira o cabecalho (Nome/Aluno + colunas de nota).")
+        else:
+            if st.session_state.get("planilha_ultimo_arquivo"):
+                st.session_state.planilha_ultimo_arquivo = ""
+
+        if "planilha_linhas" not in st.session_state:
+            st.session_state.planilha_linhas = []
+
+        st.markdown("**Notas (edite as celulas; use **`+`** na ultima linha para adicionar)**")
+        plan_editor = st.data_editor(
+            st.session_state.planilha_linhas,
+            num_rows="dynamic",
+            key="planilha_editor",
+            use_container_width=True,
+            column_config={
+                "escola": st.column_config.TextColumn("Escola"),
+                "turno": st.column_config.TextColumn("Turno"),
+                "turma": st.column_config.TextColumn("Turma"),
+                "trimestre": st.column_config.TextColumn("Trimestre"),
+                "aluno": st.column_config.TextColumn("Aluno"),
+                "atividade": st.column_config.TextColumn("Atividade"),
+                "nota": st.column_config.NumberColumn("Nota", min_value=0.0, max_value=10.0, format="%.2f"),
+                "data_realizacao": st.column_config.TextColumn("Data realizacao"),
+                "status": st.column_config.SelectboxColumn("Status", options=["", "Lancada", "Falha"]),
+            },
+        )
+        st.session_state.planilha_linhas = plan_editor
+        st.caption(f"{len(st.session_state.planilha_linhas)} linha(s) na tabela. Escola/Turno/Turma/Trimestre vazios usam os filtros acima.")
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            if st.button("Limpar tabela", key="planilha_limpar", use_container_width=True):
+                st.session_state.planilha_linhas = []
+                st.rerun()
+        with col_p2:
+            if st.button("Adicionar linha vazia", key="planilha_add_linha", use_container_width=True):
+                st.session_state.planilha_linhas = st.session_state.planilha_linhas + [{
+                    "escola": "", "turno": "", "turma": "", "trimestre": "",
+                    "aluno": "", "atividade": "", "nota": "", "data_realizacao": "", "status": "",
+                }]
+                st.rerun()
+    else:
+        st.info(
+            "Selecione a origem **'Planilha no painel (editar aqui)'** na barra lateral "
+            "(Origem dos Dados) para editar as notas nesta aba."
+        )
+
+# === EXECUCAO (stepper + botao + gate) ===
+st.markdown('<div class="main-header">Execucao</div>', unsafe_allow_html=True)
+
+stepper_fases = ["Carregar", "Validar", "Dry-run", "Lancar", "Revisar"]
+if st.session_state.get("executando"):
+    stepper_idx = 2 if dry_run else 3
+elif st.session_state.get("resultado"):
+    stepper_idx = 4 if st.session_state.get("revisao_fase") != "pendente" else 4
+else:
+    stepper_idx = -1
+stepper_cols = st.columns(len(stepper_fases))
+for _i, _fase in enumerate(stepper_fases):
+    with stepper_cols[_i]:
+        if _i < stepper_idx:
+            st.markdown(f"<div style='text-align:center;background:#e6f4ea;border:1px solid #34a853;border-radius:8px;padding:4px 6px;font-size:0.8rem;color:#137333;'>✔ {_fase}</div>", unsafe_allow_html=True)
+        elif _i == stepper_idx:
+            st.markdown(f"<div style='text-align:center;background:#e8f0fe;border:1px solid #1f6feb;border-radius:8px;padding:4px 6px;font-size:0.8rem;color:#174ea6;'>→ {_fase}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div style='text-align:center;background:#f1f3f4;border:1px solid #dadce0;border-radius:8px;padding:4px 6px;font-size:0.8rem;color:#5f6368;'>{_fase}</div>", unsafe_allow_html=True)
+
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
 
 with col_btn1:
@@ -1343,10 +1373,26 @@ with col_btn1:
     if not pode_executar:
         st.warning("Preencha URL, CPF e Senha do portal na barra lateral")
 
+    dry_run_ativo = dry_run
+    if not dry_run_ativo:
+        st.session_state.confirmar_envio = st.checkbox(
+            "Confirmo que quero **ENVIAR de verdade** para o portal (dry-run desligado)",
+            value=st.session_state.get("confirmar_envio", False),
+            key="confirmar_envio_check",
+        )
+        if not st.session_state.get("confirmar_envio", False):
+            st.warning("Marque a confirmacao acima para liberar o envio real.")
+    else:
+        st.session_state.confirmar_envio = False
+
     executar_btn = st.button(
         "EXECUTAR LANCAMENTO",
         type="primary",
-        disabled=(not pode_executar or st.session_state.executando),
+        disabled=(
+            not pode_executar
+            or st.session_state.executando
+            or (not dry_run_ativo and not st.session_state.get("confirmar_envio", False))
+        ),
         use_container_width=True,
     )
 
@@ -2129,98 +2175,101 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
             pass
 
 # === FILA DE CONFIRMACAO DE DIVERGENCIAS (screenshot + decisao) ===
-_fila_rev = st.session_state.get("revisao_fila", [])
-_pendentes_rev = [it for it in _fila_rev if it.get("decisao") in (None, "")]
-if st.session_state.get("revisao_fase") == "pendente" and _pendentes_rev:
-    st.markdown("### Confirmacao de divergencias (IA + screenshot)")
-    st.caption(
-        "O bot detectou divergencias entre o SGE e o esperado e **nao preencheu** esses alunos. "
-        "Confira a evidencia e decida por aluno: **Confirmar** (grava a nota esperada), "
-        "**Corrigir** (grava outro valor) ou **Pular** (nao grava e nao marca como lancada)."
-    )
+with tab_rev:
+    _fila_rev = st.session_state.get("revisao_fila", [])
+    _pendentes_rev = [it for it in _fila_rev if it.get("decisao") in (None, "")]
+    if st.session_state.get("revisao_fase") == "pendente" and _pendentes_rev:
+        st.markdown("### Confirmacao de divergencias (IA + screenshot)")
+        st.caption(
+            "O bot detectou divergencias entre o SGE e o esperado e **nao preencheu** esses alunos. "
+            "Confira a evidencia e decida por aluno: **Confirmar** (grava a nota esperada), "
+            "**Corrigir** (grava outro valor) ou **Pular** (nao grava e nao marca como lancada)."
+        )
 
-    c_top1, c_top2, c_top3 = st.columns(3)
-    with c_top1:
-        if st.button("Confirmar todas", type="primary", key="rev_confirmar_todas", use_container_width=True):
-            for it in _fila_rev:
-                if it.get("decisao") in (None, ""):
-                    it["decisao"] = "confirmar"
-                    it["valor_corrigido"] = ""
-            st.session_state.revisao_fila = _fila_rev
-            if _aplicar_decisoes_revisao():
-                st.rerun()
-    with c_top2:
-        if st.button("Pular todas", key="rev_pular_todas", use_container_width=True):
-            for it in _fila_rev:
-                it["decisao"] = "pular"
-            st.session_state.revisao_fila = _fila_rev
-            st.session_state.revisao_fase = "fim"
-            if st.session_state.get("resultado"):
-                st.session_state.resultado["divergencias"] = 0
-            st.rerun()
-    with c_top3:
-        if st.button("Limpar fila", key="rev_limpar", use_container_width=True):
-            st.session_state.revisao_fila = []
-            st.session_state.revisao_fase = "fim"
-            if st.session_state.get("resultado"):
-                st.session_state.resultado["divergencias"] = 0
-            st.rerun()
-
-    for item in _pendentes_rev:
-        fkey = f"rev_{item.get('id', 'x')}"
-        with st.expander(
-            f"{item.get('aluno')} — esperado **{item.get('nota_esperada')}** | SGE leu "
-            f"**'{item.get('nota_lida') or 'vazio'}'** | {item.get('atividade')}",
-            expanded=False,
-        ):
-            col_shot, col_dec = st.columns([1, 2])
-            with col_shot:
-                if os.path.exists(item.get("screenshot", "")):
-                    st.image(item["screenshot"], caption="Evidencia (linha do aluno no SGE)")
-                else:
-                    st.caption("Evidencia indisponivel")
-                st.caption(
-                    f"Escola: {item.get('escola')} | Turno: {item.get('turno')} | "
-                    f"Turma: {item.get('turma')} | {item.get('trimestre')}"
-                )
-            with col_dec:
-                decisao = st.radio(
-                    "Decisao para este aluno",
-                    ["Confirmar", "Corrigir", "Pular"],
-                    key=f"{fkey}_radio",
-                    horizontal=True,
-                    format_func=lambda x: {
-                        "Confirmar": "Confirmar (gravar esperada)",
-                        "Corrigir": "Corrigir",
-                        "Pular": "Pular (nao gravar)",
-                    }.get(x, x),
-                )
-                valor_corrigido = ""
-                if decisao == "Corrigir":
-                    valor_corrigido = st.text_input(
-                        "Valor correto (0 a 10)",
-                        value=str(item.get("valor_corrigido") or item.get("nota_esperada")),
-                        key=f"{fkey}_valor",
-                    )
-                if st.button("Aplicar decisao", key=f"{fkey}_btn"):
-                    item["decisao"] = {
-                        "Confirmar": "confirmar",
-                        "Corrigir": "corrigir",
-                        "Pular": "pular",
-                    }[decisao]
-                    item["valor_corrigido"] = valor_corrigido if decisao == "Corrigir" else ""
-                    st.session_state.revisao_fila = _fila_rev
+        c_top1, c_top2, c_top3 = st.columns(3)
+        with c_top1:
+            if st.button("Confirmar todas", type="primary", key="rev_confirmar_todas", use_container_width=True):
+                for it in _fila_rev:
+                    if it.get("decisao") in (None, ""):
+                        it["decisao"] = "confirmar"
+                        it["valor_corrigido"] = ""
+                st.session_state.revisao_fila = _fila_rev
+                if _aplicar_decisoes_revisao():
                     st.rerun()
+        with c_top2:
+            if st.button("Pular todas", key="rev_pular_todas", use_container_width=True):
+                for it in _fila_rev:
+                    it["decisao"] = "pular"
+                st.session_state.revisao_fila = _fila_rev
+                st.session_state.revisao_fase = "fim"
+                if st.session_state.get("resultado"):
+                    st.session_state.resultado["divergencias"] = 0
+                st.rerun()
+        with c_top3:
+            if st.button("Limpar fila", key="rev_limpar", use_container_width=True):
+                st.session_state.revisao_fila = []
+                st.session_state.revisao_fase = "fim"
+                if st.session_state.get("resultado"):
+                    st.session_state.resultado["divergencias"] = 0
+                st.rerun()
 
-    decididos = [it for it in _fila_rev if it.get("decisao") in ("confirmar", "corrigir")]
-    if decididos:
-        if st.button(
-            f"Gravar {len(decididos)} decisao(oes) no SGE",
-            type="primary",
-            key="rev_gravar",
-        ):
-            _aplicar_decisoes_revisao()
-            st.rerun()
+        for item in _pendentes_rev:
+            fkey = f"rev_{item.get('id', 'x')}"
+            with st.expander(
+                f"{item.get('aluno')} — esperado **{item.get('nota_esperada')}** | SGE leu "
+                f"**'{item.get('nota_lida') or 'vazio'}'** | {item.get('atividade')}",
+                expanded=False,
+            ):
+                col_shot, col_dec = st.columns([1, 2])
+                with col_shot:
+                    if os.path.exists(item.get("screenshot", "")):
+                        st.image(item["screenshot"], caption="Evidencia (linha do aluno no SGE)")
+                    else:
+                        st.caption("Evidencia indisponivel")
+                    st.caption(
+                        f"Escola: {item.get('escola')} | Turno: {item.get('turno')} | "
+                        f"Turma: {item.get('turma')} | {item.get('trimestre')}"
+                    )
+                with col_dec:
+                    decisao = st.radio(
+                        "Decisao para este aluno",
+                        ["Confirmar", "Corrigir", "Pular"],
+                        key=f"{fkey}_radio",
+                        horizontal=True,
+                        format_func=lambda x: {
+                            "Confirmar": "Confirmar (gravar esperada)",
+                            "Corrigir": "Corrigir",
+                            "Pular": "Pular (nao gravar)",
+                        }.get(x, x),
+                    )
+                    valor_corrigido = ""
+                    if decisao == "Corrigir":
+                        valor_corrigido = st.text_input(
+                            "Valor correto (0 a 10)",
+                            value=str(item.get("valor_corrigido") or item.get("nota_esperada")),
+                            key=f"{fkey}_valor",
+                        )
+                    if st.button("Aplicar decisao", key=f"{fkey}_btn"):
+                        item["decisao"] = {
+                            "Confirmar": "confirmar",
+                            "Corrigir": "corrigir",
+                            "Pular": "pular",
+                        }[decisao]
+                        item["valor_corrigido"] = valor_corrigido if decisao == "Corrigir" else ""
+                        st.session_state.revisao_fila = _fila_rev
+                        st.rerun()
+
+        decididos = [it for it in _fila_rev if it.get("decisao") in ("confirmar", "corrigir")]
+        if decididos:
+            if st.button(
+                f"Gravar {len(decididos)} decisao(oes) no SGE",
+                type="primary",
+                key="rev_gravar",
+            ):
+                _aplicar_decisoes_revisao()
+                st.rerun()
+    else:
+        st.info("Nenhuma divergencia pendente de confirmacao. Ela aparece aqui quando o bot encontrar uma nota que difere do esperado.")
 
 # === MENSAGEM DE AUTOFIX ===
 autofix_msg = st.session_state.pop("autofix_message", None)
@@ -2238,34 +2287,35 @@ if autofix_msg:
             st.rerun()
 
 # === AREA DE LOGS ===
-col_log_header, col_log_export = st.columns([3, 1])
-with col_log_header:
-    st.markdown("### Logs da Execucao")
-    if st.session_state.get("log_file"):
-        st.caption(f"Log completo salvo em: `{st.session_state['log_file']}`")
-with col_log_export:
-    if st.session_state.logs:
-        log_text = "\n".join(st.session_state.logs)
-        st.download_button(
-            "📥 Exportar logs",
-            data=log_text,
-            file_name=f"logs_bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+with tab_logs:
+    col_log_header, col_log_export = st.columns([3, 1])
+    with col_log_header:
+        st.markdown("### Logs da Execucao")
+        if st.session_state.get("log_file"):
+            st.caption(f"Log completo salvo em: `{st.session_state['log_file']}`")
+    with col_log_export:
+        if st.session_state.logs:
+            log_text = "\n".join(st.session_state.logs)
+            st.download_button(
+                "📥 Exportar logs",
+                data=log_text,
+                file_name=f"logs_bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
-log_container = st.container()
+    log_container = st.container()
 
-with log_container:
-    for msg in st.session_state.logs[-50:]:
-        if "ERRO" in msg or "erro" in msg.lower():
-            st.markdown(f":red[{msg}]")
-        elif "OK" in msg or "sucesso" in msg.lower() or "concluido" in msg.lower():
-            st.markdown(f":green[{msg}]")
-        elif "AVISO" in msg or "aviso" in msg.lower():
-            st.markdown(f":orange[{msg}]")
-        else:
-            st.text(msg)
+    with log_container:
+        for msg in st.session_state.logs[-50:]:
+            if "ERRO" in msg or "erro" in msg.lower():
+                st.markdown(f":red[{msg}]")
+            elif "OK" in msg or "sucesso" in msg.lower() or "concluido" in msg.lower():
+                st.markdown(f":green[{msg}]")
+            elif "AVISO" in msg or "aviso" in msg.lower():
+                st.markdown(f":orange[{msg}]")
+            else:
+                st.text(msg)
 
 # === RESULTADO ===
 if st.session_state.resultado:
@@ -2291,11 +2341,73 @@ if st.session_state.resultado:
         st.metric("Divergencias", diverg_res, delta_color="off")
 
     if res.get("divergencias", 0) > 0:
-        st.warning(f"{res.get('divergencias')} divergencia(s) aguardando confirmacao na fila acima.")
+        st.warning(f"{res.get('divergencias')} divergencia(s) aguardando confirmacao na aba **Revisao IA**.")
     elif falhas > 0:
-        st.warning(f"Houve {falhas} falha(s). Verifique os logs acima.")
+        st.warning(f"Houve {falhas} falha(s). Verifique os logs na aba **Logs**.")
     elif preenchidas > 0:
         st.success("Tudo concluido com sucesso!")
+
+    evid_dir = _revisao_dir()
+    evidencias = sorted(
+        [os.path.join(evid_dir, f) for f in os.listdir(evid_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))],
+        key=lambda p: os.path.getmtime(p),
+        reverse=True,
+    )
+    if evidencias:
+        with st.expander(f"Ver evidencias ({len(evidencias)} screenshot(s) da revisao)"):
+            ecols = st.columns(3)
+            for ei, ep in enumerate(evidencias):
+                with ecols[ei % 3]:
+                    st.image(ep, caption=os.path.basename(ep))
+
+# === CHAT COM IA (comandos em linguagem natural) ===
+st.markdown("---")
+st.markdown("### Assistente (linguagem natural)")
+st.caption("Digite um comando (ex.: 'lanca a chamada de hoje do 7o ano da tarde'). O plano e aplicado nos filtros acima.")
+if "chat_msgs" not in st.session_state:
+    st.session_state.chat_msgs = []
+for _m in st.session_state.chat_msgs:
+    with st.chat_message(_m["role"]):
+        st.markdown(_m["text"])
+
+_chat_input = st.chat_input("Ex.: lanca a chamada de hoje do 7o ano da tarde")
+if _chat_input:
+    st.session_state.chat_msgs.append({"role": "user", "text": _chat_input})
+    try:
+        from interpretar_pedido import interpretar_pedido as _interpretar_pedido
+        _plano = _interpretar_pedido(_chat_input, logger=log)
+        if _plano.get("error"):
+            _resp = f"⚠️ {_plano['error']}"
+        else:
+            _tipo = _plano.get("tipo", "")
+            _fonte = _plano.get("fonte", "")
+            _partes = [f"**Plano:** tipo=`{_tipo or '?'}` | fonte=`{_fonte or '?'}`"]
+            for _campo in ("escola", "turma", "turno", "trimestre", "atividade", "data_realizacao", "chamada_dia"):
+                if _plano.get(_campo):
+                    _partes.append(f"{_campo.replace('_', ' ')}={_plano[_campo]}")
+            if _plano.get("lote"):
+                _partes.append("lote=sim")
+            _resp = " | ".join(_partes)
+            if _plano.get("confianca"):
+                _resp += f"\n\nConfianca: {_plano['confianca']}"
+            if _plano.get("procedimentos"):
+                _resp += "\n\n**Procedimentos:**\n" + "\n".join(f"- {_p}" for _p in _plano["procedimentos"])
+            if _tipo in ("notas", "chamada", "sequencia"):
+                st.session_state["tipo_radio"] = _tipo
+            if _fonte in ("notion", "imagem", "planilha", "excel", "csv", "google_sheets", "google_drive"):
+                st.session_state["fonte_select"] = _fonte
+            for _campo, _chave in (
+                ("escola", "escola_input"), ("turma", "turma_input"),
+                ("turno", "turno_select"), ("trimestre", "trimestre_select"),
+            ):
+                if _plano.get(_campo) and _chave in st.session_state:
+                    st.session_state[_chave] = _plano[_campo]
+            st.session_state["chat_aplicar"] = True
+            log(f"[CHAT] Plano aplicado nos filtros: tipo={_tipo} fonte={_fonte}")
+    except Exception as _exc:  # noqa: BLE001
+        _resp = f"⚠️ Nao consegui interpretar: {_exc}"
+    st.session_state.chat_msgs.append({"role": "assistant", "text": _resp})
+    st.rerun()
 
 # === RODAPE ===
 st.markdown("---")

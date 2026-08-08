@@ -375,6 +375,96 @@ def _aplicar_decisoes_revisao():
     return True
 
 
+def _remodelar_estrutura_com_ia(evidencia: dict) -> str:
+    """Analisa o screenshot do alarme [ESTRUTURA-CHANGED] via IA e sugere novos seletores.
+
+    Consulta a IA SOMENTE aqui (no desvio), nunca no fluxo normal. Retorna o texto
+    JSON da sugestao para o usuario revisar antes de aprovar qualquer override.
+    """
+    try:
+        from ai_assist import analyze_portal_failure
+        shot = (evidencia.get("evidencia") or {}).get("screenshot", "")
+        if not shot or not os.path.exists(shot):
+            return "Screenshot de evidencia nao encontrado em artifacts/estrutura/."
+        with open(shot, "rb") as f:
+            bytes_shot = f.read()
+        result = analyze_portal_failure(
+            bytes_shot,
+            error="ESTRUTURA-CHANGED: grade de notas do SGE nao reconhecida",
+            operation="remodelar_estrutura",
+            context="",
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as exc:  # noqa: BLE001
+        return f"Erro na analise da IA: {exc}"
+
+
+def _to_suffix_selector(sel: str) -> str:
+    """Normaliza um seletor sugerido pela IA para ficar especifico ao aluno ({suffix}).
+
+    Seletores genericos de atributo (ex.: input[name*='NOTA']) ganham um sufixo
+    extra para casar apenas a linha do aluno quando o chain substituir {suffix}.
+    """
+    sel = (sel or "").strip()
+    if not sel:
+        return ""
+    if "{suffix}" in sel:
+        return sel
+    if sel.endswith("]") and "[" in sel:
+        return sel + "[name*='_{suffix}']"
+    return sel
+
+
+def _salvar_estrutura_override_do_sugestao(sugestao_texto: str) -> bool:
+    """Extrai seletores da sugestao da IA e persiste o override LOCAL (so com OK do usuario).
+
+    Formato salvo em artifacts/estrutura/estrutura_override.json:
+      {"slot_selector": "...", "grade_selectors": ["..."], "fonte_ia": true}
+    """
+    try:
+        data = json.loads(sugestao_texto)
+    except Exception:  # noqa: BLE001
+        return False
+
+    from lancar_notas_sge import _salvar_estrutura_override
+
+    override: dict = {}
+    grade = data.get("grade_flow") or {}
+    slot_sel = _to_suffix_selector(grade.get("student_name_selector") or "")
+    if slot_sel and "{suffix}" not in slot_sel:
+        override["slot_selector"] = slot_sel
+    grade_sel_raw = grade.get("grade_input_selector") or ""
+    grade_selectors: list = []
+    if isinstance(grade_sel_raw, str) and grade_sel_raw.strip():
+        grade_selectors.append(_to_suffix_selector(grade_sel_raw))
+    elif isinstance(grade_sel_raw, list):
+        for g in grade_sel_raw:
+            if isinstance(g, str) and g.strip():
+                grade_selectors.append(_to_suffix_selector(g))
+
+    for fx in data.get("suggested_fixes") or []:
+        if isinstance(fx, dict) and fx.get("selector"):
+            grade_selectors.append(_to_suffix_selector(str(fx["selector"])))
+    grade_selectors = [s for s in grade_selectors if s]
+    if grade_selectors:
+        override["grade_selectors"] = grade_selectors
+
+    if not override:
+        return False
+    override["fonte_ia"] = True
+    return _salvar_estrutura_override(override)
+
+
+def _ler_arquivo_texto(path: str) -> str:
+    try:
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def salvar_config():
     config = {
         "sge_url": st.session_state.get("sge_url", ""),
@@ -1641,6 +1731,9 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                     dry_run=dry_run,
                 )
                 st.session_state.resultado = resultado
+                if resultado.get("estrutura_changed"):
+                    st.session_state.estrutura_changed = resultado.get("estrutura_evidencia") or {}
+                    st.session_state.revisao_fase = "estrutura_changed"
                 log_progress(f"Concluido! Notas: {resultado['notas']}, Preenchidas: {resultado['notas_preenchidas']}, Ausentes: {resultado.get('ausentes', 0)}, Falhas: {resultado['falhas']}")
 
             else:
@@ -1926,6 +2019,24 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                             from lancar_notas_sge import _detect_coluna_from_page
                             coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=log_progress, atividade=atividade)
 
+                            from lancar_notas_sge import _check_estrutura_sge, ESTRUTURA_DIR
+                            check_estrutura = _check_estrutura_sge(page, log_progress, contexto=contexto, atividade=atividade)
+                            if not check_estrutura["ok"]:
+                                log_progress(f"[ESTRUTURA-CHANGED] Layout da grade do SGE mudou. NAO gravando nada. Evidencia em {ESTRUTURA_DIR}.")
+                                st.session_state.estrutura_changed = check_estrutura
+                                st.session_state.revisao_fase = "estrutura_changed"
+                                st.session_state.resultado = {
+                                    "blocos": len(grouped),
+                                    "notas": len(registros_sge),
+                                    "notas_preenchidas": notas_ok,
+                                    "ausentes": ausentes_count,
+                                    "falhas": falhas,
+                                    "divergencias": divergencias,
+                                    "estrutura_changed": True,
+                                }
+                                st.session_state.executando = False
+                                st.stop()
+
                             novos = 0
                             revisao_forcar = bool(st.session_state.get("revisao_forcar", False))
                             for reg in itens:
@@ -2176,6 +2287,63 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
 
 # === FILA DE CONFIRMACAO DE DIVERGENCIAS (screenshot + decisao) ===
 with tab_rev:
+    # === ALARME [ESTRUTURA-CHANGED] ===
+    if st.session_state.get("estrutura_changed"):
+        _ev = st.session_state["estrutura_changed"]
+        st.error(
+            "**Alarme [ESTRUTURA-CHANGED]** — o layout da grade de notas do SGE mudou e "
+            "o bot **nao gravou nada** para evitar lancar nota no lugar errado."
+        )
+        st.caption(
+            f"Slots de aluno reconhecidos: **{_ev.get('slots')}** | "
+            f"Colunas de nota: **{_ev.get('colunas') or 'nenhuma'}** | "
+            f"Inputs na pagina: **{_ev.get('inputs')}**"
+        )
+        _shot = (_ev.get("evidencia") or {}).get("screenshot", "")
+        if _shot and os.path.exists(_shot):
+            try:
+                st.image(_shot, caption="Screenshot da tela que mudou (evidencia)", use_container_width=True)
+            except Exception:  # noqa: BLE001
+                st.caption(f"Evidencia disponivel em `{_shot}` (imagem nao pôde ser renderizada).")
+        with st.expander("Detalhes tecnicos (HTML, info e sugestao da IA)"):
+            st.code(_ler_arquivo_texto((_ev.get("evidencia") or {}).get("info", "")) or "sem info")
+            if _ev.get("sugestao_ia"):
+                st.markdown("**Sugestao automatica da IA no momento do alarme:**")
+                st.code(_ev["sugestao_ia"])
+            st.caption(
+                "A IA e consultada SOMENTE neste desvio (custo sob demanda). "
+                "O 'Remodelar' abaixo pede sua autorizacao antes de salvar qualquer override local."
+            )
+        st.markdown("##### Remodelar estrutura (com IA, requer seu OK)")
+        if st.button("1. Analisar tela com IA e sugerir novos seletores", key="estrutura_remodelar", use_container_width=True):
+            sugestao = _remodelar_estrutura_com_ia(_ev)
+            st.session_state.estrutura_sugestao = sugestao
+            st.rerun()
+        if st.session_state.get("estrutura_sugestao"):
+            st.success("A IA analisou a tela. **Revise** a sugestao abaixo e, se aprovar, salve o override local.")
+            st.code(st.session_state["estrutura_sugestao"])
+            c_aprov, c_desc = st.columns(2)
+            with c_aprov:
+                if st.button("2. Aprovar e salvar override local", type="primary", key="estrutura_salvar", use_container_width=True):
+                    if _salvar_estrutura_override_do_sugestao(st.session_state["estrutura_sugestao"]):
+                        st.success(
+                            "Override salvo em `artifacts/estrutura/estrutura_override.json`. "
+                            "Re-execute o lancamento para o bot usar a nova estrutura."
+                        )
+                        st.session_state.pop("estrutura_sugestao", None)
+                    else:
+                        st.error("Nao foi possivel extrair seletores da sugestao. Salve manualmente ou tente de novo.")
+            with c_desc:
+                if st.button("Descartar sugestao", key="estrutura_descartar", use_container_width=True):
+                    st.session_state.pop("estrutura_sugestao", None)
+                    st.rerun()
+        if st.button("Limpar alarme", key="estrutura_limpar", use_container_width=True):
+            st.session_state.pop("estrutura_changed", None)
+            st.session_state.pop("estrutura_sugestao", None)
+            if st.session_state.get("resultado"):
+                st.session_state.resultado["estrutura_changed"] = False
+            st.rerun()
+
     _fila_rev = st.session_state.get("revisao_fila", [])
     _pendentes_rev = [it for it in _fila_rev if it.get("decisao") in (None, "")]
     if st.session_state.get("revisao_fase") == "pendente" and _pendentes_rev:

@@ -37,6 +37,7 @@ try:
         AI_PROVIDER,
         AIAssistError,
         analyze_login_screen,
+        analyze_portal_failure,
         find_element_on_screen,
         verify_grade_on_screen,
         is_available as ai_is_available,
@@ -68,6 +69,9 @@ except ImportError:
 
     def analyze_login_screen(*args, **kwargs):
         return {"elements": [], "has_login_form": False}
+
+    def analyze_portal_failure(*args, **kwargs):
+        return {"diagnosis": "IA nao disponivel", "suggested_fixes": [], "needs_rediscovery": False}
 
     def find_element_on_screen(*args, **kwargs):
         return {"found": False}
@@ -283,6 +287,38 @@ _db_metadata_cache: Dict[str, Dict] = {}
 # Chave: id do elemento scope no DOM; Valor: lista de slots
 _slots_cache: Dict[int, List[Dict[str, str]]] = {}
 
+# Evidencia de mudanca de estrutura do SGE (alarme [ESTRUTURA-CHANGED])
+ESTRUTURA_DIR = os.environ.get("SGE_ESTRUTURA_DIR", "artifacts/estrutura")
+ESTRUTURA_OVERRIDE_PATH = os.path.join(ESTRUTURA_DIR, "estrutura_override.json")
+
+
+def _load_estrutura_override() -> Dict[str, Any]:
+    """Le o override local de estrutura salvo pelo usuario via 'Remodelar'.
+
+    Formato: {"slot_selector": "...", "grade_selectors": ["...", ...]}
+    Retorna {} se nao houver override. NUNCA cria o arquivo (so leitura).
+    """
+    try:
+        if os.path.exists(ESTRUTURA_OVERRIDE_PATH):
+            with open(ESTRUTURA_OVERRIDE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+def _salvar_estrutura_override(override: Dict[str, Any]) -> bool:
+    """Persiste o override de estrutura apos consentimento do usuario ('Remodelar')."""
+    try:
+        os.makedirs(ESTRUTURA_DIR, exist_ok=True)
+        with open(ESTRUTURA_OVERRIDE_PATH, "w", encoding="utf-8") as f:
+            json.dump(override, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _sanitize_ai_selector(selector: str) -> str:
     """Sanitiza seletores CSS retornados por IA, removendo caracteres invalidos."""
@@ -409,6 +445,18 @@ class ContextoTurma:
 
 class LancamentoError(RuntimeError):
     pass
+
+
+class EstruturaChangedError(LancamentoError):
+    """Estrutura da grade do SGE mudou a ponto de nenhum seletor reconhecer os campos.
+
+    Levantado para ABORTAR a execucao SEM gravar nada; a evidencia (screenshot +
+    HTML + sugestao de IA) fica salva em ESTRUTURA_DIR para o usuario revisar.
+    """
+
+    def __init__(self, evidencia: Optional[Dict[str, str]] = None):
+        super().__init__("Estrutura do SGE mudou (nenhum campo reconhecido).")
+        self.evidencia = evidencia or {}
 
 
 def _log(logger: Optional[LogFn], msg: str) -> None:
@@ -3408,6 +3456,47 @@ _student_page_cache: Dict[str, int] = {}
 
 
 def _collect_student_slots(scope) -> List[Dict[str, str]]:
+    """Coleta os 'slots' de alunos da grade (suffix de 4 digitos + nome).
+
+    Cadeia de fallback (PONTO 3.1):
+      1. Override local salvo pelo usuario via 'Remodelar' (seletor custom).
+      2. Seletores CSS padrao do SGE (_ALUMATNOM_<suffix>).
+      3. Varredura JS ampla: qualquer input/span cujo name|id termine em _\d{4}
+         e cujo valor pareca um nome (contem letras) — absorve renames como
+         _NOMEALUNO_<suffix>, _ALUNO_<suffix>, span__NOME_<suffix>, etc.
+    """
+    override = _load_estrutura_override()
+    override_selector = override.get("slot_selector", "")
+    try:
+        if override_selector:
+            slots = scope.eval_on_selector_all(
+                override_selector,
+                r"""
+                (els) => {
+                  const out = [];
+                  const seen = new Set();
+                  for (const el of els) {
+                    const attr = (el.getAttribute('name') || el.getAttribute('id') || '').trim();
+                    const m = attr.match(/_(\d{4})$/);
+                    if (!m) continue;
+                    const suffix = m[1];
+                    if (seen.has(suffix)) continue;
+                    const raw = (el.value ?? el.textContent ?? '').trim();
+                    if (!raw) continue;
+                    seen.add(suffix);
+                    out.push({ suffix, aluno: raw });
+                  }
+                  return out;
+                }
+                """,
+            )
+            if isinstance(slots, list):
+                slots = [s for s in slots if isinstance(s, dict)]
+                if slots:
+                    return slots
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         slots = scope.eval_on_selector_all(
             "input[name^='_ALUMATNOM_'], span[id^='span__ALUMATNOM_']",
@@ -3431,9 +3520,42 @@ def _collect_student_slots(scope) -> List[Dict[str, str]]:
             """,
         )
         if isinstance(slots, list):
+            slots = [s for s in slots if isinstance(s, dict)]
+            if slots:
+                return slots
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Fallback amplo: descobre os nomes por atributo alternativo + valor com letras.
+    try:
+        slots = scope.evaluate(
+            r"""
+            () => {
+              const out = [];
+              const seen = new Set();
+              const nodes = Array.from(document.querySelectorAll(
+                  'input[type="text"], input[type="search"], span, td[valign]'
+              ));
+              for (const el of nodes) {
+                const attr = (el.getAttribute('name') || el.getAttribute('id') || '').trim();
+                const m = attr.match(/(?:ALUMATNOM|ALUNO|NOME|NOM|ESTUDANTE|ESTU)[^_]*_(\d{4})$/i);
+                if (!m) continue;
+                const suffix = m[1];
+                if (seen.has(suffix)) continue;
+                const raw = (el.value ?? el.textContent ?? '').trim();
+                if (!raw) continue;
+                if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(raw)) continue;
+                seen.add(suffix);
+                out.push({ suffix, aluno: raw });
+              }
+              return out;
+            }
+            """
+        )
+        if isinstance(slots, list):
             return [s for s in slots if isinstance(s, dict)]
     except Exception:  # noqa: BLE001
-        return []
+        pass
     return []
 
 
@@ -3496,80 +3618,190 @@ def _candidate_suffixes_for_student(expected: str, slots: List[Dict[str, str]]) 
     return [suffix for _, suffix in scored]
 
 
-def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
+def _grade_input_selectors_chain(suffix: str, coluna_sge: str = "") -> List[str]:
+    """Cadeia de seletores CSS para o campo de nota do aluno (do mais especifico ao mais amplo).
+
+    Ordem: nome exato -> id exato -> sufixo+coluna -> sufixo+NOTA/AVAL -> apenas sufixo.
+    Override local (via 'Remodelar') entra como primeira tentativa.
+    """
+    chain: List[str] = []
+    override = _load_estrutura_override()
+    override_selectors = override.get("grade_selectors") or []
+    if isinstance(override_selectors, list):
+        chain.extend(
+            s.replace("{suffix}", suffix)
+            for s in override_selectors
+            if isinstance(s, str) and s.strip()
+        )
+
     if coluna_sge:
-        selectors = [
+        chain.extend([
             f"input[name='_{coluna_sge}_{suffix}']",
             f"input[id='_{coluna_sge}_{suffix}']",
-        ]
+            f"input[name$='_{coluna_sge}_{suffix}']",
+            f"input[id$='_{coluna_sge}_{suffix}']",
+            f"input[name*='_{suffix}'][name*='{coluna_sge}'], input[id*='_{suffix}'][id*='{coluna_sge}']",
+        ])
     else:
-        selectors = [
+        chain.extend([
             f"input[name='_NOTA_{suffix}']",
             f"input[id='_NOTA_{suffix}']",
             f"input[name$='_{suffix}'][name*='NOTA' i]",
             f"input[id$='_{suffix}'][id*='NOTA' i]",
             f"input[name$='_{suffix}'][name*='AVAL' i]",
             f"input[id$='_{suffix}'][id*='AVAL' i]",
-        ]
-    selector = ", ".join(selectors)
-    try:
-        field = scope.locator(selector)
-        if field.count() == 0:
-            return False
+            f"input[name$='_{suffix}'], input[id$='_{suffix}']",
+        ])
+    return chain
 
-        total = min(field.count(), 6)
-        for idx in range(total):
-            target = field.nth(idx)
+
+def _discover_grade_input_attr(scope, suffix: str, coluna_sge: str = "") -> str:
+    """Descobre o atributo real (name|id) do input de nota via varredura JS ampla.
+
+    Retorna algo como 'name=_N1S_0001' ou 'id=_NOTA_0001'; vazio se nao achar.
+    Absorve renames do SGE: qualquer input cujo name|id contenha o suffix (+ coluna).
+    """
+    js = """
+    ({suffix, coluna}) => {
+        const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+        for (const el of candidates) {
+            const name = (el.getAttribute('name') || '').trim();
+            const id = (el.getAttribute('id') || '').trim();
+            const attrs = name + ' ' + id;
+            if (!attrs.includes('_' + suffix)) continue;
+            if (coluna && !attrs.toLowerCase().includes('_' + coluna.toLowerCase() + '_')) continue;
+            if (el.disabled || el.readOnly) continue;
+            return (name ? 'name' : 'id') + '=' + (name || id);
+        }
+        return '';
+    }
+    """
+    try:
+        return str(scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge}))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _locate_grade_input_by_row_text(scope, aluno: str, coluna_sge: str = "") -> Optional[Any]:
+    """Localiza o campo de nota ancorando na LINHA que contem o texto do aluno.
+
+    Fallback por texto/relacao (PONTO 3.1): quando o atributo do campo mudou mas o
+    nome do aluno continua na grade, acha o <tr> que contem o nome e procura o input
+    da coluna dentro dele. Sem coluna definida, so usa o campo se a linha tiver
+    EXATAMENTE um input numerico/texto visivel (nao arrisca coluna errada).
+    """
+    alvo_norm = _normalize(aluno)
+    if not alvo_norm:
+        return None
+    try:
+        for hit in scope.get_by_text(aluno, exact=False):
             try:
-                if target.is_disabled() or (target.get_attribute("readonly") is not None):
+                row = hit.locator("xpath=ancestor::tr[1]")
+                if row.count() == 0:
                     continue
-                target.click(timeout=ACTION_TIMEOUT_MS)
-                target.fill(nota_texto, timeout=ACTION_TIMEOUT_MS)
-                target.dispatch_event("input")
-                target.dispatch_event("change")
-                return True
+                if coluna_sge:
+                    cand = row.locator(
+                        f"input[type='text'][name*='_{coluna_sge}_'], input[type='number'][name*='_{coluna_sge}_'], "
+                        f"input[type='text'][id*='_{coluna_sge}_'], input[type='number'][id*='_{coluna_sge}_']"
+                    )
+                else:
+                    cand = row.locator("input[type='text']:visible, input[type='number']:visible")
+                if cand.count() > 0 and (coluna_sge or cand.count() == 1):
+                    return cand.first
             except Exception:  # noqa: BLE001
                 continue
-
-        return bool(
-            scope.evaluate(
-                """
-                ({ suffix, nota, coluna }) => {
-                  let selectors;
-                  if (coluna) {
-                    selectors = [
-                      `input[name='_${coluna}_${suffix}']`,
-                      `input[id='_${coluna}_${suffix}']`,
-                    ];
-                  } else {
-                    selectors = [
-                      `input[name='_NOTA_${suffix}']`,
-                      `input[id='_NOTA_${suffix}']`,
-                      `input[name$='_${suffix}'][name*='NOTA' i]`,
-                      `input[id$='_${suffix}'][id*='NOTA' i]`,
-                      `input[name$='_${suffix}'][name*='AVAL' i]`,
-                      `input[id$='_${suffix}'][id*='AVAL' i]`,
-                    ];
-                  }
-
-                  for (const sel of selectors) {
-                    const all = Array.from(document.querySelectorAll(sel));
-                    for (const el of all) {
-                      if (!el || el.disabled || el.readOnly) continue;
-                      el.value = nota;
-                      el.dispatchEvent(new Event('input', { bubbles: true }));
-                      el.dispatchEvent(new Event('change', { bubbles: true }));
-                      return true;
-                    }
-                  }
-                  return false;
-                }
-                """,
-                {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge},
-            )
-        )
     except Exception:  # noqa: BLE001
-        return False
+        pass
+    return None
+
+
+def _locate_grade_input(scope, suffix: str, coluna_sge: str = "", aluno: str = "") -> Optional[Any]:
+    """Localiza o input de nota do aluno com cadeia de fallback completa (PONTO 3.1).
+
+    1. CSS: nome exato -> id exato -> sufixo+coluna -> NOTA/AVAL -> so sufixo.
+    2. Atributo real descoberto via JS (absorve rename do name/id).
+    3. Ancoragem por texto na linha do aluno (coluna definida ou linha com 1 campo).
+
+    Retorna Playwright Locator ou None.
+    """
+    for sel in _grade_input_selectors_chain(suffix, coluna_sge):
+        try:
+            loc = scope.locator(sel)
+            if loc.count() > 0:
+                return loc
+        except Exception:  # noqa: BLE001
+            continue
+    attr = _discover_grade_input_attr(scope, suffix, coluna_sge)
+    if attr:
+        kind, _, val = attr.partition("=")
+        if kind and val:
+            try:
+                loc = scope.locator(f"input[{kind}='{val}']")
+                if loc.count() > 0:
+                    return loc
+            except Exception:  # noqa: BLE001
+                pass
+    if aluno:
+        return _locate_grade_input_by_row_text(scope, aluno, coluna_sge)
+    return None
+
+
+def _try_fill_grade_by_suffix(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
+    field = _locate_grade_input(scope, suffix, coluna_sge)
+    if field is not None:
+        try:
+            total = min(field.count(), 6)
+            for idx in range(total):
+                target = field.nth(idx)
+                try:
+                    if target.is_disabled() or (target.get_attribute("readonly") is not None):
+                        continue
+                    target.click(timeout=ACTION_TIMEOUT_MS)
+                    target.fill(nota_texto, timeout=ACTION_TIMEOUT_MS)
+                    target.dispatch_event("input")
+                    target.dispatch_event("change")
+                    return True
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+    return bool(
+        scope.evaluate(
+            """
+            ({ suffix, nota, coluna }) => {
+              let selectors;
+              if (coluna) {
+                selectors = [
+                  `input[name='_${coluna}_${suffix}']`,
+                  `input[id='_${coluna}_${suffix}']`,
+                ];
+              } else {
+                selectors = [
+                  `input[name='_NOTA_${suffix}']`,
+                  `input[id='_NOTA_${suffix}']`,
+                  `input[name$='_${suffix}'][name*='NOTA' i]`,
+                  `input[id$='_${suffix}'][id*='NOTA' i]`,
+                  `input[name$='_${suffix}'][name*='AVAL' i]`,
+                  `input[id$='_${suffix}'][id*='AVAL' i]`,
+                ];
+              }
+
+              for (const sel of selectors) {
+                const all = Array.from(document.querySelectorAll(sel));
+                for (const el of all) {
+                  if (!el || el.disabled || el.readOnly) continue;
+                  el.value = nota;
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  return true;
+                }
+              }
+              return false;
+            }
+            """,
+            {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge},
+        )
+    )
 
 
 def _try_fill_any_numeric_input_for_suffix(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -> bool:
@@ -3886,6 +4118,130 @@ def _sample_students_from_current_grade_page(page, limit: int = 12) -> List[str]
     return sample
 
 
+def _check_estrutura_sge(
+    page,
+    logger: Optional[LogFn],
+    contexto: Optional["ContextoTurma"] = None,
+    atividade: str = "",
+) -> Dict[str, Any]:
+    """Verifica se a estrutura da grade de notas do SGE continua reconhecivel.
+
+    Chamado a cada bloco, DEPOIS de abrir a atividade. Se nenhum slot de aluno
+    nem coluna de nota for reconhecido (mesmo com a cadeia de fallback), salva
+    evidencia em ESTRUTURA_DIR e retorna ok=False -> o chamador ABORTA sem gravar.
+
+    Retorna: {"ok": bool, "slots": int, "colunas": [...], "inputs": int,
+              "evidencia": {screenshot, html, info}, "sugestao_ia": "..." }
+    """
+    try:
+        slots_total = 0
+        inputs_total = 0
+        for scope in _iter_scopes(page):
+            slots_total += len(_collect_student_slots(scope))
+            try:
+                inputs_total += int(scope.evaluate(
+                    "() => document.querySelectorAll('input[type=\"text\"], input[type=\"number\"]').length"
+                ) or 0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        colunas = _distinct_grade_columns_on_page(page)
+        if slots_total > 0 or colunas:
+            _log(logger, f"[ESTRUTURA] ok: slots={slots_total} colunas={colunas} inputs={inputs_total}")
+            return {"ok": True, "slots": slots_total, "colunas": colunas, "inputs": inputs_total}
+
+        # Guarda contra falso alarme: so tratamos como mudanca de ESTRUTURA se
+        # realmente estivermos na grade de lancamento (indicadores visiveis).
+        if not _grade_entry_indicators_visible(page):
+            _log(logger, f"[ESTRUTURA] Nao estamos na grade de lancamento (indicadores ausentes); sem alarme de estrutura.")
+            return {"ok": True, "slots": slots_total, "colunas": colunas, "inputs": inputs_total}
+
+        # Estrutura nao reconhecida -> captura evidencia e ABORTA.
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            os.makedirs(ESTRUTURA_DIR, exist_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        screenshot_path = os.path.join(ESTRUTURA_DIR, f"estrutura_changed_{timestamp}.png")
+        html_path = os.path.join(ESTRUTURA_DIR, f"estrutura_changed_{timestamp}.html")
+        info_path = os.path.join(ESTRUTURA_DIR, f"estrutura_changed_{timestamp}_info.txt")
+        try:
+            page.screenshot(path=screenshot_path, full_page=True)
+        except Exception as exc:  # noqa: BLE001
+            _log(logger, f"[ESTRUTURA-CHANGED] Falha ao capturar screenshot: {exc}")
+        try:
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(page.content())
+        except Exception as exc:  # noqa: BLE001
+            _log(logger, f"[ESTRUTURA-CHANGED] Falha ao salvar HTML: {exc}")
+
+        ctx = contexto if isinstance(contexto, ContextoTurma) else None
+        info_lines = [
+            f"evento=ESTRUTURA-CHANGED",
+            f"data={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"url={getattr(page, 'url', '')}",
+            f"escola={ctx.escola if ctx else ''}",
+            f"turno={ctx.turno if ctx else ''}",
+            f"turma={ctx.turma if ctx else ''}",
+            f"trimestre={ctx.trimestre if ctx else ''}",
+            f"atividade={atividade}",
+            f"slots={slots_total}",
+            f"colunas={colunas}",
+            f"inputs={inputs_total}",
+            f"dica=Clique em 'Remodelar' no painel para a IA sugerir novos seletores (gera artifacts/estrutura/estrutura_override.json).",
+        ]
+        try:
+            amostra = page.evaluate(
+                """() => Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'))
+                    .slice(0, 20).map(el => (el.name || '') + '|' + (el.id || ''))"""
+            )
+            if amostra:
+                info_lines.append(f"amostra_inputs={amostra}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            with open(info_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(info_lines))
+        except Exception:  # noqa: BLE001
+            pass
+
+        evidencia = {"screenshot": screenshot_path, "html": html_path, "info": info_path}
+        sugestao_ia = ""
+        if ai_is_enabled():
+            try:
+                with open(screenshot_path, "rb") as f:
+                    shot = f.read()
+                ai_result = analyze_portal_failure(
+                    shot,
+                    error="Estrutura da grade de notas nao reconhecida (nenhum slot/coluna encontrado).",
+                    operation="lancar_notas",
+                    context=f"{ctx.escola if ctx else ''}/{ctx.turma if ctx else ''}/{atividade}",
+                    logger=logger,
+                )
+                sugestao_ia = json.dumps(ai_result, ensure_ascii=False, indent=2)
+                with open(os.path.join(ESTRUTURA_DIR, f"estrutura_changed_{timestamp}_ia.json"), "w", encoding="utf-8") as f:
+                    f.write(sugestao_ia)
+            except Exception as exc:  # noqa: BLE001
+                _log(logger, f"[ESTRUTURA-CHANGED] Falha na analise de IA: {exc}")
+
+        _log(
+            logger,
+            f"[ESTRUTURA-CHANGED] Layout da grade mudou: slots={slots_total} colunas={colunas} inputs={inputs_total}. "
+            f"NAO gravando nada. Evidencia em {ESTRUTURA_DIR}.",
+        )
+        return {
+            "ok": False,
+            "slots": slots_total,
+            "colunas": colunas,
+            "inputs": inputs_total,
+            "evidencia": evidencia,
+            "sugestao_ia": sugestao_ia,
+        }
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, f"[ESTRUTURA] Aviso: check de estrutura falhou ({exc}); prosseguindo.")
+        return {"ok": True, "slots": -1, "colunas": [], "inputs": -1}
+
+
 def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogFn], coluna_sge: str = "") -> str:
     """Preenche a nota do aluno. Retorna o suffix preenchido ou '' se falhou."""
     nota_texto = str(nota).replace(".", ",")
@@ -4020,7 +4376,8 @@ def _find_grade_input_for_student(page, aluno: str, coluna_sge: str = ""):
     """Localiza o input de nota do aluno na pagina (para screenshot/evidencia).
 
     Retorna um Playwright Locator do campo (ou None). Reusa o mecanismo de
-    slots/suffixes usado na leitura/preenchimento.
+    slots/suffixes usado na leitura/preenchimento e a cadeia de fallback
+    (CSS -> atributo via JS -> linha do aluno por texto) do PONTO 3.1.
     """
     if not _normalize_loose(aluno):
         return None
@@ -4031,18 +4388,14 @@ def _find_grade_input_for_student(page, aluno: str, coluna_sge: str = ""):
                 continue
             suffixes = _candidate_suffixes_for_student(aluno, slots)
             for suffix in suffixes[:3]:
-                if coluna_sge:
-                    loc = scope.locator(
-                        f"input[name$='_{coluna_sge}_{suffix}'], input[id$='_{coluna_sge}_{suffix}'], "
-                        f"input[name$='_{suffix}'][name*='{coluna_sge}'], input[id$='_{suffix}'][id*='{coluna_sge}']"
-                    )
-                else:
-                    loc = scope.locator(
-                        f"input[name$='_{suffix}'][name*='NOTA' i], input[id$='_{suffix}'][id*='NOTA' i], "
-                        f"input[name$='_{suffix}'][name*='AVAL' i], input[id$='_{suffix}'][id*='AVAL' i]"
-                    )
-                if loc.count() > 0:
+                loc = _locate_grade_input(scope, suffix, coluna_sge, aluno=aluno)
+                if loc is not None and loc.count() > 0:
                     return loc.first
+        # Fallback final: aluno achado por texto mesmo sem suffix casar.
+        for scope in _iter_scopes(page):
+            loc = _locate_grade_input_by_row_text(scope, aluno, coluna_sge)
+            if loc is not None:
+                return loc
     except Exception:  # noqa: BLE001
         pass
     return None
@@ -4691,6 +5044,18 @@ def executar_lancamento(
             novos_preenchimentos = 0
             regs_ja_no_sge: List[RegistroNota] = []
             coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade)
+            check_estrutura = _check_estrutura_sge(page, logger, contexto=contexto, atividade=atividade)
+            if not check_estrutura["ok"]:
+                _log(logger, f"[ESTRUTURA-CHANGED] Execucao ABORTADA sem gravar. Evidencia em {ESTRUTURA_DIR}.")
+                return {
+                    "blocos": total_blocos,
+                    "notas": total_notas,
+                    "notas_preenchidas": notas_ok,
+                    "ausentes": ausentes,
+                    "falhas": falhas,
+                    "estrutura_changed": True,
+                    "estrutura_evidencia": check_estrutura,
+                }
             ai_calls_this_block = 0
             MAX_AI_CALLS_PER_BLOCK = 3
             for reg in itens:
@@ -4733,6 +5098,13 @@ def executar_lancamento(
                         regs_ok_bloco.append(reg)
                     else:
                         _log(logger, f"  [FALHA-VERIFICACAO] Nota {nota_texto} NAO confirmada no campo para '{reg.aluno}'. Pode ser campo errado.")
+                        try:
+                            nome_arq = re.sub(r"[^a-zA-Z0-9_-]", "_", reg.aluno)
+                            ev_path = os.path.join(ESTRUTURA_DIR, f"verificacao_falhou_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{nome_arq}.png")
+                            os.makedirs(ESTRUTURA_DIR, exist_ok=True)
+                            _capturar_evidencia_divergencia(page, reg.aluno, coluna_sge, ev_path, logger=logger)
+                        except Exception:  # noqa: BLE001
+                            pass
                         falhas += 1
                         regs_fail_bloco.append(reg)
                 else:

@@ -99,7 +99,7 @@ if "%NSIS_PATH%"=="" (
 )
 echo [NSIS] Gerando instalador...
 "%NSIS_PATH%" installer.nsi
-if exist dist\BotDoProfessor-Setup-v1.0.0.exe (
+if exist dist\BotDoProfessor-Setup-v1.4.29.exe (
     echo.
     echo =============================================
     echo  Instalador gerado!

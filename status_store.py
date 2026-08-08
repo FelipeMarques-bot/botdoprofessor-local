@@ -100,6 +100,13 @@ class StatusStore:
         reg = self._dados["registros"].get(chave, {})
         return reg.get("status") == "Lancada"
 
+    def obter_status(self, escola: str, turno: str, turma: str, trimestre: str,
+                     aluno: str, atividade: str) -> str:
+        """Retorna o status registrado: '', 'Lancada' ou 'Falha'."""
+        chave = self._chave(escola, turno, turma, trimestre, aluno, atividade)
+        reg = self._dados["registros"].get(chave, {})
+        return reg.get("status", "")
+
     def marcar_lancada(self, escola: str, turno: str, turma: str, trimestre: str,
                         aluno: str, atividade: str, nota: float) -> None:
         """Marca uma nota como lancada com sucesso."""

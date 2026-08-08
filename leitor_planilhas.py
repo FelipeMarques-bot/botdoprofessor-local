@@ -911,6 +911,67 @@ def _extract_sheet_id(url_or_id: str) -> Optional[str]:
     return None
 
 
+def registros_para_linhas(registros: List[RegistroNota]) -> List[Dict[str, Any]]:
+    """Converte RegistroNota em linhas editaveis para o data_editor do painel."""
+    return [
+        {
+            "escola": r.escola,
+            "turno": r.turno,
+            "turma": r.turma,
+            "trimestre": r.trimestre,
+            "aluno": r.aluno,
+            "atividade": r.atividade,
+            "nota": r.nota,
+            "data_realizacao": r.data_realizacao,
+            "status": "",
+        }
+        for r in registros
+    ]
+
+
+def linhas_para_registros(
+    linhas: List[Dict[str, Any]],
+    defaults: Optional[Dict[str, str]] = None,
+    logger: Optional[LogFn] = None,
+) -> List[RegistroNota]:
+    """Converte linhas editadas no painel em RegistroNota validos.
+
+    Linhas sem aluno/atividade ou com nota invalida (None ou fora de 0-10)
+    sao ignoradas. Campos vazios usam os defaults (filtros do painel) e,
+    se ainda assim vazios, ficam como 'Nao informado'.
+    """
+    defaults = defaults or {}
+    registros: List[RegistroNota] = []
+
+    def _fill(ln: Dict[str, Any], campo: str) -> str:
+        val = str(ln.get(campo) or "").strip()
+        return val or defaults.get(campo) or "Nao informado"
+
+    for ln in linhas:
+        aluno = str(ln.get("aluno") or "").strip()
+        atividade = str(ln.get("atividade") or "").strip()
+        if not aluno or not atividade:
+            continue
+        nota = _to_float(ln.get("nota"))
+        if nota is None or nota < 0 or nota > 10:
+            if logger:
+                logger(
+                    f"Linha ignorada (nota invalida): aluno='{aluno}' atividade='{atividade}'"
+                )
+            continue
+        registros.append(RegistroNota(
+            escola=_fill(ln, "escola"),
+            turno=_fill(ln, "turno"),
+            turma=_fill(ln, "turma"),
+            trimestre=_fill(ln, "trimestre"),
+            aluno=aluno,
+            atividade=atividade,
+            nota=nota,
+            data_realizacao=str(ln.get("data_realizacao") or "").strip(),
+        ))
+    return registros
+
+
 def carregar_notas(
     fonte: str,
     caminho_ou_url: str,

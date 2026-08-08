@@ -32,6 +32,12 @@ from leitor_planilhas import (
     ler_sequencias_excel, ler_sequencias_csv,
 )
 
+# Caminho sintetico da fonte "planilha no painel": usada pelo StatusStore
+# para persistir o status (Lancada/Falha) das linhas editadas entre execucoes.
+_PAINEL_SOURCE_PATH = os.path.join(
+    tempfile.gettempdir(), "sge_bot_uploads", "_planilha_painel.xlsx"
+)
+
 # === CONFIGURACAO DA PAGINA ===
 st.set_page_config(
     page_title="Bot do Professor - Lancamento de Notas",
@@ -236,6 +242,62 @@ def _validar_template(fonte: str, caminho: str, tipo: str) -> tuple:
             return len(avisos) < 3, avisos
     except Exception as exc:
         return False, [f"Erro ao ler arquivo: {exc}"]
+
+
+def _planilha_status_store():
+    from status_store import StatusStore
+    return StatusStore(_PAINEL_SOURCE_PATH, logger=None)
+
+
+def _aplicar_status_salvo(linhas: List[Dict]) -> None:
+    """Preenche a coluna Status das linhas com o status persistido localmente."""
+    from status_store import StatusStore
+    store = StatusStore(_PAINEL_SOURCE_PATH, logger=None)
+    for ln in linhas:
+        status = store.obter_status(
+            ln.get("escola", ""), ln.get("turno", ""), ln.get("turma", ""),
+            ln.get("trimestre", ""), ln.get("aluno", ""), ln.get("atividade", ""),
+        )
+        if status:
+            ln["status"] = status
+
+
+def _semear_status_manual(status_store) -> None:
+    """Respeita status Lancada/Falha editados manualmente nas linhas do painel."""
+    from leitor_planilhas import _to_float
+    for ln in st.session_state.get("planilha_linhas", []):
+        status = str(ln.get("status") or "").strip()
+        if not status:
+            continue
+        aluno = str(ln.get("aluno") or "").strip()
+        atividade = str(ln.get("atividade") or "").strip()
+        if not aluno or not atividade:
+            continue
+        nota = _to_float(ln.get("nota"))
+        if nota is None:
+            nota = 0.0
+        args = (
+            str(ln.get("escola") or ""), str(ln.get("turno") or ""),
+            str(ln.get("turma") or ""), str(ln.get("trimestre") or ""),
+            aluno, atividade,
+        )
+        if status == "Lancada":
+            status_store.marcar_lancada(*args, nota)
+        elif status == "Falha":
+            status_store.marcar_falha(*args, nota, erro="manual")
+
+
+def _sincronizar_status_painel(status_store) -> None:
+    """Grava no painel o status final registrado pelo StatusStore apos o lancamento."""
+    linhas = st.session_state.get("planilha_linhas", [])
+    for ln in linhas:
+        status = status_store.obter_status(
+            ln.get("escola", ""), ln.get("turno", ""), ln.get("turma", ""),
+            ln.get("trimestre", ""), ln.get("aluno", ""), ln.get("atividade", ""),
+        )
+        if status:
+            ln["status"] = status
+    st.session_state.planilha_linhas = linhas
 
 
 def salvar_config():
@@ -702,10 +764,11 @@ with st.sidebar:
         st.markdown("**De onde vao os dados das notas?**")
         fonte = st.selectbox(
             "Selecione a origem",
-            options=["notion", "imagem", "excel", "csv", "google_sheets", "google_drive"],
+            options=["notion", "imagem", "planilha", "excel", "csv", "google_sheets", "google_drive"],
             format_func=lambda x: {
                 "notion": "Notion (bancos de dados)",
                 "imagem": "Imagem / Foto (extrair notas com IA)",
+                "planilha": "Planilha no painel (editar aqui)",
                 "excel": "Arquivo Excel (.xlsx)",
                 "csv": "Arquivo CSV",
                 "google_sheets": "Google Sheets (planilha online)",
@@ -746,6 +809,81 @@ with st.sidebar:
                     st.success("Template valido! Pronto para executar.")
                 for aviso in avisos:
                     st.warning(aviso)
+        elif fonte == "planilha":
+            st.info(
+                "Edite as notas direto aqui ou carregue um arquivo **.xlsx/.csv** "
+                "para preencher a tabela automaticamente. A coluna **Status** "
+                "(Lancada/Falha) pode ser editada por linha e fica salva entre execucoes."
+            )
+            plan_arquivo = st.file_uploader(
+                "Carregar .xlsx ou .csv para preencher a tabela",
+                type=["xlsx", "xls", "csv"],
+                key="planilha_upload",
+            )
+            if plan_arquivo:
+                nome_arq = plan_arquivo.name
+                if nome_arq != st.session_state.get("planilha_ultimo_arquivo", ""):
+                    from leitor_planilhas import carregar_notas, registros_para_linhas
+                    tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+                    tmp_dir.mkdir(exist_ok=True)
+                    tmp_path = tmp_dir / f"_painel_{nome_arq}"
+                    with open(tmp_path, "wb") as f:
+                        f.write(plan_arquivo.getbuffer())
+                    ext = nome_arq.rsplit(".", 1)[-1].lower()
+                    fonte_arq = "excel" if ext in ("xlsx", "xls") else "csv"
+                    try:
+                        registros_arq = carregar_notas(fonte_arq, str(tmp_path), logger=log)
+                    except Exception as exc:
+                        st.error(f"Erro ao ler o arquivo: {exc}")
+                        registros_arq = []
+                    linhas = registros_para_linhas(registros_arq)
+                    _aplicar_status_salvo(linhas)
+                    st.session_state.planilha_linhas = linhas
+                    st.session_state.planilha_ultimo_arquivo = nome_arq
+                    if registros_arq:
+                        st.success(f"{len(registros_arq)} nota(s) carregada(s). Edite se precisar e execute.")
+                    else:
+                        st.warning("Nenhuma nota encontrada no arquivo. Confira o cabecalho (Nome/Aluno + colunas de nota).")
+            else:
+                if st.session_state.get("planilha_ultimo_arquivo"):
+                    st.session_state.planilha_ultimo_arquivo = ""
+
+            if "planilha_linhas" not in st.session_state:
+                st.session_state.planilha_linhas = []
+
+            st.markdown("**Notas (edite as celulas; use **`+`** na ultima linha para adicionar)**")
+            plan_editor = st.data_editor(
+                st.session_state.planilha_linhas,
+                num_rows="dynamic",
+                key="planilha_editor",
+                use_container_width=True,
+                column_config={
+                    "escola": st.column_config.TextColumn("Escola"),
+                    "turno": st.column_config.TextColumn("Turno"),
+                    "turma": st.column_config.TextColumn("Turma"),
+                    "trimestre": st.column_config.TextColumn("Trimestre"),
+                    "aluno": st.column_config.TextColumn("Aluno"),
+                    "atividade": st.column_config.TextColumn("Atividade"),
+                    "nota": st.column_config.NumberColumn("Nota", min_value=0.0, max_value=10.0, format="%.2f"),
+                    "data_realizacao": st.column_config.TextColumn("Data realizacao"),
+                    "status": st.column_config.SelectboxColumn("Status", options=["", "Lancada", "Falha"]),
+                },
+            )
+            st.session_state.planilha_linhas = plan_editor
+            st.caption(f"{len(st.session_state.planilha_linhas)} linha(s) na tabela. Escola/Turno/Turma/Trimestre vazios usam os filtros acima.")
+
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                if st.button("Limpar tabela", key="planilha_limpar", use_container_width=True):
+                    st.session_state.planilha_linhas = []
+                    st.rerun()
+            with col_p2:
+                if st.button("Adicionar linha vazia", key="planilha_add_linha", use_container_width=True):
+                    st.session_state.planilha_linhas = st.session_state.planilha_linhas + [{
+                        "escola": "", "turno": "", "turma": "", "trimestre": "",
+                        "aluno": "", "atividade": "", "nota": "", "data_realizacao": "", "status": "",
+                    }]
+                    st.rerun()
         elif fonte == "google_sheets":
             st.info(
                 "Cole o link compartilhavel do **Google Sheets** abaixo.\n\n"
@@ -1451,6 +1589,26 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
                         st.stop()
 
+                elif fonte == "planilha":
+                    fonte_path = _PAINEL_SOURCE_PATH
+                    from leitor_planilhas import linhas_para_registros
+                    registros = linhas_para_registros(
+                        st.session_state.get("planilha_linhas", []),
+                        defaults={
+                            "escola": st.session_state.get("escola", ""),
+                            "turno": st.session_state.get("turno", ""),
+                            "turma": st.session_state.get("turma", ""),
+                            "trimestre": st.session_state.get("trimestre", ""),
+                        },
+                        logger=log_progress,
+                    )
+                    if not registros:
+                        log_progress("ERRO: Nenhuma linha valida na planilha do painel.")
+                        st.error("Preencha a planilha no painel: ao menos aluno, atividade e nota (0-10).")
+                        st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                        st.stop()
+                    log_progress(f"{len(registros)} notas validas carregadas da planilha do painel.")
+
                 else:
                     log_progress(f"Carregando dados de {fonte}...")
                     from leitor_planilhas import carregar_notas
@@ -1538,6 +1696,8 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                     from status_store import StatusStore
 
                     status_store = StatusStore(fonte_path, logger=log_progress)
+                    if fonte == "planilha":
+                        _semear_status_manual(status_store)
                     ja_lancadas = 0
                     ja_no_sge = 0
                     ausentes_count = 0
@@ -1659,6 +1819,10 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         browser.close()
 
                     log_progress(f"Status local: {ja_lancadas} ja lancadas, {ja_no_sge} ja no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas")
+
+                    if fonte == "planilha":
+                        _sincronizar_status_painel(status_store)
+                        log_progress("[PAINEL] Coluna Status atualizada com o resultado do lancamento.")
 
                     st.session_state.resultado = {
                         "blocos": len(grouped),

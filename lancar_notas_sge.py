@@ -3653,6 +3653,19 @@ def _grade_value_matches_target(raw_value: str, nota_texto: str) -> bool:
         return False
 
 
+def _classificar_leitura(existing: Optional[str], nota_esperada_texto: str) -> str:
+    """Classifica uma releitura da celula de nota do SGE.
+
+    Retorna 'ok' (valor confere com o esperado), 'divergente' (campo tem valor
+    diferente do esperado) ou 'vazio' (campo sem valor / nao relido).
+    """
+    if existing is None:
+        return "vazio"
+    if _grade_value_matches_target(existing, nota_esperada_texto):
+        return "ok"
+    return "divergente"
+
+
 def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[LogFn], coluna_sge: str = "", filled_suffix: str = "") -> bool:
     """Re-le os inputs do aluno apos o preenchimento e confere se o valor gravou.
 
@@ -4001,6 +4014,64 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
         _log(logger, f"[DEBUG] Leitura sem filtro de coluna encontrou nota '{result}' para '{aluno}'")
         return result
     return None
+
+
+def _find_grade_input_for_student(page, aluno: str, coluna_sge: str = ""):
+    """Localiza o input de nota do aluno na pagina (para screenshot/evidencia).
+
+    Retorna um Playwright Locator do campo (ou None). Reusa o mecanismo de
+    slots/suffixes usado na leitura/preenchimento.
+    """
+    if not _normalize_loose(aluno):
+        return None
+    try:
+        for scope in _iter_scopes(page):
+            slots = _wait_student_slots(scope)
+            if not slots:
+                continue
+            suffixes = _candidate_suffixes_for_student(aluno, slots)
+            for suffix in suffixes[:3]:
+                if coluna_sge:
+                    loc = scope.locator(
+                        f"input[name$='_{coluna_sge}_{suffix}'], input[id$='_{coluna_sge}_{suffix}'], "
+                        f"input[name$='_{suffix}'][name*='{coluna_sge}'], input[id$='_{suffix}'][id*='{coluna_sge}']"
+                    )
+                else:
+                    loc = scope.locator(
+                        f"input[name$='_{suffix}'][name*='NOTA' i], input[id$='_{suffix}'][id*='NOTA' i], "
+                        f"input[name$='_{suffix}'][name*='AVAL' i], input[id$='_{suffix}'][id*='AVAL' i]"
+                    )
+                if loc.count() > 0:
+                    return loc.first
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _capturar_evidencia_divergencia(page, aluno: str, coluna_sge: str, out_path: str, logger: Optional[LogFn] = None) -> None:
+    """Salva screenshot do trecho da grade do aluno como evidencia da divergencia.
+
+    Tenta recortar a linha/coluna do aluno; se nao localizar, captura a pagina
+    inteira como fallback.
+    """
+    try:
+        locator = _find_grade_input_for_student(page, aluno, coluna_sge)
+        if locator is not None:
+            row = locator.locator("xpath=ancestor::tr[1]")
+            if row.count() > 0:
+                row.screenshot(path=out_path)
+                _log(logger, f"[EVIDENCIA] Screenshot da linha do aluno salvo em {out_path}")
+                return
+            locator.screenshot(path=out_path)
+            _log(logger, f"[EVIDENCIA] Screenshot do campo salvo em {out_path}")
+            return
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, f"[EVIDENCIA] Falha ao capturar trecho da grade: {exc}")
+    try:
+        page.screenshot(path=out_path, full_page=True)
+        _log(logger, f"[EVIDENCIA] Screenshot da pagina salvo em {out_path}")
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, f"[EVIDENCIA] Falha ao capturar screenshot da pagina: {exc}")
 
 
 def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "", strict: bool = False) -> Optional[str]:

@@ -300,6 +300,81 @@ def _sincronizar_status_painel(status_store) -> None:
     st.session_state.planilha_linhas = linhas
 
 
+def _revisao_dir() -> str:
+    d = os.path.join(os.getcwd(), "artifacts", "revisao")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _item_revisao_id(escola: str, turma: str, trimestre: str, atividade: str, aluno: str) -> str:
+    import hashlib
+    chave = "|".join([
+        str(escola).lower(), str(turma).lower(), str(trimestre).lower(),
+        str(atividade).lower(), str(aluno).lower(),
+    ])
+    return hashlib.sha1(chave.encode("utf-8")).hexdigest()[:12]
+
+
+def _coletar_divergencia(page, contexto, atividade: str, data_realizacao: str, aluno: str,
+                         nota_esperada, nota_lida, coluna_sge: str = "", logger=None) -> None:
+    """Enfileira uma divergencia de leitura para confirmacao do usuario (com screenshot)."""
+    if "revisao_fila" not in st.session_state:
+        st.session_state.revisao_fila = []
+    fila = st.session_state.revisao_fila
+    item_id = _item_revisao_id(contexto.escola, contexto.turma, contexto.trimestre, atividade, aluno)
+    shot = os.path.join(_revisao_dir(), f"{item_id}.png")
+    try:
+        from lancar_notas_sge import _capturar_evidencia_divergencia
+        _capturar_evidencia_divergencia(page, aluno, coluna_sge, shot, logger=logger)
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger(f"[REVISAO] Falha ao capturar evidencia: {exc}")
+    item = {
+        "id": item_id,
+        "escola": contexto.escola,
+        "turno": contexto.turno,
+        "turma": contexto.turma,
+        "trimestre": contexto.trimestre,
+        "atividade": atividade,
+        "data_realizacao": data_realizacao,
+        "aluno": aluno,
+        "nota_esperada": nota_esperada,
+        "nota_lida": str(nota_lida or ""),
+        "screenshot": shot,
+        "coluna_sge": coluna_sge,
+        "decisao": None,
+        "valor_corrigido": "",
+        "resolvido": False,
+    }
+    for i, it in enumerate(fila):
+        if it.get("id") == item_id:
+            fila[i].update(item)
+            return
+    fila.append(item)
+
+
+def _aplicar_decisoes_revisao():
+    """Coleta itens decididos (confirmar/corrigir) e agenda gravacao forcada no SGE."""
+    fila = st.session_state.get("revisao_fila", [])
+    pendentes = []
+    for item in fila:
+        if item.get("decisao") not in ("confirmar", "corrigir"):
+            continue
+        pendentes.append({
+            "escola": item.get("escola"), "turno": item.get("turno"),
+            "turma": item.get("turma"), "trimestre": item.get("trimestre"),
+            "atividade": item.get("atividade"),
+            "aluno": item.get("aluno"),
+            "decisao": item.get("decisao"),
+            "valor_corrigido": item.get("valor_corrigido", ""),
+        })
+    if not pendentes:
+        return False
+    st.session_state.revisao_pendentes = pendentes
+    st.session_state.revisao_aplicar = True
+    return True
+
+
 def salvar_config():
     config = {
         "sge_url": st.session_state.get("sge_url", ""),
@@ -1297,7 +1372,7 @@ if ajuda_btn:
     """)
 
 # === EXECUCAO ===
-if executar_btn or st.session_state.pop("autofix_trigger", False):
+if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_state.pop("revisao_aplicar", False):
     st.session_state.executando = True
     st.session_state.logs = []
     st.session_state.log_file = _start_log_file()
@@ -1687,7 +1762,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         _select_activity,
                         _fill_grade_for_student,
                         _read_existing_grade_for_student,
-                        _grade_value_matches_target,
+                        _classificar_leitura,
                         _confirm_save,
                         ACTION_TIMEOUT_MS,
                         HEADLESS,
@@ -1713,11 +1788,44 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         for r in registros
                     ]
 
+                    pendentes = st.session_state.pop("revisao_pendentes", [])
+                    if pendentes:
+                        alvos = []
+                        for p in pendentes:
+                            if p.get("decisao") in (None, "", "pular"):
+                                continue
+                            nota = p.get("valor_corrigido") or p.get("nota_esperada")
+                            try:
+                                nota = float(str(nota).replace(",", "."))
+                            except Exception:  # noqa: BLE001
+                                nota = 0.0
+                            alvos.append((
+                                p.get("escola"), p.get("turno"), p.get("turma"),
+                                p.get("trimestre"), p.get("atividade"), p.get("aluno"), nota,
+                            ))
+                        registros_sge = [
+                            r for r in registros_sge
+                            if any(
+                                a[0] == r.escola and a[1] == r.turno and a[2] == r.turma and
+                                a[3] == r.trimestre and a[4] == r.atividade and a[5] == r.aluno
+                                for a in alvos
+                            )
+                        ]
+                        for r in registros_sge:
+                            for a in alvos:
+                                if (a[0] == r.escola and a[1] == r.turno and a[2] == r.turma and
+                                        a[3] == r.trimestre and a[4] == r.atividade and a[5] == r.aluno):
+                                    r.nota = a[6]
+                                    break
+                        st.session_state.revisao_forcar = True
+                        log_progress(f"[REVISAO] Aplicando decisoes: {len(registros_sge)} registro(s) para gravacao forçada.")
+
                     grouped = _group_for_launch(registros_sge)
                     log_progress(f"Blocos para lancamento: {len(grouped)}")
 
                     notas_ok = 0
                     falhas = 0
+                    divergencias = 0
                     blocos_lancados = []
 
                     with sync_playwright() as p:
@@ -1773,26 +1881,48 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                             coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=log_progress, atividade=atividade)
 
                             novos = 0
+                            revisao_forcar = bool(st.session_state.get("revisao_forcar", False))
                             for reg in itens:
                                 if status_store.esta_lancada(reg.escola, reg.turno, reg.turma, reg.trimestre, reg.aluno, reg.atividade):
                                     ja_lancadas += 1
                                     continue
 
                                 existing = _read_existing_grade_for_student(page, reg.aluno, logger=log_progress, coluna_sge=coluna_sge)
-                                if existing is not None:
-                                    nota_texto = str(reg.nota).replace(".", ",")
-                                    if _grade_value_matches_target(existing, nota_texto):
-                                        ja_no_sge += 1
-                                        status_store.marcar_lancada(reg.escola, reg.turno, reg.turma, reg.trimestre, reg.aluno, reg.atividade, reg.nota)
-                                        notas_ok += 1
-                                        continue
-                                    log_progress(f"  Nota existente '{existing}' difere da esperada '{nota_texto}' para '{reg.aluno}'. Atualizando...")
+                                nota_texto = str(reg.nota).replace(".", ",")
+                                classe = _classificar_leitura(existing, nota_texto)
+                                if classe == "ok":
+                                    ja_no_sge += 1
+                                    status_store.marcar_lancada(reg.escola, reg.turno, reg.turma, reg.trimestre, reg.aluno, reg.atividade, reg.nota)
+                                    notas_ok += 1
+                                    continue
+                                if classe == "divergente" and not revisao_forcar:
+                                    log_progress(f"  [DIVERGENCIA] '{reg.aluno}': SGE tem '{existing}', esperado '{nota_texto}'. Nao preencheu; enviado para revisao.")
+                                    _coletar_divergencia(
+                                        page, contexto, atividade, data_mais_comum,
+                                        reg.aluno, reg.nota, existing, coluna_sge,
+                                        logger=log_progress,
+                                    )
+                                    divergencias += 1
+                                    continue
+                                if classe == "divergente" and revisao_forcar:
+                                    log_progress(f"  [REVISAO-FORCAR] Sobrescrevendo '{existing}' por '{nota_texto}' para '{reg.aluno}'.")
 
                                 filled_suffix = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=log_progress, coluna_sge=coluna_sge)
                                 if filled_suffix:
-                                    notas_ok += 1
-                                    novos += 1
-                                    status_store.marcar_lancada(reg.escola, reg.turno, reg.turma, reg.trimestre, reg.aluno, reg.atividade, reg.nota)
+                                    relido = _read_existing_grade_for_student(page, reg.aluno, logger=log_progress, coluna_sge=coluna_sge)
+                                    classe_pos = _classificar_leitura(relido, nota_texto)
+                                    if classe_pos == "ok" or revisao_forcar:
+                                        notas_ok += 1
+                                        novos += 1
+                                        status_store.marcar_lancada(reg.escola, reg.turno, reg.turma, reg.trimestre, reg.aluno, reg.atividade, reg.nota)
+                                    else:
+                                        log_progress(f"  [DIVERGENCIA-POS] '{reg.aluno}': apos preencher, campo leu '{relido or 'vazio'}'. Enviado para revisao.")
+                                        _coletar_divergencia(
+                                            page, contexto, atividade, data_mais_comum,
+                                            reg.aluno, reg.nota, relido, coluna_sge,
+                                            logger=log_progress,
+                                        )
+                                        divergencias += 1
                                 else:
                                     log_progress(f"  [AUSENTE] Aluno '{reg.aluno}' nao localizado na grade. Pulando...")
                                     ausentes_count += 1
@@ -1818,20 +1948,25 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
                         ctx.close()
                         browser.close()
 
-                    log_progress(f"Status local: {ja_lancadas} ja lancadas, {ja_no_sge} ja no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas")
+                    log_progress(f"Status local: {ja_lancadas} ja lancadas, {ja_no_sge} ja no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas, {divergencias} divergencias")
 
                     if fonte == "planilha":
                         _sincronizar_status_painel(status_store)
                         log_progress("[PAINEL] Coluna Status atualizada com o resultado do lancamento.")
 
+                    st.session_state.revisao_forcar = False
+                    fila_atual = st.session_state.get("revisao_fila", [])
+                    st.session_state.revisao_fila = [it for it in fila_atual if it.get("decisao") in (None, "")]
+                    st.session_state.revisao_fase = "pendente" if divergencias > 0 else "fim"
                     st.session_state.resultado = {
                         "blocos": len(grouped),
                         "notas": len(registros_sge),
                         "notas_preenchidas": notas_ok,
                         "ausentes": ausentes_count,
                         "falhas": falhas,
+                        "divergencias": divergencias,
                     }
-                    log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas}")
+                    log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas}, Divergencias para revisao: {divergencias}")
 
         elif st.session_state.tipo == "chamada":
             from lancar_chamada_sge import executar_chamada as executar_chamada_sge
@@ -1987,10 +2122,105 @@ if executar_btn or st.session_state.pop("autofix_trigger", False):
 
     finally:
         st.session_state.executando = False
+        st.session_state.revisao_forcar = False
         try:
             status.update(label="Finalizado", state="complete")
         except RuntimeError:
             pass
+
+# === FILA DE CONFIRMACAO DE DIVERGENCIAS (screenshot + decisao) ===
+_fila_rev = st.session_state.get("revisao_fila", [])
+_pendentes_rev = [it for it in _fila_rev if it.get("decisao") in (None, "")]
+if st.session_state.get("revisao_fase") == "pendente" and _pendentes_rev:
+    st.markdown("### Confirmacao de divergencias (IA + screenshot)")
+    st.caption(
+        "O bot detectou divergencias entre o SGE e o esperado e **nao preencheu** esses alunos. "
+        "Confira a evidencia e decida por aluno: **Confirmar** (grava a nota esperada), "
+        "**Corrigir** (grava outro valor) ou **Pular** (nao grava e nao marca como lancada)."
+    )
+
+    c_top1, c_top2, c_top3 = st.columns(3)
+    with c_top1:
+        if st.button("Confirmar todas", type="primary", key="rev_confirmar_todas", use_container_width=True):
+            for it in _fila_rev:
+                if it.get("decisao") in (None, ""):
+                    it["decisao"] = "confirmar"
+                    it["valor_corrigido"] = ""
+            st.session_state.revisao_fila = _fila_rev
+            if _aplicar_decisoes_revisao():
+                st.rerun()
+    with c_top2:
+        if st.button("Pular todas", key="rev_pular_todas", use_container_width=True):
+            for it in _fila_rev:
+                it["decisao"] = "pular"
+            st.session_state.revisao_fila = _fila_rev
+            st.session_state.revisao_fase = "fim"
+            if st.session_state.get("resultado"):
+                st.session_state.resultado["divergencias"] = 0
+            st.rerun()
+    with c_top3:
+        if st.button("Limpar fila", key="rev_limpar", use_container_width=True):
+            st.session_state.revisao_fila = []
+            st.session_state.revisao_fase = "fim"
+            if st.session_state.get("resultado"):
+                st.session_state.resultado["divergencias"] = 0
+            st.rerun()
+
+    for item in _pendentes_rev:
+        fkey = f"rev_{item.get('id', 'x')}"
+        with st.expander(
+            f"{item.get('aluno')} — esperado **{item.get('nota_esperada')}** | SGE leu "
+            f"**'{item.get('nota_lida') or 'vazio'}'** | {item.get('atividade')}",
+            expanded=False,
+        ):
+            col_shot, col_dec = st.columns([1, 2])
+            with col_shot:
+                if os.path.exists(item.get("screenshot", "")):
+                    st.image(item["screenshot"], caption="Evidencia (linha do aluno no SGE)")
+                else:
+                    st.caption("Evidencia indisponivel")
+                st.caption(
+                    f"Escola: {item.get('escola')} | Turno: {item.get('turno')} | "
+                    f"Turma: {item.get('turma')} | {item.get('trimestre')}"
+                )
+            with col_dec:
+                decisao = st.radio(
+                    "Decisao para este aluno",
+                    ["Confirmar", "Corrigir", "Pular"],
+                    key=f"{fkey}_radio",
+                    horizontal=True,
+                    format_func=lambda x: {
+                        "Confirmar": "Confirmar (gravar esperada)",
+                        "Corrigir": "Corrigir",
+                        "Pular": "Pular (nao gravar)",
+                    }.get(x, x),
+                )
+                valor_corrigido = ""
+                if decisao == "Corrigir":
+                    valor_corrigido = st.text_input(
+                        "Valor correto (0 a 10)",
+                        value=str(item.get("valor_corrigido") or item.get("nota_esperada")),
+                        key=f"{fkey}_valor",
+                    )
+                if st.button("Aplicar decisao", key=f"{fkey}_btn"):
+                    item["decisao"] = {
+                        "Confirmar": "confirmar",
+                        "Corrigir": "corrigir",
+                        "Pular": "pular",
+                    }[decisao]
+                    item["valor_corrigido"] = valor_corrigido if decisao == "Corrigir" else ""
+                    st.session_state.revisao_fila = _fila_rev
+                    st.rerun()
+
+    decididos = [it for it in _fila_rev if it.get("decisao") in ("confirmar", "corrigir")]
+    if decididos:
+        if st.button(
+            f"Gravar {len(decididos)} decisao(oes) no SGE",
+            type="primary",
+            key="rev_gravar",
+        ):
+            _aplicar_decisoes_revisao()
+            st.rerun()
 
 # === MENSAGEM DE AUTOFIX ===
 autofix_msg = st.session_state.pop("autofix_message", None)
@@ -2042,7 +2272,7 @@ if st.session_state.resultado:
     st.markdown("### Resultado")
     res = st.session_state.resultado
 
-    cols = st.columns(5)
+    cols = st.columns(6)
     with cols[0]:
         st.metric("Blocos/Contextos", res.get("blocos") or res.get("contextos", 0))
     with cols[1]:
@@ -2056,8 +2286,13 @@ if st.session_state.resultado:
     with cols[4]:
         falhas = res.get("falhas", 0)
         st.metric("Falhas", falhas, delta_color="inverse")
+    with cols[5]:
+        diverg_res = res.get("divergencias", 0)
+        st.metric("Divergencias", diverg_res, delta_color="off")
 
-    if falhas > 0:
+    if res.get("divergencias", 0) > 0:
+        st.warning(f"{res.get('divergencias')} divergencia(s) aguardando confirmacao na fila acima.")
+    elif falhas > 0:
         st.warning(f"Houve {falhas} falha(s). Verifique os logs acima.")
     elif preenchidas > 0:
         st.success("Tudo concluido com sucesso!")

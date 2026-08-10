@@ -2319,11 +2319,15 @@ def _is_period_selection_page(page) -> bool:
     return False
 
 
-def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> None:
-    """Seleciona o trimestre na tela de selecao de periodo e confirma."""
+def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
+    """Seleciona o trimestre na tela de selecao de periodo e confirma.
+
+    Retorna True se conseguiu confirmar (clicou/submeteu algo); False se nao ha
+    acao disponivel nesta variante da tela (a etapa deve ser pulada).
+    """
     trimestre = contexto.trimestre
     if not trimestre:
-        return
+        return False
     _log(logger, f"Selecionando periodo: {trimestre}")
 
     # Tenta clicar no texto do trimestre (caso seja um link)
@@ -2336,7 +2340,7 @@ def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> No
             pass
         page.wait_for_timeout(200)
         _log(logger, f"Periodo '{trimestre}' selecionado.")
-        return
+        return True
 
     # Se o trimestre do bloco existir no dropdown (_PERIODO), escolhe-o explicitamente
     # (evita confirmar trimestre errado quando o default da tela nao e o do bloco).
@@ -2362,8 +2366,8 @@ def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> No
                     except Exception:  # noqa: BLE001
                         pass
                     page.wait_for_timeout(400)
-                    # O onchange do SGE (gxSubmit) submete sozinho; se ainda estiver na tela
-                    # de periodo, o fluxo segue para o botao Continuar abaixo.
+                    # O onchange do SGE (gxSubmit) submete sozinho.
+                    return True
                 break
             except Exception:  # noqa: BLE001
                 continue
@@ -2379,9 +2383,10 @@ def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> No
                 pass
             page.wait_for_timeout(200)
             _log(logger, f"Botao '{texto_botao}' clicado para confirmar periodo.")
-            return
+            return True
 
     _log(logger, f"Aviso: nao foi possivel selecionar o periodo '{trimestre}'.")
+    return False
 
 
 def _handle_assessment_period_page(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
@@ -2392,7 +2397,7 @@ def _handle_assessment_period_page(page, contexto: ContextoTurma, logger: Option
         return False
 
     _log(logger, "Tela de selecao de trimestre detectada apos icone de avaliacao.")
-    _select_period(page, contexto, logger=logger)
+    confirmado = _select_period(page, contexto, logger=logger)
 
     # Apos confirmar, aguarda navegacao e verifica se chegou na grade de alunos
     _clear_slots_cache()
@@ -2406,6 +2411,12 @@ def _handle_assessment_period_page(page, contexto: ContextoTurma, logger: Option
     if _is_student_grid_visible(page):
         _log(logger, "Grade de alunos detectada apos confirmar periodo.")
         return False  # False = nao precisa de retry, ja estamos na grade
+
+    if not confirmado:
+        # A tela de periodo e intermitente no SGE; se esta variante nao tiver
+        # botao/acao de confirmacao, pula a etapa em vez de insistir.
+        _log(logger, "Sem botao/acao de confirmacao de periodo; pulando etapa (tela de periodo nao e regra fixa).")
+        return False
 
     return True
 

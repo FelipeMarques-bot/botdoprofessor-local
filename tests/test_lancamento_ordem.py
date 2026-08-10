@@ -261,3 +261,60 @@ class TestVoltarAposPaginaErrada:
         page = self._mock_page("https://www.sge8147.com.br/hportalprofperiodos.aspx")
         _voltar_apos_pagina_errada(page, logger=None)
         page.go_back.assert_not_called()
+
+
+class TestPeriodoIntermitente:
+    """A tela de periodo nem sempre aparece; sem botao/acao, a etapa deve ser pulada."""
+
+    @staticmethod
+    def _mock_page():
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        page.url = "https://www.sge8147.com.br/hportalprofperiodos.aspx"
+        return page
+
+    def test_sem_acao_de_confirmacao_pula_etapa(self):
+        from unittest.mock import patch
+
+        import lancar_notas_sge as mod
+
+        page = self._mock_page()
+        contexto = mod.ContextoTurma(escola="X", turno="M", turma="6", trimestre="2o Trimestre")
+        with patch.object(mod, "_select_period", return_value=False), patch.object(
+            mod, "_is_student_grid_visible", return_value=False
+        ):
+            assert mod._handle_assessment_period_page(page, contexto, logger=None) is False
+
+    def test_confirmado_sem_grade_retorna_true_para_retry(self):
+        from unittest.mock import patch
+
+        import lancar_notas_sge as mod
+
+        page = self._mock_page()
+        contexto = mod.ContextoTurma(escola="X", turno="M", turma="6", trimestre="2o Trimestre")
+        with patch.object(mod, "_select_period", return_value=True), patch.object(
+            mod, "_is_student_grid_visible", return_value=False
+        ):
+            assert mod._handle_assessment_period_page(page, contexto, logger=None) is True
+
+    def test_grade_detectada_apos_periodo_nao_retry(self):
+        from unittest.mock import patch
+
+        import lancar_notas_sge as mod
+
+        page = self._mock_page()
+        contexto = mod.ContextoTurma(escola="X", turno="M", turma="6", trimestre="2o Trimestre")
+        with patch.object(mod, "_select_period", return_value=True), patch.object(
+            mod, "_is_student_grid_visible", return_value=True
+        ):
+            assert mod._handle_assessment_period_page(page, contexto, logger=None) is False
+
+    def test_nao_periodo_retorna_false_sem_acao(self):
+        import lancar_notas_sge as mod
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        page.url = "https://www.sge8147.com.br/hdisciplinaturmaaluno.aspx"
+        contexto = mod.ContextoTurma(escola="X", turno="M", turma="6", trimestre="2o Trimestre")
+        assert mod._handle_assessment_period_page(page, contexto, logger=None) is False

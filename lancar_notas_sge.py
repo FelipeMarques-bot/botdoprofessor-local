@@ -2816,6 +2816,23 @@ def _is_wrong_assessment_page(page) -> bool:
     return False
 
 
+def _voltar_apos_pagina_errada(page, logger: Optional[LogFn]) -> None:
+    """Se o clique no icone abriu pagina errada (ex.: adaptacao curricular),
+    volta a tela anterior antes de tentar o proximo icone."""
+    try:
+        if _is_wrong_assessment_page(page):
+            _log(logger, "Voltando a tela anterior apos icone errado...")
+            page.go_back(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(500)
+    except Exception:  # noqa: BLE001
+        try:
+            page.go_back(timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(500)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+
 def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
     _set_filters_on_portal(page, contexto, logger=logger)
 
@@ -2897,6 +2914,7 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
                             page.wait_for_timeout(200)
                             if _is_wrong_assessment_page(page):
                                 _log(logger, f"Icone errado (adaptacao), tentando proximo...")
+                                _voltar_apos_pagina_errada(page, logger)
                                 continue
                             _log(logger, f"Avaliacao aberta (por atributo): {label}")
                             _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "atributo", "label": label})
@@ -2919,6 +2937,7 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
                             page.wait_for_timeout(200)
                             if _is_wrong_assessment_page(page):
                                 _log(logger, f"Icone errado (adaptacao), tentando proximo...")
+                                _voltar_apos_pagina_errada(page, logger)
                                 continue
                             _log(logger, f"Avaliacao aberta (por atributo): {label}")
                             return True
@@ -2930,25 +2949,42 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
                 if links.count() > 0:
                     links.last.click(timeout=ACTION_TIMEOUT_MS)
                     page.wait_for_timeout(200)
-                    _log(logger, f"Avaliacao aberta (ultimo link): {label}")
-                    _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "ultimo_link", "label": label})
-                    return True
+                    if _is_wrong_assessment_page(page):
+                        _log(logger, f"Icone errado (ultimo link/adaptacao), tentando proxima estrategia...")
+                        _voltar_apos_pagina_errada(page, logger)
+                    else:
+                        _log(logger, f"Avaliacao aberta (ultimo link): {label}")
+                        _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "ultimo_link", "label": label})
+                        return True
 
                 # Estrategia 3: ultimo input[type='image']
                 imgs = row.locator("input[type='image']")
                 if imgs.count() > 0:
                     imgs.last.click(timeout=ACTION_TIMEOUT_MS)
                     page.wait_for_timeout(200)
-                    return True
+                    if _is_wrong_assessment_page(page):
+                        _log(logger, f"Icone errado (input image/adaptacao), tentando proxima estrategia...")
+                        _voltar_apos_pagina_errada(page, logger)
+                    else:
+                        _log(logger, f"Avaliacao aberta (input image): {label}")
+                        return True
 
                 # Estrategia 4: penultimo link da linha (se o ultimo for navegacao)
                 if links.count() > 1:
                     links.nth(links.count() - 2).click(timeout=ACTION_TIMEOUT_MS)
                     page.wait_for_timeout(200)
-                    _log(logger, f"Avaliacao aberta (penultimo link): {label}")
-                    return True
+                    if _is_wrong_assessment_page(page):
+                        _log(logger, f"Icone errado (penultimo link/adaptacao), tentando proxima linha...")
+                        _voltar_apos_pagina_errada(page, logger)
+                    else:
+                        _log(logger, f"Avaliacao aberta (penultimo link): {label}")
+                        return True
             except Exception:  # noqa: BLE001
                 continue
+
+    # Se um clique errado nos deixou numa pagina que nao e a da lista de turmas,
+    # volta antes de rodar o fallback de busca por texto.
+    _voltar_apos_pagina_errada(page, logger)
 
     # Fallback: procura a linha correta por texto e tenta achar o icone dentro dela
     _log(logger, "Tentando fallback para abrir avaliacao (busca por texto)...")
@@ -2987,6 +3023,7 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
                         page.wait_for_timeout(200)
                         if _is_wrong_assessment_page(page):
                             _log(logger, f"Icone errado via fallback (adaptacao), tentando proximo...")
+                            _voltar_apos_pagina_errada(page, logger)
                             continue
                         _log(logger, f"Avaliacao aberta via fallback: '{palavras}'")
                         _learning_store.registrar_sucesso("abrir_icone_avaliacao", {"metodo": "fallback_texto", "palavras": palavras})
@@ -3005,11 +3042,13 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
                 continue
 
     _capture_stage_debug(page, stage="assessment_icon_not_found", logger=logger)
-    # Salva screenshot mesmo sem DEBUG_LOGIN para diagnostico
+    # Salva screenshot + HTML mesmo sem DEBUG_LOGIN para diagnostico
     try:
         debug_dir = "artifacts/sge-login"
         os.makedirs(debug_dir, exist_ok=True)
         page.screenshot(path=os.path.join(debug_dir, "assessment_icon_not_found.png"), full_page=True)
+        with open(os.path.join(debug_dir, "assessment_icon_not_found.html"), "w", encoding="utf-8") as f:
+            f.write(page.content())
         with open(os.path.join(debug_dir, "assessment_icon_not_found_url.txt"), "w") as f:
             f.write(f"url={page.url}\n")
             f.write(f"title={page.title()}\n")
@@ -3361,6 +3400,8 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
         debug_dir = "artifacts/sge-login"
         os.makedirs(debug_dir, exist_ok=True)
         page.screenshot(path=os.path.join(debug_dir, "activity_not_found.png"), full_page=True)
+        with open(os.path.join(debug_dir, "activity_not_found.html"), "w", encoding="utf-8") as f:
+            f.write(page.content())
         with open(os.path.join(debug_dir, "activity_not_found_url.txt"), "w", encoding="utf-8") as f:
             f.write(f"url={page.url}\n")
             f.write(f"title={page.title()}\n")

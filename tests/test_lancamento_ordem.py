@@ -214,3 +214,37 @@ class TestLoginSgeValidaCredenciaisAntesDeSubmeter:
             assert _looks_like_placeholder_senha(senha), f"deveria detectar '{senha}'"
         assert not _looks_like_placeholder_senha("Me@9senha!")
         assert not _looks_like_placeholder_senha("")
+
+
+class TestVoltarAposPaginaErrada:
+    """Apos clicar num icone que abriu pagina errada, o bot volta antes de tentar o proximo."""
+
+    @staticmethod
+    def _mock_page(url):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        page.url = url
+        page.get_by_text.return_value.count.return_value = 0
+        return page
+
+    def test_volta_em_pagina_de_adaptacao(self):
+        from lancar_notas_sge import _voltar_apos_pagina_errada
+
+        page = self._mock_page("https://www.sge8147.com.br/hportalprofadaptacao.aspx")
+        _voltar_apos_pagina_errada(page, logger=None)
+        page.go_back.assert_called()
+
+    def test_nao_volta_em_pagina_correta(self):
+        from lancar_notas_sge import _voltar_apos_pagina_errada
+
+        page = self._mock_page("https://www.sge8147.com.br/hdisciplinaturmaaluno.aspx")
+        _voltar_apos_pagina_errada(page, logger=None)
+        page.go_back.assert_not_called()
+
+    def test_nao_volta_em_pagina_neutra(self):
+        from lancar_notas_sge import _voltar_apos_pagina_errada
+
+        page = self._mock_page("https://www.sge8147.com.br/hportalprofessor.aspx")
+        _voltar_apos_pagina_errada(page, logger=None)
+        page.go_back.assert_not_called()

@@ -7,7 +7,7 @@
 
 ; === CONFIGURACOES ===
 !define APP_NAME "BotDoProfessor"
-!define APP_VERSION "1.4.32"
+!define APP_VERSION "1.4.33"
 !define APP_PUBLISHER "BotDoProfessor"
 !define APP_URL "https://github.com/FelipeMarques-bot/botdoprofessor-local"
 !define INSTALL_DIR "$LOCALAPPDATA\BotDoProfessor"

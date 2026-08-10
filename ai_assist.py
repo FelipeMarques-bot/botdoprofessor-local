@@ -439,6 +439,32 @@ def _is_model_available(model_name: str, logger: Optional[LogFn] = None) -> bool
         return False
 
 
+def _optimize_image_bytes(data: bytes, max_dim: int = 1024, quality: int = 88) -> bytes:
+    """Redimensiona/compacta a imagem antes de enviar ao modelo de visao local.
+
+    Modelos de visao locais (CPU) sao muito lentos com imagens grandes
+    (ex.: 1600x1200 pode levar 10x mais tempo que 1024px). Reduzir para
+    <= max_dim corta drasticamente o tempo sem perder a legibilidade.
+    Se Pillow nao estiver disponivel ou algo falhar, devolve a imagem original.
+    """
+    try:
+        from PIL import Image
+        import io as _io
+
+        if len(data) <= 0:
+            return data
+        img = Image.open(_io.BytesIO(data))
+        if img.width <= max_dim and img.height <= max_dim and len(data) <= 400_000:
+            return data
+        img = img.convert("RGB")
+        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        buf = _io.BytesIO()
+        img.save(buf, "JPEG", quality=quality, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return data
+
+
 def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optional[List[bytes]] = None, logger: Optional[LogFn] = None) -> str:
     global _ollama_consecutive_errors, _ollama_disabled_until, _ollama_active_model
 
@@ -457,7 +483,11 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
 
     all_images = images or ([image_bytes] if image_bytes else [])
     if all_images:
-        img_b64s = [base64.b64encode(img).decode("utf-8") for img in all_images]
+        img_b64s = []
+        for img in all_images:
+            opt = _optimize_image_bytes(img)
+            img_b64s.append(base64.b64encode(opt).decode("utf-8"))
+        _log(logger, "[Ollama] Imagem otimizada para leitura (max 1024px).")
         payload = {
             "model": model,
             "messages": [

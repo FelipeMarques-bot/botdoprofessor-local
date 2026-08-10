@@ -1014,12 +1014,19 @@ def _normalize_nota(value: Any) -> Optional[str]:
     text = str(value).strip().replace(" ", "")
     if not text:
         return None
-    text = text.replace(",", ".")
+    # A IA local as vezes mistura nome+nota (ex.: "Cristofelli - 20") ou
+    # le com sinal negativo ("-10"). Extrai o primeiro numero real do texto.
+    num_match = re.search(r"-?\d+(?:[.,]\d+)?", text)
+    if not num_match:
+        return None
+    text = num_match.group(0).replace(",", ".")
     try:
         num = float(text)
     except ValueError:
         return None
-    if num < 0 or num > 1000:
+    if num < 0:
+        num = abs(num)  # notas nunca sao negativas; "-10" e leitura ruim de "10"
+    if num > 1000:
         return None
     if num.is_integer():
         return str(int(num))
@@ -1068,7 +1075,12 @@ def _extract_grade_records(text: str) -> List[Dict[str, str]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        aluno = str(item.get("aluno", "") or "").strip()
+        aluno = ""
+        for k in ("aluno", "nome", "estudante", "name", "aluno_nome", "student"):
+            v = item.get(k)
+            if isinstance(v, str) and v.strip():
+                aluno = v.strip()
+                break
         if not aluno:
             continue
         nota = _normalize_nota(item.get("nota"))

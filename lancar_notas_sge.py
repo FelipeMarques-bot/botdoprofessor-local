@@ -2338,6 +2338,36 @@ def _select_period(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> No
         _log(logger, f"Periodo '{trimestre}' selecionado.")
         return
 
+    # Se o trimestre do bloco existir no dropdown (_PERIODO), escolhe-o explicitamente
+    # (evita confirmar trimestre errado quando o default da tela nao e o do bloco).
+    trimestre_num = _extract_first_number(trimestre)
+    if trimestre_num:
+        for scope in _iter_scopes(page):
+            try:
+                select = scope.locator("select[name='_PERIODO']")
+                if select.count() == 0:
+                    continue
+                if select.locator(f"option[value='{trimestre_num}']").count() == 0:
+                    break
+                try:
+                    valor_atual = select.input_value()
+                except Exception:  # noqa: BLE001
+                    valor_atual = ""
+                if valor_atual != str(trimestre_num):
+                    _log(logger, f"Definindo dropdown de periodo para '{trimestre}' (opcao {trimestre_num}).")
+                    select.select_option(value=str(trimestre_num))
+                    _clear_slots_cache()
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=8000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    page.wait_for_timeout(400)
+                    # O onchange do SGE (gxSubmit) submete sozinho; se ainda estiver na tela
+                    # de periodo, o fluxo segue para o botao Continuar abaixo.
+                break
+            except Exception:  # noqa: BLE001
+                continue
+
     # Se ja estiver pre-selecionado, procura botao de confirmar/visualizar
     _log(logger, "Periodo pode ja estar pre-selecionado. Procurando botao de confirmar...")
     for texto_botao in ["Continuar", "Visualizar", "Prosseguir", "Visualisar", "Confirmar", "OK", "Acessar", "Selecionar", "Abrir"]:
@@ -2791,7 +2821,6 @@ WRONG_ASSESSMENT_URLS = [
     "hdisturfrealunopaginado.aspx",
     "havaliacaoprofagendabim.aspx",
     "hportalprofturma.aspx",
-    "hportalprofperiodos.aspx",
     "hselprofessormaterialapoioaluno.aspx",
 ]
 CORRECT_ASSESSMENT_URLS = ["hdisciplinaturmaaluno.aspx", "hdiscturalunonota.aspx"]

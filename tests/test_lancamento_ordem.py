@@ -248,3 +248,16 @@ class TestVoltarAposPaginaErrada:
         page = self._mock_page("https://www.sge8147.com.br/hportalprofessor.aspx")
         _voltar_apos_pagina_errada(page, logger=None)
         page.go_back.assert_not_called()
+
+    def test_pagina_de_periodo_nao_e_considerada_errada(self):
+        from lancar_notas_sge import _is_wrong_assessment_page
+
+        page = self._mock_page("https://www.sge8147.com.br/hportalprofperiodos.aspx")
+        assert not _is_wrong_assessment_page(page)
+
+    def test_pagina_de_periodo_nao_dispara_go_back(self):
+        from lancar_notas_sge import _voltar_apos_pagina_errada
+
+        page = self._mock_page("https://www.sge8147.com.br/hportalprofperiodos.aspx")
+        _voltar_apos_pagina_errada(page, logger=None)
+        page.go_back.assert_not_called()

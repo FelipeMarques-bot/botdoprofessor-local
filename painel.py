@@ -1953,6 +1953,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                         _login_sge,
                         _select_context,
                         _open_assessment_for_context,
+                        _handle_assessment_period_page,
                         _select_activity,
                         _fill_grade_for_student,
                         _read_existing_grade_for_student,
@@ -2054,7 +2055,16 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
 
                             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
                             _select_context(page, contexto, logger=log_progress)
-                            _open_assessment_for_context(page, contexto, logger=log_progress)
+                            try:
+                                _open_assessment_for_context(page, contexto, logger=log_progress)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            if _handle_assessment_period_page(page, contexto, logger=log_progress):
+                                try:
+                                    _open_assessment_for_context(page, contexto, logger=log_progress)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                _handle_assessment_period_page(page, contexto, logger=log_progress)
                             atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=log_progress)
 
                             if not atividade_encontrada:

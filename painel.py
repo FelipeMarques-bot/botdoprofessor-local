@@ -1320,6 +1320,22 @@ with st.sidebar:
         )
         dry_run = st.checkbox("Simular sem enviar (recomendado)", value=True, key="dry_run_check")
 
+    with st.expander("Casamento de nomes dos alunos"):
+        st.markdown(
+            "Quando ativado, o bot **busca o aluno pelo primeiro nome** no portal. "
+            "Se dois alunos tiverem o **mesmo primeiro nome**, ele usa o **segundo nome** "
+            "para diferenciar; se ainda houver duvida, o **terceiro nome**.\n\n"
+            "Ideal quando a IA le o primeiro nome corretamente mas o sobrenome sai "
+            "corrompido da planilha.\n\n"
+            "**Desmarque** apenas se quiser exigir o casamento pelo nome completo."
+        )
+        primeiro_nome_match = st.checkbox(
+            "Buscar por primeiro nome (desambiguar com 2o/3o nome)",
+            value=st.session_state.get("primeiro_nome_match", True),
+            key="primeiro_nome_match_check",
+        )
+        st.session_state.primeiro_nome_match = primeiro_nome_match
+
     with st.expander("Auto-fix IA (correcao automatica)"):
         st.markdown(
             "Quando ativado, se acontecer algum erro (ex: data no formato errado, link invalido, "
@@ -1760,6 +1776,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                     filtro=filtro,
                     logger=log_progress,
                     dry_run=dry_run,
+                    buscar_por_primeiro_nome=st.session_state.get("primeiro_nome_match", True),
                 )
                 st.session_state.resultado = resultado
                 _alimentar_fila_revisao(resultado, log_progress)

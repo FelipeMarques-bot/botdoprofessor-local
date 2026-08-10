@@ -3457,6 +3457,10 @@ def _find_student_row_with_pagination(page, aluno: str, max_pages: int = 5):
 # Cache de posicao de aluno por pagina (evita busca repetida)
 _student_page_cache: Dict[str, int] = {}
 
+# Casamento progressivo por primeiro nome (busca pelo 1o nome e desambigua com
+# 2o/3o nome). Habilitado por executar_lancamento(buscar_por_primeiro_nome=True).
+_PRIMEIRO_NOME_MATCH_ENABLED: bool = False
+
 
 def _collect_student_slots(scope) -> List[Dict[str, str]]:
     """Coleta os 'slots' de alunos da grade (suffix de 4 digitos + nome).
@@ -3586,7 +3590,12 @@ def _wait_student_slots(scope, attempts: int = 4, delay_ms: int = 200) -> List[D
     return []
 
 
-def _candidate_suffixes_for_student(expected: str, slots: List[Dict[str, str]]) -> List[str]:
+def _score_student_candidates(expected: str, slots: List[Dict[str, str]]) -> List[Tuple[float, str]]:
+    """Retorna os suffixs ordenados por pontuacao de casamento nome-a-nome.
+
+    Prioriza matches deterministas (_student_name_matches = 2.0) e depois a
+    combinacao de ratio difflib + sobreposicao de tokens significativos.
+    """
     alvo = _normalize_loose(expected)
     if not alvo:
         return []
@@ -3604,7 +3613,6 @@ def _candidate_suffixes_for_student(expected: str, slots: List[Dict[str, str]]) 
         if not atual_norm:
             continue
 
-        # Prioriza matches deterministas.
         if _student_name_matches(expected, atual):
             score = 2.0
         else:
@@ -3618,7 +3626,102 @@ def _candidate_suffixes_for_student(expected: str, slots: List[Dict[str, str]]) 
         scored.append((score, suffix))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [suffix for _, suffix in scored]
+    return scored
+
+
+def _progressive_name_suffixes(expected: str, slots: List[Dict[str, str]]) -> List[str]:
+    """Casamento progressivo por PRIMEIRO NOME, desambiguando com 2o/3o nome.
+
+    Quando a IA le o nome da planilha, o primeiro nome costuma sair correto e o
+    sobrenome pode vir corrompido. Esta estrategia procura primeiro pelo primeiro
+    nome; se mais de um aluno do portal tiver o mesmo primeiro nome, refina com o
+    segundo e, se preciso, o terceiro nome para diferenciar.
+
+    Retorna a lista de suffixs na ordem de prioridade (1 candidato no caso ideal).
+    """
+    tokens = _name_tokens(_normalize_loose(expected))
+    if not tokens:
+        return []
+
+    def _match_round(n_round: int) -> List[Dict[str, str]]:
+        matched = []
+        for slot in slots:
+            atual = _name_tokens(_normalize_loose(str(slot.get("aluno", "")).strip()))
+            if not atual:
+                continue
+            if atual[0] != tokens[0]:
+                continue
+            ok = True
+            for i in range(1, n_round):
+                if i >= len(atual) or i >= len(tokens) or atual[i] != tokens[i]:
+                    ok = False
+                    break
+            if ok:
+                matched.append(slot)
+        return matched
+
+    def _suffixes(items: List[Dict[str, str]]) -> List[str]:
+        return [str(s.get("suffix", "")).strip() for s in items]
+
+    r1 = _match_round(1)
+    if not r1:
+        return []
+    if len(r1) == 1:
+        return _suffixes(r1)
+
+    # Mais de um aluno com o mesmo primeiro nome: refina com 2o/3o nome.
+    if len(tokens) >= 2:
+        r2 = _match_round(2)
+        if len(r2) == 1:
+            return _suffixes(r2)
+        if len(r2) > 1 and len(tokens) >= 3:
+            r3 = _match_round(3)
+            if len(r3) == 1:
+                return _suffixes(r3)
+            if r3:
+                return _suffixes(r3)
+        if r2:
+            return _suffixes(r2)
+
+    # Sem como desambiguar: devolve todos os de primeiro nome igual (ambiguo).
+    return _suffixes(r1)
+
+
+def _names_exactly_equal(a: str, b: str) -> bool:
+    na = _normalize_loose(a)
+    nb = _normalize_loose(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    ca = re.sub(r"[^a-z0-9]", "", na)
+    cb = re.sub(r"[^a-z0-9]", "", nb)
+    return bool(ca and cb and ca == cb)
+
+
+def _candidate_suffixes_for_student(expected: str, slots: List[Dict[str, str]]) -> List[str]:
+    if not _PRIMEIRO_NOME_MATCH_ENABLED:
+        return [suffix for _, suffix in _score_student_candidates(expected, slots)]
+
+    full = _score_student_candidates(expected, slots)
+    prog = _progressive_name_suffixes(expected, slots)
+
+    if not prog:
+        return [suffix for _, suffix in full]
+
+    # O match EXATO de nome completo vence; caso contrario, o casamento por
+    # primeiro nome (progressivo) tem prioridade e os candidatos completos
+    # ficam como fallback. NAO se usa o score 2.0 leniente do full aqui, pois
+    # ele pode casar um homonimo (mesmo 1o+2o nome, sobrenome diferente).
+    top_suffix = full[0][1] if full else ""
+    exact_top = any(
+        str(slot.get("suffix", "")).strip() == top_suffix
+        and _names_exactly_equal(expected, str(slot.get("aluno", "")).strip())
+        for slot in slots
+    )
+    if exact_top:
+        return list(dict.fromkeys([suffix for _, suffix in full] + prog))
+    return list(dict.fromkeys(prog + [suffix for _, suffix in full]))
 
 
 def _grade_input_selectors_chain(suffix: str, coluna_sge: str = "") -> List[str]:
@@ -5033,8 +5136,13 @@ def executar_lancamento(
     logger: Optional[LogFn] = print,
     dry_run: bool = False,
     revisar_apos: Optional[bool] = None,
+    buscar_por_primeiro_nome: bool = False,
 ) -> Dict[str, int]:
     _log(logger, f"Runtime ref/sha: {os.environ.get('GITHUB_REF_NAME', 'local')} / {os.environ.get('GITHUB_SHA', 'local')[:7]}")
+    global _PRIMEIRO_NOME_MATCH_ENABLED
+    _PRIMEIRO_NOME_MATCH_ENABLED = bool(buscar_por_primeiro_nome)
+    if _PRIMEIRO_NOME_MATCH_ENABLED:
+        _log(logger, "[NOME-MATCH] Casamento por primeiro nome ATIVADO (desambigua com 2o/3o nome).")
     cpf = _resolve_env_credential(SGE_CPF, "SGE_CPF", logger=logger, digits_only=True)
     cpf = _normalize_cpf_for_sge(cpf, logger=logger)
     senha = _resolve_env_credential(SGE_SENHA, "SGE_SENHA", logger=logger, digits_only=False)

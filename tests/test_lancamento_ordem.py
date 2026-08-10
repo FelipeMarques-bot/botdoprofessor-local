@@ -158,3 +158,59 @@ class TestCasamentoProgressivoPorPrimeiroNome:
         finally:
             self._disable()
         assert on[0] == off[0] == "0001"
+
+
+class TestLoginSgeValidaCredenciaisAntesDeSubmeter:
+    """Credenciais invalidas devem dar erro claro SEM tocar o portal."""
+
+    @staticmethod
+    def _mock_page():
+        from unittest.mock import MagicMock
+
+        return MagicMock()
+
+    def test_cpf_curto_levanta_erro_claro_sem_tocar_page(self):
+        from lancar_notas_sge import LancamentoError, _login_sge
+
+        page = self._mock_page()
+        try:
+            _login_sge(page, cpf="99748010", senha="123456", logger=None)
+            assert False, "deveria ter levantado LancamentoError"
+        except LancamentoError as exc:
+            assert "CPF" in str(exc) or "digit" in str(exc)
+        page.goto.assert_not_called()
+
+    def test_cpf_vazio_levanta_erro_claro(self):
+        from lancar_notas_sge import LancamentoError, _login_sge
+
+        page = self._mock_page()
+        try:
+            _login_sge(page, cpf="", senha="123456", logger=None)
+            assert False, "deveria ter levantado LancamentoError"
+        except LancamentoError as exc:
+            assert "vazio" in str(exc).lower() or "cpf" in str(exc).lower()
+        page.goto.assert_not_called()
+
+    def test_senha_vazia_levanta_erro_claro(self):
+        from lancar_notas_sge import LancamentoError, _login_sge
+
+        page = self._mock_page()
+        try:
+            _login_sge(page, cpf="00997748010", senha="   ", logger=None)
+            assert False, "deveria ter levantado LancamentoError"
+        except LancamentoError as exc:
+            assert "senha" in str(exc).lower()
+        page.goto.assert_not_called()
+
+    def test_cpf_com_pontos_e_tracos_e_normalizado(self):
+        from lancar_notas_sge import _normalize_cpf_for_sge
+
+        assert _normalize_cpf_for_sge("009.977.480-10", logger=None) == "00997748010"
+
+    def test_senha_placeholder_detectada(self):
+        from lancar_notas_sge import _looks_like_placeholder_senha
+
+        for senha in ["123456", "12345678", "senha", "teste", "12345", "Test"]:
+            assert _looks_like_placeholder_senha(senha), f"deveria detectar '{senha}'"
+        assert not _looks_like_placeholder_senha("Me@9senha!")
+        assert not _looks_like_placeholder_senha("")

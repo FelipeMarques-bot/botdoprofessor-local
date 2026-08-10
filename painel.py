@@ -802,11 +802,17 @@ with st.sidebar:
 
         col1, col2 = st.columns(2)
         with col1:
-            cpf = st.text_input("CPF", value=st.session_state.get("portal_cpf_value", ""), key=portal_cpf_key, type="password")
+            cpf = st.text_input("CPF", value=st.session_state.get("portal_cpf_value", config_salva.get("sge_cpf", "")), key=portal_cpf_key, type="password")
             st.session_state.portal_cpf_value = cpf
         with col2:
-            senha = st.text_input("Senha", value=st.session_state.get("portal_senha_value", ""), key=portal_senha_key, type="password")
+            senha = st.text_input("Senha", value=st.session_state.get("portal_senha_value", config_salva.get("sge_senha", "")), key=portal_senha_key, type="password")
             st.session_state.portal_senha_value = senha
+
+        if (senha or "").strip().lower() in {"123456", "12345678", "12345", "123", "senha", "sua_senha", "teste", "test", "password"}:
+            st.warning(
+                "A senha atual parece ser de **teste/placeholder**. Para o login funcionar, informe "
+                "a senha REAL do portal e o CPF completo (11 digitos, apenas numeros)."
+            )
 
         if portal_selecionado == "Novo Portal":
             portal_nome = st.text_input(

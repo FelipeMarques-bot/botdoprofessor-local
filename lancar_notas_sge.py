@@ -2605,6 +2605,20 @@ def _login_sge_with_retry(page, cpf: str, senha: str, logger: Optional[LogFn], a
     _confirm_logged_in(page, logger=logger)
 
 
+def _looks_like_placeholder_senha(senha: str) -> bool:
+    return (senha or "").strip().lower() in {
+        "123456",
+        "12345678",
+        "12345",
+        "123",
+        "senha",
+        "sua_senha",
+        "teste",
+        "test",
+        "password",
+    }
+
+
 def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
     if MANUAL_LOGIN and os.environ.get("GITHUB_ACTIONS") != "true":
         login_url = _resolve_sge_login_url(logger=logger)
@@ -2622,6 +2636,20 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
             raise LancamentoError("Login manual nao concluido dentro do tempo limite.")
         _log(logger, "Login manual detectado. Iniciando lancamento...")
         return
+
+    # Normaliza e valida credenciais em TODOS os fluxos (imagem, revisao,
+    # chamada, sequencia). O portal 8147 espera CPF com 11 digitos e apenas
+    # numeros; enviar CPF curto/quebrado faz o portal responder com a mensagem
+    # generica "CPF nao cadastrado! Senha nao confere!". Aqui damos um erro
+    # claro antes de submeter.
+    cpf = _normalize_cpf_for_sge(cpf, logger=logger)
+    senha = (senha or "").strip()
+    if not cpf:
+        raise LancamentoError("CPF do portal vazio. Informe o CPF completo (11 digitos) na barra lateral.")
+    if not senha:
+        raise LancamentoError("Senha do portal vazia. Informe a senha na barra lateral.")
+    if _looks_like_placeholder_senha(senha):
+        _log(logger, "AVISO: a senha parece ser de teste/placeholder. Confirme se e a senha REAL do portal (www.sge8147.com.br).")
 
     max_attempts = 4
     last_exception = None

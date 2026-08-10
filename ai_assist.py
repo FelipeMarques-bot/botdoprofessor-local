@@ -40,6 +40,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2-vision")
 OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "openbmb/minicpm-v4.6")
 OLLAMA_AUTO_SETUP = os.environ.get("OLLAMA_AUTO_SETUP", "1") == "1"
 OLLAMA_PULL_TIMEOUT = int(os.environ.get("OLLAMA_PULL_TIMEOUT", "1800"))
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "600"))
 _ollama_active_model: Optional[str] = None
 _ollama_consecutive_errors: int = 0
 _ollama_disabled_until: float = 0.0
@@ -483,8 +484,9 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
     models_to_try = [model]
     if model != OLLAMA_FALLBACK_MODEL and _is_model_available(OLLAMA_FALLBACK_MODEL, logger):
         models_to_try.append(OLLAMA_FALLBACK_MODEL)
-    # Timeout reduzido: 60s para imagens, 30s para texto puro
-    ollama_timeout = 60 if all_images else 30
+    # Timeout generoso para imagens: modelos de visao locais (CPU) levam
+    # de 1 a 5 minutos para ler uma foto/diario. Texto puro segue rapido.
+    ollama_timeout = OLLAMA_TIMEOUT if all_images else min(OLLAMA_TIMEOUT, 60)
 
     for attempt_model in models_to_try:
         payload["model"] = attempt_model
@@ -884,7 +886,7 @@ def _refresh_ai_env() -> None:
     obsoletos capturados no import do modulo.
     """
     global GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
-    global AI_MODEL, AI_TEMPERATURE, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL
+    global AI_MODEL, AI_TEMPERATURE, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL, OLLAMA_TIMEOUT
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -893,6 +895,7 @@ def _refresh_ai_env() -> None:
     OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip().rstrip("/")
     OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2-vision")
     OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "openbmb/minicpm-v4.6")
+    OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "600"))
 
 
 def _configured_ai_providers(preferred: str) -> List[str]:

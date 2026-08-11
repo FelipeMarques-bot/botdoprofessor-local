@@ -238,3 +238,37 @@ class TestReadExistingGradeMulticoluna:
         m, page = self._setup(monkeypatch, {"N1S": 30, "N2S": 30}, value="8,5")
         result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="N2S")
         assert result == "8,5"
+
+
+class TestGradeFieldMatcher:
+    """O filtro de campo de NOTA exclui campos de RECUPERACAO/NOME, senão o
+    sufixo '_0002' casa _NOTA_0002 E _NOTAREC_0002 e toda leitura fica
+    ambigua ('campo leu vazio' em todas as linhas)."""
+
+    def test_aceita_campo_nota(self):
+        from lancar_notas_sge import _grade_field_attr_matches
+
+        assert _grade_field_attr_matches("_NOTA_0002", "0002", "") is True
+
+    def test_exclui_campo_recuperacao(self):
+        from lancar_notas_sge import _grade_field_attr_matches
+
+        assert _grade_field_attr_matches("_NOTAREC_0002", "0002", "") is False
+        assert _grade_field_attr_matches("_RECUP_0002", "0002", "") is False
+
+    def test_exclui_campo_nome(self):
+        from lancar_notas_sge import _grade_field_attr_matches
+
+        assert _grade_field_attr_matches("_ALUMATNOM_0002", "0002", "") is False
+        assert _grade_field_attr_matches("_ALUNO_0002", "0002", "") is False
+
+    def test_exclui_sufixo_diferente(self):
+        from lancar_notas_sge import _grade_field_attr_matches
+
+        assert _grade_field_attr_matches("_NOTA_0001", "0002", "") is False
+
+    def test_coluna_definida_exige_prefixo_da_coluna(self):
+        from lancar_notas_sge import _grade_field_attr_matches
+
+        assert _grade_field_attr_matches("_N2S_0002", "0002", "N2S") is True
+        assert _grade_field_attr_matches("_NOTA_0002", "0002", "N2S") is False

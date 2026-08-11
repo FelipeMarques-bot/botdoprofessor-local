@@ -16,7 +16,7 @@ class TestImageGradesAlphabeticSort:
         import ai_assist
         from bot.utils import image_grade_extractor as ige
 
-        def fake_ai(prompt, image_bytes, logger=None):
+        def fake_ai(prompt, image_bytes, logger=None, deadline=None):
             return (
                 '{"alunos":[{"aluno":"Maria Silva","nota":"8.5"},'
                 '{"aluno":"Joao Santos","nota":"7.0"},'

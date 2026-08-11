@@ -270,7 +270,7 @@ class TestLeituraDeVoltaObrigatoria:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [scope])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": ("8,5", 1))
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", allow_first_name_only=False: ("8,5", 1))
 
         class P:
             pass
@@ -289,7 +289,7 @@ class TestLeituraDeVoltaObrigatoria:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [NoReadScope()])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": None)
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", allow_first_name_only=False: None)
 
         class P:
             pass
@@ -304,7 +304,7 @@ class TestLeituraDeVoltaObrigatoria:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": ("8,5", 2))
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", allow_first_name_only=False: ("8,5", 2))
 
         class P:
             pass
@@ -326,13 +326,66 @@ class TestLeituraDeVoltaObrigatoria:
             monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
             monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ANA"}])
             monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-            monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", _r=releitura: _r)
+            monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", _r=releitura, allow_first_name_only=False: _r)
 
             class P:
                 pass
 
             ok = m._verify_fill_just_made(P(), "ANA", "0,0", None, filled_suffix="0001")
             assert ok is esperado
+
+
+class TestVerificacaoAncoraConsistente:
+    """A verificacao deve usar o MESMO relaxamento de ancora do preenchimento.
+
+    O preenchimento (_try_fill_and_verify_js) ancora na linha por primeiro nome
+    unico na grade (allow_first_name_only). A verificacao pos-preenchimento
+    tambem precisa relaxar, senão um nome de sobrenome corrompido pelo Notion
+    (ex.: 'Heloisa Sitoria' vs 'HELOISA RAMALHO MOHR') gera FALHA-VERIFICACAO
+    falso mesmo com a nota gravada no campo certo.
+    """
+
+    def _patch(self, monkeypatch, slots, valor="7,0"):
+        import lancar_notas_sge as m
+
+        calls = {}
+
+        def fake_read(scope, aluno, suffix, cols="", allow_first_name_only=False):
+            calls["allow"] = allow_first_name_only
+            return (valor, 1)
+
+        monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
+        monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: slots)
+        monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: [slots[0]["suffix"]])
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", fake_read)
+        return calls
+
+    def test_relaxa_quando_primeiro_nome_unico(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        calls = self._patch(monkeypatch, [{"suffix": "0008", "aluno": "HELOISA RAMALHO MOHR"}])
+
+        class P:
+            pass
+
+        ok = m._verify_fill_just_made(P(), "Heloisa Sitoria", "7,0", None, filled_suffix="0008")
+        assert ok is True
+        assert calls["allow"] is True
+
+    def test_nao_relaxa_com_homonimo_de_primeiro_nome(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        calls = self._patch(monkeypatch, [
+            {"suffix": "0001", "aluno": "ANITA JANUARIO PEREIRA"},
+            {"suffix": "0002", "aluno": "ANITA SOUZA LIMA"},
+        ], valor="5,0")
+
+        class P:
+            pass
+
+        ok = m._verify_fill_just_made(P(), "ANITA JANUARIO PEREIRA", "5,0", None, filled_suffix="0001")
+        assert ok is True
+        assert calls["allow"] is False
 
 
 class TestLeituraAncorada:
@@ -373,7 +426,7 @@ class TestLeituraAncorada:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "VALESKA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": ("0,0", 1))
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", allow_first_name_only=False: ("0,0", 1))
 
         val = m._read_grade_value_for_student_raw(FakePage([]), "VALESKA", "")
         assert val == "0,0"
@@ -384,7 +437,7 @@ class TestLeituraAncorada:
         monkeypatch.setattr(m, "_iter_scopes", lambda page: [FakeScope()])
         monkeypatch.setattr(m, "_wait_student_slots", lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "VALESKA"}])
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="": None)
+        monkeypatch.setattr(m, "_read_grade_value_anchored_js", lambda scope, aluno, suffix, cols="", allow_first_name_only=False: None)
 
         val = m._read_grade_value_for_student_raw(FakePage([]), "VALESKA", "")
         assert val is None

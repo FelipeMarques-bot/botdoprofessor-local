@@ -1,6 +1,12 @@
 ﻿import threading
 
-from lancar_notas_sge import ContextoTurma, RegistroNota, _revisar_blocos_apos_lancamento
+from lancar_notas_sge import (
+    ContextoTurma,
+    RegistroNota,
+    _aplicar_pendentes_ausentes,
+    _aplicar_pendentes_revisao,
+    _revisar_blocos_apos_lancamento,
+)
 
 
 class DummyPage:
@@ -156,4 +162,118 @@ def test_verify_grade_on_screen_sem_ia():
     res = verify_grade_on_screen(b"x", "8,5", "ALUNO A")
     assert res["found"] is False
     assert res["confirmed"] is False
+
+
+def _pend(id_, aluno, decisao="confirmar", valor="", esperada="7,5"):
+    return {
+        "escola": "E1", "turno": "M", "turma": "T1", "trimestre": "1",
+        "atividade": "N1S", "aluno": aluno,
+        "decisao": decisao, "valor_corrigido": valor, "nota_esperada": esperada,
+    }
+
+
+def test_aplicar_pendentes_mantem_lote_quando_fila_antiga_nao_bate():
+    regs = [_make_reg("ALUNO A", 8.5), _make_reg("ALUNO B", 7.0)]
+    pendentes = [_pend("x", "ALUNO NAO EXISTE", esperada="9,0")]
+    res, forcar = _aplicar_pendentes_revisao(regs, pendentes)
+    assert forcar is False
+    assert len(res) == 2
+    assert res[0].nota == 8.5
+
+
+def test_aplicar_pendentes_ignora_decisao_pular_e_vazio():
+    regs = [_make_reg("ALUNO A", 8.5)]
+    pendentes = [
+        _pend("x", "ALUNO A", decisao="pular"),
+        _pend("y", "ALUNO A", decisao=None),
+        _pend("z", "ALUNO A", decisao=""),
+    ]
+    res, forcar = _aplicar_pendentes_revisao(regs, pendentes)
+    assert forcar is False
+    assert len(res) == 1
+    assert res[0].nota == 8.5
+
+
+def test_aplicar_pendentes_filtra_e_forca_nota_corrigida():
+    regs = [_make_reg("ALUNO A", 8.5), _make_reg("ALUNO B", 7.0)]
+    pendentes = [_pend("x", "ALUNO A", decisao="corrigir", valor="9,0")]
+    res, forcar = _aplicar_pendentes_revisao(regs, pendentes)
+    assert forcar is True
+    assert len(res) == 1
+    assert res[0].aluno == "ALUNO A"
+    assert res[0].nota == 9.0
+
+
+def test_aplicar_pendentes_confirmar_usa_nota_esperada():
+    regs = [_make_reg("ALUNO A", 8.5)]
+    pendentes = [_pend("x", "ALUNO A", decisao="confirmar", valor="", esperada="7,5")]
+    res, forcar = _aplicar_pendentes_revisao(regs, pendentes)
+    assert forcar is True
+    assert res[0].nota == 7.5
+
+
+def test_aplicar_pendentes_sem_fila_mantem_tudo():
+    regs = [_make_reg("ALUNO A", 8.5)]
+    res, forcar = _aplicar_pendentes_revisao(regs, [])
+    assert forcar is False
+    assert len(res) == 1
+
+
+def _aus(id_, aluno, corrigido, decisao="retentar", esperada="9,5"):
+    return {
+        "tipo": "ausente",
+        "escola": "E1", "turno": "M", "turma": "T1", "trimestre": "1",
+        "atividade": "N1S", "aluno": aluno, "aluno_corrigido": corrigido,
+        "nota_esperada": esperada, "data_realizacao": "01/08/2026",
+        "decisao": decisao,
+    }
+
+
+def test_aplicar_ausentes_retenta_com_nome_corrigido():
+    res = _aplicar_pendentes_ausentes([_aus("x", "ANTENOR ATZ I?", "ANTENOR ATZ")])
+    assert len(res) == 1
+    assert res[0].aluno == "ANTENOR ATZ"
+    assert res[0].nota == 9.5
+    assert res[0].atividade == "N1S"
+    assert res[0].data_realizacao == "01/08/2026"
+
+
+def test_aplicar_ausentes_usa_nome_original_sem_correcao():
+    res = _aplicar_pendentes_ausentes([_aus("x", "MARIA S", "  ")])
+    assert len(res) == 1
+    assert res[0].aluno == "MARIA S"
+
+
+def test_aplicar_ausentes_ignora_pular_vazio_e_divergencia():
+    pend = [
+        _aus("x", "Y", "Y2", decisao="pular"),
+        _aus("y", "Z", "", decisao=None),
+        _aus("z", "W", "", decisao=""),
+        {
+            "tipo": "divergencia", "escola": "E1", "aluno": "V",
+            "aluno_corrigido": "V2", "nota_esperada": "8",
+            "decisao": "retentar",
+        },
+    ]
+    res = _aplicar_pendentes_ausentes(pend)
+    assert len(res) == 0
+
+
+def test_coletar_ausente_tem_campos_de_revisao(monkeypatch, tmp_path):
+    import lancar_notas_sge as m
+
+    monkeypatch.setattr(m, "REVISAO_DIR", str(tmp_path / "revisao"))
+    monkeypatch.setattr(m, "_capturar_evidencia_divergencia", lambda *a, **k: None)
+
+    ctx = ContextoTurma(escola="E1", turno="V", turma="T2", trimestre="2")
+    item = m._coletar_ausente(None, ctx, "24-Resolucao de Problemas", "ANTENOR ATZ I?", "9,5", "", "01/08/2026")
+    assert item["tipo"] == "ausente"
+    assert item["aluno"] == "ANTENOR ATZ I?"
+    assert item["aluno_corrigido"] == ""
+    assert item["nova_imagem"] == ""
+    assert item["nota_esperada"] == "9,5"
+    assert item["data_realizacao"] == "01/08/2026"
+    assert item["decisao"] is None
+    assert item["id"]
+    assert item["screenshot"].endswith(".png")
 

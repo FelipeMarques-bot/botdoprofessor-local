@@ -41,9 +41,12 @@ OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "openbmb/minicpm
 OLLAMA_AUTO_SETUP = os.environ.get("OLLAMA_AUTO_SETUP", "1") == "1"
 OLLAMA_PULL_TIMEOUT = int(os.environ.get("OLLAMA_PULL_TIMEOUT", "1800"))
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "600"))
+OLLAMA_IMAGE_TIMEOUT = int(os.environ.get("OLLAMA_IMAGE_TIMEOUT", "240"))
+EXTRACAO_TIMEOUT = int(os.environ.get("EXTRACAO_TIMEOUT", "300"))
 _ollama_active_model: Optional[str] = None
 _ollama_consecutive_errors: int = 0
 _ollama_disabled_until: float = 0.0
+_ollama_broken_models: set = set()
 
 
 @dataclass
@@ -388,22 +391,26 @@ def _get_available_ram_gb() -> float:
 
 
 def _pick_ollama_model(logger: Optional[LogFn] = None) -> str:
-    """Escolhe o melhor modelo do Ollama baseado na RAM disponivel."""
+    """Escolhe o melhor modelo do Ollama baseado na RAM disponivel.
+
+    Modelos que falharam ao carregar (ex.: arquitetura nao suportada pela
+    instalacao do Ollama) ficam em _ollama_broken_models e sao ignorados."""
     global _ollama_active_model
 
-    if _ollama_active_model:
+    if _ollama_active_model and _ollama_active_model not in _ollama_broken_models:
         return _ollama_active_model
+    _ollama_active_model = ""
 
     avail_ram = _get_available_ram_gb()
     _log(logger, f"[Ollama] RAM disponivel: {avail_ram:.1f} GB")
 
-    if avail_ram < 4.0:
-        _log(logger, f"[Ollama] RAM insuficiente para modelo de visao ({avail_ram:.1f}GB < 4GB). Desabilitando IA.")
+    if avail_ram < 2.0:
+        _log(logger, f"[Ollama] RAM insuficiente para modelo de visao ({avail_ram:.1f}GB < 2GB). Desabilitando IA.")
         return ""
 
     primary_model = _ollama_primary_model()
-    primary_ok = _is_model_available(primary_model, logger)
-    fallback_ok = _is_model_available(OLLAMA_FALLBACK_MODEL, logger)
+    primary_ok = primary_model not in _ollama_broken_models and _is_model_available(primary_model, logger)
+    fallback_ok = OLLAMA_FALLBACK_MODEL not in _ollama_broken_models and _is_model_available(OLLAMA_FALLBACK_MODEL, logger)
 
     if primary_ok and avail_ram >= 10.0:
         _ollama_active_model = primary_model
@@ -439,6 +446,30 @@ def _is_model_available(model_name: str, logger: Optional[LogFn] = None) -> bool
         return False
 
 
+_LOAD_ERROR_MARKERS = (
+    "unknown model architecture",
+    "error loading model",
+    "failed to load model",
+    "error creating model",
+    "model not found",
+    "no such file",
+    "does not support vision",
+    "not a vision model",
+    "unsupported model",
+    "exceeds the model's context length",
+    "cannot allocate memory",
+    "failed to allocate memory",
+)
+
+
+def _is_model_load_error(msg: str) -> bool:
+    """True se o erro indica que o modelo NAO consegue carregar/rodar na
+    instalacao atual do Ollama (arquitetura nao suportada, OOM, etc.). Nesses
+    casos o modelo e marcado invalido e nao e mais tentado."""
+    m = (msg or "").lower()
+    return any(k in m for k in _LOAD_ERROR_MARKERS)
+
+
 def _optimize_image_bytes(data: bytes, max_dim: int = 1024, quality: int = 88) -> bytes:
     """Redimensiona/compacta a imagem antes de enviar ao modelo de visao local.
 
@@ -465,7 +496,7 @@ def _optimize_image_bytes(data: bytes, max_dim: int = 1024, quality: int = 88) -
         return data
 
 
-def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optional[List[bytes]] = None, logger: Optional[LogFn] = None) -> str:
+def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optional[List[bytes]] = None, logger: Optional[LogFn] = None, deadline: Optional[float] = None) -> str:
     global _ollama_consecutive_errors, _ollama_disabled_until, _ollama_active_model
 
     if http_requests is None:
@@ -511,19 +542,42 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
         endpoint = f"{OLLAMA_HOST}/api/generate"
 
     last_error = None
-    models_to_try = [model]
+    candidates = [model]
     if model != OLLAMA_FALLBACK_MODEL and _is_model_available(OLLAMA_FALLBACK_MODEL, logger):
-        models_to_try.append(OLLAMA_FALLBACK_MODEL)
-    # Timeout generoso para imagens: modelos de visao locais (CPU) levam
-    # de 1 a 5 minutos para ler uma foto/diario. Texto puro segue rapido.
-    ollama_timeout = OLLAMA_TIMEOUT if all_images else min(OLLAMA_TIMEOUT, 60)
+        candidates.append(OLLAMA_FALLBACK_MODEL)
+    models_to_try = [m for m in candidates if m and m not in _ollama_broken_models]
+    if not models_to_try:
+        raise AIAssistError(
+            f"[Ollama] Nenhum modelo de visao viavel (todos marcados invalidos nesta instalacao: "
+            f"{sorted(_ollama_broken_models)}). Rode 'ollama pull {OLLAMA_FALLBACK_MODEL}' ou reinstale o Ollama."
+        )
+    # Timeout por tentativa: generoso para visao local em CPU (1-5 min), mas
+    # limitado para nao travar a extracao por horas. Texto puro segue rapido.
+    if all_images:
+        attempt_timeout = min(OLLAMA_TIMEOUT, OLLAMA_IMAGE_TIMEOUT)
+    else:
+        attempt_timeout = min(OLLAMA_TIMEOUT, 60)
 
     for attempt_model in models_to_try:
         payload["model"] = attempt_model
         for attempt in range(2):
+            if deadline is not None:
+                remaining = deadline - _time.time()
+                if remaining <= 0:
+                    last_error = last_error or TimeoutError("orçamento de extracao esgotado")
+                    break
+                current_timeout = max(1, min(attempt_timeout, int(remaining)))
+            else:
+                current_timeout = attempt_timeout
             try:
-                resp = http_requests.post(endpoint, json=payload, timeout=ollama_timeout)
-                resp.raise_for_status()
+                resp = http_requests.post(endpoint, json=payload, timeout=current_timeout)
+                if resp.status_code != 200:
+                    err_body = ""
+                    try:
+                        err_body = resp.json().get("error", resp.text or "")
+                    except Exception:  # noqa: BLE001
+                        err_body = resp.text or ""
+                    raise RuntimeError(f"HTTP {resp.status_code}: {(err_body or '')[:300]}")
                 data = resp.json()
                 if all_images:
                     text = (data.get("message", {}) or {}).get("content", "")
@@ -542,6 +596,12 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
                 last_error = exc
                 _ollama_consecutive_errors += 1
                 _log(logger, f"[Ollama] Erro tentativa {attempt+1} com {attempt_model}: {exc}")
+                if _is_model_load_error(str(exc)):
+                    _ollama_broken_models.add(attempt_model)
+                    if attempt_model == _ollama_active_model:
+                        _ollama_active_model = ""
+                    _log(logger, f"[Ollama] Modelo {attempt_model} marcado como invalido nesta instalacao; sera ignorado nas proximas chamadas.")
+                    break
                 if attempt == 0:
                     _time.sleep(1)
 
@@ -917,6 +977,7 @@ def _refresh_ai_env() -> None:
     """
     global GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
     global AI_MODEL, AI_TEMPERATURE, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL, OLLAMA_TIMEOUT
+    global OLLAMA_IMAGE_TIMEOUT, EXTRACAO_TIMEOUT
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -926,6 +987,8 @@ def _refresh_ai_env() -> None:
     OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2-vision")
     OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "openbmb/minicpm-v4.6")
     OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "600"))
+    OLLAMA_IMAGE_TIMEOUT = int(os.environ.get("OLLAMA_IMAGE_TIMEOUT", "240"))
+    EXTRACAO_TIMEOUT = int(os.environ.get("EXTRACAO_TIMEOUT", "300"))
 
 
 def _configured_ai_providers(preferred: str) -> List[str]:
@@ -952,10 +1015,10 @@ def _provider_configured(provider: str) -> bool:
     return False
 
 
-def _call_provider(provider: str, prompt: str, image_bytes: bytes) -> str:
+def _call_provider(provider: str, prompt: str, image_bytes: bytes, deadline: Optional[float] = None) -> str:
     p = (provider or "").strip().lower()
     if p in ("local", "ollama"):
-        return _call_ollama(prompt, image_bytes)
+        return _call_ollama(prompt, image_bytes, deadline=deadline)
     if p == "gemini":
         return _call_gemini(prompt, image_bytes)
     if p == "openai":
@@ -965,11 +1028,12 @@ def _call_provider(provider: str, prompt: str, image_bytes: bytes) -> str:
     raise AIAssistError(f"Provedor de IA desconhecido: {provider}")
 
 
-def _call_ai_with_fallback(prompt: str, image_bytes: bytes, logger: Optional[LogFn] = None) -> str:
+def _call_ai_with_fallback(prompt: str, image_bytes: bytes, logger: Optional[LogFn] = None, deadline: Optional[float] = None) -> str:
     """Chama a IA do provedor escolhido; se falhar, tenta os demais configurados.
 
     Suporta IA local (Ollama) e IAS web (Gemini/OpenAI/Anthropic) sempre que a
-    chave estiver disponivel em runtime.
+    chave estiver disponivel em runtime. 'deadline' limita o tempo TOTAL gasto
+    em todos os provedores/tentativas (evita travamento de horas).
     """
     _refresh_ai_env()
     preferred = _get_provider()
@@ -977,12 +1041,15 @@ def _call_ai_with_fallback(prompt: str, image_bytes: bytes, logger: Optional[Log
     tentados: List[str] = []
 
     for provider in _configured_ai_providers(preferred):
+        if deadline is not None and time.time() >= deadline:
+            erros.append("orcamento de extracao esgotado")
+            break
         if not _provider_configured(provider):
             continue
         tentados.append(provider)
         try:
             _log(logger, f"[AI-Extracao] Tentando provedor: {provider}")
-            text = _call_provider(provider, prompt, image_bytes)
+            text = _call_provider(provider, prompt, image_bytes, deadline=deadline)
             if text and text.strip():
                 if provider != preferred:
                     _log(logger, f"[AI-Extracao] Fallback: '{provider}' usado no lugar de '{preferred}'.")
@@ -990,6 +1057,8 @@ def _call_ai_with_fallback(prompt: str, image_bytes: bytes, logger: Optional[Log
         except Exception as exc:  # noqa: BLE001
             erros.append(f"{provider}: {exc}")
             _log(logger, f"[AI-Extracao] Falha no provedor '{provider}': {exc}")
+            if deadline is not None and time.time() >= deadline:
+                break
 
     if erros:
         raise AIAssistError(
@@ -1121,11 +1190,20 @@ def extrair_notas_imagem(
 
     p_prompt = (prompt or "").strip() or EXTRAIR_NOTAS_IMAGEM_PROMPT
     _log(logger, f"[AI-Extracao] Enviando imagem ({len(image_bytes)} bytes) para extracao de notas...")
+    _log(logger, f"[AI-Extracao] Orcamento de tempo: {EXTRACAO_TIMEOUT}s (EXTRACAO_TIMEOUT).")
+    deadline = time.time() + EXTRACAO_TIMEOUT
 
     try:
-        resposta = _call_ai_with_fallback(p_prompt, image_bytes, logger=logger)
+        resposta = _call_ai_with_fallback(p_prompt, image_bytes, logger=logger, deadline=deadline)
     except AIAssistError as exc:
         _log(logger, f"[AI-Extracao] ERRO: {exc}")
+        if "Ollama" in str(exc):
+            _log(
+                logger,
+                "[AI-Extracao] Dica: confirme se o Ollama esta aberto (servico rodando) e se o "
+                "modelo de visao esta baixado (execute 'ollama list'). Imagens muito grandes "
+                "ou falta de RAM tambem travam o Ollama.",
+            )
         return []
 
     _log(logger, f"[AI-Extracao] Resposta bruta ({len(resposta)} chars): {resposta[:300]}")
@@ -1133,11 +1211,11 @@ def extrair_notas_imagem(
     _log(logger, f"[AI-Extracao] 1a leitura: {len(registros)} aluno(s) validos.")
 
     for tentativa in range(max(0, retries)):
-        if registros:
+        if registros or time.time() >= deadline:
             break
         _log(logger, f"[AI-Extracao] Leitura vazia/invalida. Refinando ({(tentativa + 1)}/{retries})...")
         try:
-            resposta = _call_ai_with_fallback(EXTRAIR_NOTAS_IMAGEM_REFINAR, image_bytes, logger=logger)
+            resposta = _call_ai_with_fallback(EXTRAIR_NOTAS_IMAGEM_REFINAR, image_bytes, logger=logger, deadline=deadline)
         except AIAssistError as exc:
             _log(logger, f"[AI-Extracao] ERRO no refinamento: {exc}")
             break

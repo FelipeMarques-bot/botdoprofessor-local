@@ -1,3 +1,6 @@
+import pytest
+
+
 class TestNormalizeNota:
     def test_comma_and_dot(self):
         from ai_assist import _normalize_nota
@@ -63,7 +66,7 @@ class TestExtrairNotasImagem:
 
         calls = []
 
-        def fake_call(prompt, image_bytes, logger=None):
+        def fake_call(prompt, image_bytes, logger=None, deadline=None):
             calls.append(prompt)
             return (
                 '[{"aluno": "Maria Silva", "nota": "8,5"},'
@@ -83,7 +86,7 @@ class TestExtrairNotasImagem:
 
         calls = []
 
-        def fake_call(prompt, image_bytes, logger=None):
+        def fake_call(prompt, image_bytes, logger=None, deadline=None):
             calls.append(prompt)
             if len(calls) == 1:
                 return "nao encontrei nada"
@@ -117,3 +120,108 @@ class TestProviderFallback:
         monkeypatch.setattr(ai_assist, "_call_openai", fake_openai)
         recs = ai_assist.extrair_notas_imagem(b"fake-image")
         assert recs == [{"aluno": "Via Web", "nota": "9"}]
+
+
+class TestModelLoadError:
+    def test_detects_arch_marker(self):
+        from ai_assist import _is_model_load_error
+
+        assert _is_model_load_error("error loading model: unknown model architecture: 'mllama'")
+        assert _is_model_load_error("failed to load model llama3.2-vision")
+        assert _is_model_load_error("HTTP 500: cannot allocate memory")
+
+    def test_ignores_unrelated_errors(self):
+        from ai_assist import _is_model_load_error
+
+        assert not _is_model_load_error("connection refused")
+        assert not _is_model_load_error("HTTP 500: internal server error")
+        assert not _is_model_load_error("")
+
+
+class TestPickOllamaModelBroken:
+    def test_skips_broken_primary_and_uses_fallback(self, monkeypatch):
+        import ai_assist
+
+        monkeypatch.setenv("OLLAMA_MODEL", "llama3.2-vision")
+        monkeypatch.setattr(ai_assist, "_ollama_active_model", None)
+        monkeypatch.setattr(ai_assist, "_get_available_ram_gb", lambda: 12.0)
+        monkeypatch.setattr(ai_assist, "_is_model_available", lambda name, logger=None: True)
+        monkeypatch.setattr(ai_assist, "_ollama_broken_models", {"llama3.2-vision"})
+
+        chosen = ai_assist._pick_ollama_model()
+        assert chosen == ai_assist.OLLAMA_FALLBACK_MODEL
+
+    def test_disables_ai_when_ram_too_low(self, monkeypatch):
+        import ai_assist
+
+        monkeypatch.setattr(ai_assist, "_ollama_active_model", None)
+        monkeypatch.setattr(ai_assist, "_get_available_ram_gb", lambda: 1.5)
+        monkeypatch.setattr(ai_assist, "_ollama_broken_models", set())
+
+        assert ai_assist._pick_ollama_model() == ""
+
+
+class TestCallOllamaBrokenModel:
+    def test_marks_broken_model_and_falls_back_to_working_model(self, monkeypatch):
+        import ai_assist
+
+        seen = []
+
+        class FakeResp:
+            def __init__(self, model, is_ok):
+                self.model = model
+                self.is_ok = is_ok
+                self.status_code = 200 if is_ok else 500
+                self.text = ""
+
+            def json(self):
+                if self.is_ok:
+                    return {"message": {"content": '[{"aluno": "Ana", "nota": "9"}]'}}
+                return {"error": "error loading model: unknown model architecture: 'mllama'"}
+
+        def fake_post(endpoint, json=None, timeout=None):
+            seen.append(json["model"])
+            is_ok = json["model"] != "llama3.2-vision"
+            return FakeResp(json["model"], is_ok)
+
+        monkeypatch.setattr(ai_assist, "_ollama_broken_models", set())
+        monkeypatch.setattr(ai_assist, "_ollama_active_model", None)
+        monkeypatch.setattr(ai_assist, "_ollama_consecutive_errors", 0)
+        monkeypatch.setattr(ai_assist, "_ollama_disabled_until", 0.0)
+        monkeypatch.setattr(ai_assist, "_is_ollama_running", lambda: True)
+        monkeypatch.setattr(ai_assist, "_pick_ollama_model", lambda logger=None: "llama3.2-vision")
+        monkeypatch.setattr(ai_assist, "_is_model_available", lambda name, logger=None: True)
+        monkeypatch.setattr(ai_assist, "http_requests", type("R", (), {"post": staticmethod(fake_post)})())
+
+        text = ai_assist._call_ollama("prompt", image_bytes=b"\x89PNG\r\n\x1a\nfake")
+        assert '[{"aluno": "Ana", "nota": "9"}]' in text
+        assert seen == ["llama3.2-vision", ai_assist.OLLAMA_FALLBACK_MODEL]
+        assert "llama3.2-vision" in ai_assist._ollama_broken_models
+
+    def test_raises_when_all_models_broken(self, monkeypatch):
+        import ai_assist
+
+        class FakeResp:
+            status_code = 500
+            text = ""
+
+            def json(self):
+                return {"error": "failed to load model: cannot allocate memory"}
+
+        def fake_post(endpoint, json=None, timeout=None):
+            return FakeResp()
+
+        monkeypatch.setattr(ai_assist, "_ollama_broken_models", set())
+        monkeypatch.setattr(ai_assist, "_ollama_active_model", None)
+        monkeypatch.setattr(ai_assist, "_ollama_consecutive_errors", 0)
+        monkeypatch.setattr(ai_assist, "_ollama_disabled_until", 0.0)
+        monkeypatch.setattr(ai_assist, "_is_ollama_running", lambda: True)
+        monkeypatch.setattr(ai_assist, "_pick_ollama_model", lambda logger=None: "llama3.2-vision")
+        monkeypatch.setattr(ai_assist, "_is_model_available", lambda name, logger=None: True)
+        monkeypatch.setattr(ai_assist, "http_requests", type("R", (), {"post": staticmethod(fake_post)})())
+
+        from ai_assist import AIAssistError
+
+        with pytest.raises(AIAssistError):
+            ai_assist._call_ollama("prompt", image_bytes=b"\x89PNG\r\n\x1a\nfake")
+        assert ai_assist.OLLAMA_FALLBACK_MODEL in ai_assist._ollama_broken_models

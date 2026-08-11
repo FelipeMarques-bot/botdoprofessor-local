@@ -353,6 +353,79 @@ def _coletar_divergencia(page, contexto, atividade: str, data_realizacao: str, a
     fila.append(item)
 
 
+def _coletar_ausente(page, contexto, atividade: str, data_realizacao: str, aluno: str,
+                     nota_esperada, coluna_sge: str = "", logger=None) -> None:
+    """Enfileira um aluno NAO localizado na grade do SGE (nome/imagem ilegivel)
+    para revisao do usuario: ele pode corrigir o nome (letra ilegivel) ou enviar
+    outra imagem (imagem ilegivel)."""
+    if "revisao_fila" not in st.session_state:
+        st.session_state.revisao_fila = []
+    fila = st.session_state.revisao_fila
+    from lancar_notas_sge import _coletar_ausente as _montar_ausente
+    item = _montar_ausente(
+        page, contexto, atividade, aluno, nota_esperada,
+        coluna_sge=coluna_sge, data_realizacao=data_realizacao,
+        logger=logger,
+    )
+    for i, it in enumerate(fila):
+        if it.get("id") == item["id"]:
+            fila[i].update(item)
+            return
+    fila.append(item)
+
+
+def _coletar_retentativa_ausentes() -> int:
+    """Prepara a re-tentativa dos ausentes com nome corrigido (letra ilegivel).
+
+    Monta a lista de pendentes em st.session_state.revisao_pendentes e agenda o
+    novo lancamento (revisao_retentar_ausentes + revisao_aplicar). Retorna quantos
+    itens validos serao re-tentados (0 se nenhum nome foi corrigido)."""
+    fila = st.session_state.get("revisao_fila", [])
+    pend = []
+    for it in fila:
+        if it.get("tipo") != "ausente":
+            continue
+        if it.get("decisao") != "retentar":
+            continue
+        nome_corrigido = (it.get("aluno_corrigido") or "").strip()
+        if not nome_corrigido:
+            continue
+        pend.append({
+            "tipo": "ausente",
+            "escola": it.get("escola"), "turno": it.get("turno"),
+            "turma": it.get("turma"), "trimestre": it.get("trimestre"),
+            "atividade": it.get("atividade"),
+            "aluno": it.get("aluno"),
+            "aluno_corrigido": nome_corrigido,
+            "nota_esperada": it.get("nota_esperada"),
+            "data_realizacao": it.get("data_realizacao", ""),
+            "decisao": "retentar",
+        })
+    if not pend:
+        return 0
+    st.session_state.revisao_pendentes = pend
+    st.session_state.revisao_retentar_ausentes = True
+    st.session_state.revisao_aplicar = True
+    return len(pend)
+
+
+def _salvar_nova_imagem_ausente(item, uploaded) -> str:
+    """Salva a nova imagem enviada pelo professor (imagem ilegivel) em
+    artifacts/revisao e retorna o caminho (ou '' em caso de falha)."""
+    if uploaded is None:
+        return ""
+    try:
+        rev_dir = _revisao_dir()
+        os.makedirs(rev_dir, exist_ok=True)
+        ext = os.path.splitext(uploaded.name or "")[1].lower() or ".png"
+        dest = os.path.join(rev_dir, f"{item.get('id', 'x')}_nova{ext}")
+        with open(dest, "wb") as f:
+            f.write(uploaded.getvalue())
+        return dest
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _alimentar_fila_revisao(resultado: dict, logger=None) -> None:
     """Enfileira os itens NAO-CONFIRMADO retornados pela execucao (re-auditoria
     pos-lancamento e falhas de verificacao pos-preenchimento) para confirmacao do usuario."""
@@ -398,6 +471,7 @@ def _aplicar_decisoes_revisao():
             "aluno": item.get("aluno"),
             "decisao": item.get("decisao"),
             "valor_corrigido": item.get("valor_corrigido", ""),
+            "nota_esperada": item.get("nota_esperada"),
         })
     if not pendentes:
         return False
@@ -1561,7 +1635,9 @@ if ajuda_btn:
     """)
 
 # === EXECUCAO ===
-if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_state.pop("revisao_aplicar", False):
+_rev_aplicar = st.session_state.pop("revisao_aplicar", False)
+_rev_retentar = st.session_state.pop("revisao_retentar_ausentes", False)
+if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplicar or _rev_retentar:
     st.session_state.executando = True
     st.session_state.logs = []
     st.session_state.log_file = _start_log_file()
@@ -1965,7 +2041,8 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                     from playwright.sync_api import sync_playwright
                     from status_store import StatusStore
 
-                    status_store = StatusStore(fonte_path, logger=log_progress)
+                    status_store_path = fonte_path or os.path.join(_revisao_dir(), "retentar_ausentes")
+                    status_store = StatusStore(status_store_path, logger=log_progress)
                     if fonte == "planilha":
                         _semear_status_manual(status_store)
                     ja_lancadas = 0
@@ -1984,36 +2061,32 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                     ]
 
                     pendentes = st.session_state.pop("revisao_pendentes", [])
-                    if pendentes:
-                        alvos = []
-                        for p in pendentes:
-                            if p.get("decisao") in (None, "", "pular"):
-                                continue
-                            nota = p.get("valor_corrigido") or p.get("nota_esperada")
-                            try:
-                                nota = float(str(nota).replace(",", "."))
-                            except Exception:  # noqa: BLE001
-                                nota = 0.0
-                            alvos.append((
-                                p.get("escola"), p.get("turno"), p.get("turma"),
-                                p.get("trimestre"), p.get("atividade"), p.get("aluno"), nota,
-                            ))
-                        registros_sge = [
-                            r for r in registros_sge
-                            if any(
-                                a[0] == r.escola and a[1] == r.turno and a[2] == r.turma and
-                                a[3] == r.trimestre and a[4] == r.atividade and a[5] == r.aluno
-                                for a in alvos
-                            )
-                        ]
-                        for r in registros_sge:
-                            for a in alvos:
-                                if (a[0] == r.escola and a[1] == r.turno and a[2] == r.turma and
-                                        a[3] == r.trimestre and a[4] == r.atividade and a[5] == r.aluno):
-                                    r.nota = a[6]
-                                    break
-                        st.session_state.revisao_forcar = True
-                        log_progress(f"[REVISAO] Aplicando decisoes: {len(registros_sge)} registro(s) para gravacao forçada.")
+                    if _rev_retentar:
+                        # Re-tentativa de ausentes (nome/imagem ilegivel) com nome
+                        # corrigido pelo professor: monta o lote SO com esses registros.
+                        from lancar_notas_sge import _aplicar_pendentes_ausentes
+                        registros_retentativa = _aplicar_pendentes_ausentes(pendentes)
+                        if not registros_retentativa:
+                            log_progress("[REVISAO] Nenhum ausente corrigido valido para re-tentar.")
+                            st.session_state.revisao_forcar = False
+                            st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                            st.stop()
+                        registros_sge = registros_retentativa
+                        log_progress(f"[REVISAO] Re-tentando {len(registros_sge)} ausente(s) com nome corrigido no SGE.")
+                    elif pendentes and not _rev_aplicar:
+                        # Decisoes de revisao so sao consumidas na execucao disparada pelo
+                        # botao "Gravar decisoes" (revisao_aplicar). Em um lancamento novo,
+                        # uma fila antiga nao pode filtrar/esvaziar o lote extraido.
+                        log_progress(f"[REVISAO] Ignorando {len(pendentes)} decisao(oes) pendentes de execucao anterior (lancamento novo).")
+                        pendentes = []
+                    if pendentes and not _rev_retentar:
+                        from lancar_notas_sge import _aplicar_pendentes_revisao
+                        registros_sge, _rev_forcar = _aplicar_pendentes_revisao(registros_sge, pendentes)
+                        if _rev_forcar:
+                            st.session_state.revisao_forcar = True
+                            log_progress(f"[REVISAO] Aplicando decisoes: {len(registros_sge)} registro(s) para gravacao forçada.")
+                        else:
+                            log_progress("[REVISAO] Nenhuma decisao aplicavel ao lote extraido; prosseguindo com o lote normal.")
 
                     grouped = _group_for_launch(registros_sge)
                     log_progress(f"Blocos para lancamento: {len(grouped)}")
@@ -2030,6 +2103,8 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                         page.set_default_timeout(ACTION_TIMEOUT_MS)
 
                         _login_sge(page, cpf=st.session_state.sge_cpf, senha=st.session_state.sge_senha, logger=log_progress)
+                        from lancar_notas_sge import _reset_navigation_cache
+                        _reset_navigation_cache()
 
                         for idx, (key, itens) in enumerate(grouped.items(), start=1):
                             escola, turno, turma, trimestre, atividade = key
@@ -2104,6 +2179,8 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
 
                             novos = 0
                             revisao_forcar = bool(st.session_state.get("revisao_forcar", False))
+                            from lancar_notas_sge import _set_primeiro_nome_match
+                            _set_primeiro_nome_match(bool(st.session_state.get("primeiro_nome_match", True)))
                             for reg in itens:
                                 if status_store.esta_lancada(reg.escola, reg.turno, reg.turma, reg.trimestre, reg.aluno, reg.atividade):
                                     ja_lancadas += 1
@@ -2146,7 +2223,12 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or st.session_
                                         )
                                         divergencias += 1
                                 else:
-                                    log_progress(f"  [AUSENTE] Aluno '{reg.aluno}' nao localizado na grade. Pulando...")
+                                    log_progress(f"  [AUSENTE] Aluno '{reg.aluno}' nao localizado na grade. Enviado para revisao (nome ou imagem ilegivel).")
+                                    _coletar_ausente(
+                                        page, contexto, atividade, data_mais_comum,
+                                        reg.aluno, reg.nota, coluna_sge,
+                                        logger=log_progress,
+                                    )
                                     ausentes_count += 1
 
                             if novos > 0:
@@ -2501,6 +2583,88 @@ with tab_rev:
             ):
                 _aplicar_decisoes_revisao()
                 st.rerun()
+
+    # === AUSENTES: nome ou imagem ilegivel ===
+    _fila_aus = st.session_state.get("revisao_fila", [])
+    _aus_pendentes = [it for it in _fila_aus if it.get("tipo") == "ausente" and it.get("decisao") in (None, "")]
+    _aus_retentaveis = [it for it in _fila_aus if it.get("tipo") == "ausente" and it.get("decisao") == "retentar"]
+    if _aus_pendentes:
+        st.markdown("### Ausentes — nome ou imagem ilegível")
+        st.caption(
+            "O nome lido na imagem **não foi localizado** na grade do SGE. "
+            "Se a **letra** estiver ilegível, digite o nome correto (como aparece na grade) "
+            "e clique em 'Re-tentar' — o bot relança só esse aluno. "
+            "Se a **imagem** estiver ilegível, envie outra foto e clique em **Executar** novamente."
+        )
+        if _aus_retentaveis:
+            if st.button(
+                f"Re-tentar {len(_aus_retentaveis)} ausente(s) corrigido(s) no SGE",
+                type="primary",
+                key="rev_retentar_ausentes",
+                use_container_width=True,
+            ):
+                n = _coletar_retentativa_ausentes()
+                if n:
+                    st.success(f"{n} ausente(s) agendado(s) para re-tentativa.")
+                    st.rerun()
+                else:
+                    st.warning("Corrija ao menos um nome antes de re-tentar.")
+        for item in _aus_pendentes:
+            fkey = f"aus_{item.get('id', 'x')}"
+            with st.expander(
+                f"🔤 {item.get('aluno')} — nota esperada **{item.get('nota_esperada')}** | {item.get('atividade')}",
+                expanded=False,
+            ):
+                col_shot, col_dec = st.columns([1, 2])
+                with col_shot:
+                    if os.path.exists(item.get("screenshot", "")):
+                        st.image(item["screenshot"], caption="Evidência (grade do SGE)")
+                    else:
+                        st.caption("Evidência indisponível")
+                    st.caption(
+                        f"Escola: {item.get('escola')} | Turno: {item.get('turno')} | "
+                        f"Turma: {item.get('turma')} | {item.get('trimestre')}"
+                    )
+                with col_dec:
+                    novo_nome = st.text_input(
+                        "Nome correto na grade do SGE (se a letra estiver ilegível)",
+                        key=f"{fkey}_nome",
+                    )
+                    c_nome, c_pular = st.columns(2)
+                    with c_nome:
+                        if st.button("Re-tentar com este nome", key=f"{fkey}_btn_nome", use_container_width=True):
+                            if not novo_nome.strip():
+                                st.warning("Digite o nome correto antes de re-tentar.")
+                            else:
+                                item["aluno_corrigido"] = novo_nome.strip()
+                                item["decisao"] = "retentar"
+                                item["nova_imagem"] = ""
+                                st.session_state.revisao_fila = _fila_aus
+                                st.rerun()
+                    with c_pular:
+                        if st.button("Pular (não gravar)", key=f"{fkey}_btn_pular", use_container_width=True):
+                            item["decisao"] = "pular"
+                            st.session_state.revisao_fila = _fila_aus
+                            st.rerun()
+                    nova_img = st.file_uploader(
+                        "Imagem ilegível? Envie outra foto da atividade",
+                        type=["png", "jpg", "jpeg"],
+                        key=f"{fkey}_img",
+                    )
+                    if nova_img is not None:
+                        if st.button("Salvar esta imagem e relançar", key=f"{fkey}_btn_img", use_container_width=True):
+                            _path = _salvar_nova_imagem_ausente(item, nova_img)
+                            if _path:
+                                item["nova_imagem"] = _path
+                                item["decisao"] = "nova_imagem"
+                                st.session_state.revisao_fila = _fila_aus
+                                st.success(
+                                    f"Nova imagem salva em `{_path}`. Envie-a (ou outra foto mais nítida) "
+                                    "na seção **Filtros → Imagem/Foto** e clique em **Executar** novamente."
+                                )
+                                st.rerun()
+                            else:
+                                st.error("Não foi possível salvar a imagem enviada.")
     else:
         st.info("Nenhuma divergencia pendente de confirmacao. Ela aparece aqui quando o bot encontrar uma nota que difere do esperado.")
 

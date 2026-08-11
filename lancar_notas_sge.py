@@ -505,6 +505,15 @@ def _name_tokens(s: str) -> List[str]:
     return [t for t in _normalize_loose(s).split() if t and t not in stopwords]
 
 
+def _tok_ratio(a: str, b: str) -> float:
+    """Similaridade 0..1 entre dois tokens de nome (tolera variacao ortografica)."""
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def _normalize_notion_id(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -734,6 +743,20 @@ def _student_name_matches(expected: str, current: str) -> bool:
     # Nesse caso exigimos maior sobreposicao de tokens significativos.
     if first_ratio >= 0.85 and len(common) >= 2:
         return True
+
+    # Tolerancia para nomes lidos por IA com sobrenome corrompido: quando o alvo
+    # tem POUCOS tokens e o PRIMEIRO nome casa com folga ortografica, basta o
+    # ultimo token significativo do alvo achar similar em algum token do portal.
+    # Iniciais soltas (ex.: 'B.' em 'Bruno Gustano B.') nao contam como token.
+    sig_a = [t for t in ta if len(t) > 1]
+    sig_b = [t for t in tb if len(t) > 1]
+    if sig_a and sig_b and len(sig_a) <= 2:
+        first_ratio = difflib.SequenceMatcher(None, sig_a[0], sig_b[0]).ratio()
+        last_ok = any(
+            difflib.SequenceMatcher(None, sig_a[-1], t).ratio() >= 0.72 for t in sig_b
+        )
+        if first_ratio >= 0.8 and last_ok:
+            return True
 
     return False
 
@@ -3476,6 +3499,16 @@ def _find_student_row(page, aluno: str):
             row_norm = _normalize(texto_row)
             if alvo_norm in row_norm:
                 return row
+        # Fallback fuzzy (nomes lidos por IA com sobrenome corrompido): mesmo
+        # tratamento de _student_name_matches aplicado ao texto completo da linha.
+        for idx in range(total_rows):
+            row = rows.nth(idx)
+            try:
+                texto_row = row.inner_text(timeout=400)
+            except Exception:  # noqa: BLE001
+                continue
+            if _student_name_matches(aluno, texto_row):
+                return row
     return None
 
 
@@ -3566,9 +3599,33 @@ def _find_student_row_with_pagination(page, aluno: str, max_pages: int = 5):
 # Cache de posicao de aluno por pagina (evita busca repetida)
 _student_page_cache: Dict[str, int] = {}
 
+
+def _reset_navigation_cache() -> None:
+    """Zera caches globais de navegacao ao iniciar uma NOVA execucao (browser novo).
+
+    Sem isso, _select_context confia no _current_context de uma execucao anterior
+    (mesmo processo/Streamlit) e pula a selecao de escola/turno/turma, deixando o
+    fluxo preso na tela de selecao de escola e nunca abrindo a avaliacao
+    (GRIDAGENDA nao aparece / atividade nao encontrada).
+    """
+    global _current_context
+    _current_context = None
+    _student_page_cache.clear()
+    _clear_slots_cache()
+
 # Casamento progressivo por primeiro nome (busca pelo 1o nome e desambigua com
 # 2o/3o nome). Habilitado por executar_lancamento(buscar_por_primeiro_nome=True).
 _PRIMEIRO_NOME_MATCH_ENABLED: bool = False
+
+
+def _set_primeiro_nome_match(enabled: bool) -> None:
+    """Ativa/desativa o casamento progressivo por primeiro nome em runtime.
+
+    O fluxo por imagem (painel.py) roda o lancamento inline (sem passar por
+    executar_lancamento), entao precisa ligar/desligar este flag diretamente.
+    """
+    global _PRIMEIRO_NOME_MATCH_ENABLED
+    _PRIMEIRO_NOME_MATCH_ENABLED = bool(enabled)
 
 
 def _collect_student_slots(scope) -> List[Dict[str, str]]:
@@ -3743,26 +3800,28 @@ def _progressive_name_suffixes(expected: str, slots: List[Dict[str, str]]) -> Li
 
     Quando a IA le o nome da planilha, o primeiro nome costuma sair correto e o
     sobrenome pode vir corrompido. Esta estrategia procura primeiro pelo primeiro
-    nome; se mais de um aluno do portal tiver o mesmo primeiro nome, refina com o
-    segundo e, se preciso, o terceiro nome para diferenciar.
+    nome (com folga ortografica para variações de OCR/manuscrito); se mais de um
+    aluno do portal tiver o mesmo primeiro nome, refina com o segundo e, se
+    preciso, o terceiro nome (tambem com folga) para diferenciar.
 
     Retorna a lista de suffixs na ordem de prioridade (1 candidato no caso ideal).
     """
-    tokens = _name_tokens(_normalize_loose(expected))
+    tokens = [t for t in _name_tokens(_normalize_loose(expected)) if len(t) > 1]
     if not tokens:
         return []
 
     def _match_round(n_round: int) -> List[Dict[str, str]]:
         matched = []
         for slot in slots:
-            atual = _name_tokens(_normalize_loose(str(slot.get("aluno", "")).strip()))
-            if not atual:
-                continue
-            if atual[0] != tokens[0]:
+            atual = [t for t in _name_tokens(_normalize_loose(str(slot.get("aluno", "")).strip())) if len(t) > 1]
+            if not atual or _tok_ratio(atual[0], tokens[0]) < 0.8:
                 continue
             ok = True
             for i in range(1, n_round):
-                if i >= len(atual) or i >= len(tokens) or atual[i] != tokens[i]:
+                if i >= len(atual) or i >= len(tokens):
+                    ok = False
+                    break
+                if _tok_ratio(atual[i], tokens[i]) < 0.65:
                     ok = False
                     break
             if ok:
@@ -3794,6 +3853,26 @@ def _progressive_name_suffixes(expected: str, slots: List[Dict[str, str]]) -> Li
 
     # Sem como desambiguar: devolve todos os de primeiro nome igual (ambiguo).
     return _suffixes(r1)
+
+
+def _first_name_unique_in_slots(expected: str, slots: List[Dict[str, str]]) -> bool:
+    """True quando EXATAMENTE um aluno do portal tem o primeiro nome do alvo.
+
+    Usado para relaxar a ancora de linha no preenchimento: com o primeiro nome
+    unico na grade, um unico token ja identifica a linha correta sem arriscar
+    escrever na linha de outro aluno (homonimos sao detectados aqui).
+    """
+    tokens = [t for t in _name_tokens(_normalize_loose(expected)) if len(t) > 1]
+    if not tokens:
+        return False
+    hits = 0
+    for slot in slots:
+        atual = [t for t in _name_tokens(_normalize_loose(str(slot.get("aluno", "")).strip())) if len(t) > 1]
+        if atual and _tok_ratio(atual[0], tokens[0]) >= 0.8:
+            hits += 1
+            if hits > 1:
+                return False
+    return hits == 1
 
 
 def _names_exactly_equal(a: str, b: str) -> bool:
@@ -3861,11 +3940,12 @@ def _grade_input_selectors_chain(suffix: str, coluna_sge: str = "") -> List[str]
         chain.extend([
             f"input[name='_NOTA_{suffix}']",
             f"input[id='_NOTA_{suffix}']",
-            f"input[name$='_{suffix}'][name*='NOTA' i]",
-            f"input[id$='_{suffix}'][id*='NOTA' i]",
-            f"input[name$='_{suffix}'][name*='AVAL' i]",
-            f"input[id$='_{suffix}'][id*='AVAL' i]",
-            f"input[name$='_{suffix}'], input[id$='_{suffix}']",
+            f"input[name$='_{suffix}'][name*='NOTA' i]:not([name*='NOTAREC' i]):not([name*='ALUMATNOM' i]):not([name*='_ALUNO' i]):not([name*='_NOME' i])",
+            f"input[id$='_{suffix}'][id*='NOTA' i]:not([id*='NOTAREC' i]):not([id*='ALUMATNOM' i]):not([id*='_ALUNO' i]):not([id*='_NOME' i])",
+            f"input[name$='_{suffix}'][name*='AVAL' i]:not([name*='ALUMATNOM' i]):not([name*='_ALUNO' i]):not([name*='_NOME' i])",
+            f"input[id$='_{suffix}'][id*='AVAL' i]:not([id*='ALUMATNOM' i]):not([id*='_ALUNO' i]):not([id*='_NOME' i])",
+            f"input[name$='_{suffix}']:not([name*='NOTAREC' i]):not([name*='ALUMATNOM' i]):not([name*='_ALUNO' i]):not([name*='_NOME' i])",
+            f"input[id$='_{suffix}']:not([id*='NOTAREC' i]):not([id*='ALUMATNOM' i]):not([id*='_ALUNO' i]):not([id*='_NOME' i])",
         ])
     return chain
 
@@ -3878,13 +3958,12 @@ def _discover_grade_input_attr(scope, suffix: str, coluna_sge: str = "") -> str:
     """
     js = """
     ({suffix, coluna}) => {
+""" + _grade_field_matcher_js(suffix, coluna_sge) + """
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
         for (const el of candidates) {
             const name = (el.getAttribute('name') || '').trim();
             const id = (el.getAttribute('id') || '').trim();
-            const attrs = name + ' ' + id;
-            if (!attrs.includes('_' + suffix)) continue;
-            if (coluna && !attrs.toLowerCase().includes('_' + coluna.toLowerCase() + '_')) continue;
+            if (!_isGradeField(name, id)) continue;
             if (el.disabled || el.readOnly) continue;
             return (name ? 'name' : 'id') + '=' + (name || id);
         }
@@ -4125,7 +4204,11 @@ def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[L
     def _try_verify(cols: str) -> bool:
         if filled_suffix:
             for scope in _iter_scopes(page):
-                res = _read_grade_value_anchored_js(scope, aluno, filled_suffix, cols)
+                slots = _wait_student_slots(scope)
+                if not slots:
+                    continue
+                allow_first = _first_name_unique_in_slots(aluno, slots)
+                res = _read_grade_value_anchored_js(scope, aluno, filled_suffix, cols, allow_first_name_only=allow_first)
                 if res is None:
                     continue
                 val, count = res
@@ -4138,9 +4221,10 @@ def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[L
             slots = _wait_student_slots(scope)
             if not slots:
                 continue
+            allow_first = _first_name_unique_in_slots(aluno, slots)
             suffixes = _candidate_suffixes_for_student(aluno, slots)
             for suffix in suffixes[:3]:
-                res = _read_grade_value_anchored_js(scope, aluno, suffix, cols)
+                res = _read_grade_value_anchored_js(scope, aluno, suffix, cols, allow_first_name_only=allow_first)
                 if res is None:
                     continue
                 val, count = res
@@ -4166,6 +4250,7 @@ def _is_grade_already_set_for_suffix(scope, suffix: str, nota_texto: str, coluna
             const attrs = (name + ' ' + id).toLowerCase();
             if (!attrs.includes('_' + suffix)) continue;
             if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
+            if (!_vis(el)) continue;
             const val = (el.value || '').trim().replace(',', '.');
             const target = nota.trim().replace(',', '.');
             if (val === target) return true;
@@ -4184,40 +4269,119 @@ def _clear_slots_cache():
     _slots_cache.clear()
 
 
-def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "", aluno: str = "") -> str:
+def _grade_field_matcher_js(suffix: str, coluna_sge: str = "") -> str:
+    """Bloco JS comum: normalizacao, similaridade e filtro de campo de NOTA.
+
+    O filtro '_isGradeField' aceita apenas inputs cujo name|id terminam em
+    '_<seg>_<suffix>' (ou '_<coluna>_<suffix>'), ignorando campos de NOME
+    (_ALUMATNOM_, _ALUNO_, etc.) e de RECUPERACAO (_NOTAREC_, _RECUP_, ...).
+    Sem esse filtro, o sufixo '_0002' casa _NOTA_0002 E _NOTAREC_0002 (e o campo
+    de nome), o que deixa toda leitura/escrita ambigua e "sempre vazia".
+    """
+    suf = re.escape(str(suffix))
+    if coluna_sge:
+        col = re.escape(_normalize_loose(coluna_sge))
+        regex = f"_{col}_{suf}$"
+    else:
+        excl = "notarec|notrec|recup|recuperacao|recupera|alumnom|alumatnom|aluno|nome|estudante|estu|matricula|matric|mat"
+        regex = f"_(?!(?:{excl}))[a-z0-9]{{1,24}}_{suf}$"
+    return f"""
+    const _sim = (a, b) => {{
+        a = (a || '').toLowerCase(); b = (b || '').toLowerCase();
+        if (a === b) return 1;
+        if (!a || !b) return 0;
+        const n = a.length, m = b.length;
+        const dp = Array.from({{length: n + 1}}, () => new Array(m + 1).fill(0));
+        for (let i = 0; i <= n; i++) dp[i][0] = i;
+        for (let j = 0; j <= m; j++) dp[0][j] = j;
+        for (let i = 1; i <= n; i++) {{
+            for (let j = 1; j <= m; j++) {{
+                dp[i][j] = Math.min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+            }}
+        }}
+        return 1 - dp[n][m] / Math.max(n, m);
+    }};
+    const _norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+    const _tokenize = s => Array.from(new Set((_norm(s).match(/[a-z0-9]{{2,}}/g) || [])));
+    const _gradeFieldRe = new RegExp('{regex}');
+    const _isGradeField = (name, id) => _gradeFieldRe.test(_norm(name)) || _gradeFieldRe.test(_norm(id));
+    const _vis = el => {{ try {{ return !!el && (el.offsetWidth > 0 || el.getClientRects().length > 0); }} catch (e) {{ return true; }} }};
+    const _rowTokens = (row) => {{
+        const parts = [row.innerText || ''];
+        try {{
+            row.querySelectorAll('input[type="text"], input[type="number"], input[type="hidden"]').forEach(x => {{
+                const v = (x.value || '').trim();
+                if (/[a-z\\u00c0-\\u00ff]/i.test(v)) parts.push(v);
+            }});
+        }} catch (e) {{}}
+        return _tokenize(parts.join(' '));
+    }};
+    """
+
+
+def _grade_field_attr_matches(attr: str, suffix: str, coluna_sge: str = "") -> bool:
+    """Twin Python de '_isGradeField' (testavel sem browser).
+
+    Reflete a decisao do JS: um name|id de input termina em '_<seg>_<suffix>'
+    (ou '_<coluna>_<suffix>') e o segmento nao e campo de nome/recuperacao.
+    """
+    norm = _normalize(attr)
+    suf = "_" + str(suffix).strip().lower()
+    if not norm.endswith(suf):
+        return False
+    if coluna_sge:
+        return norm.endswith("_" + _normalize_loose(coluna_sge) + suf)
+    core = norm[: -len(suf)]
+    if not core:
+        return False
+    before, sep, seg = core.rpartition("_")
+    if not sep or not seg or not re.fullmatch(r"[a-z0-9]{1,24}", seg):
+        return False
+    excl = ("notarec", "notrec", "recup", "recuperacao", "recupera", "alumnom",
+            "alumatnom", "aluno", "nome", "estudante", "estu", "matricula",
+            "matric", "mat")
+    return not any(seg.startswith(ex) for ex in excl)
+
+
+def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "", aluno: str = "", allow_first_name_only: bool = False) -> str:
     """Tenta preencher o campo de nota e retorna o resultado (1 round-trip JS).
 
     Com 'aluno' informado, so preenche o campo cuja LINHA contem o nome do aluno
     (ancora de linha): evita gravar a nota na coluna/linha de OUTRO aluno quando
     o mesmo suffix aparece em varios campos da pagina. Sem a ancora, 'not_found'.
 
-    Retorna:
+    A ancora compara tokens com folga ortografica (_sim >= 0.8). Com
+    'allow_first_name_only' (primeiro nome unico na grade), basta o primeiro
+    token casar para ancorar. Retorna:
       'filled'    - campo preenchido com sucesso
       'already'   - campo ja continha o valor desejado
       'not_found' - campo nao encontrado (ou nao ancorado na linha do aluno)
       'error'     - erro ao preencher
     """
     js = """
-    ({suffix, nota, coluna, alvo}) => {
-        const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
-        const tokenize = s => Array.from(new Set((norm(s).match(/[a-z0-9]{2,}/g) || [])));
-        const alvoTokens = alvo ? tokenize(alvo) : [];
+    ({suffix, nota, coluna, alvo, allowFirstNameOnly}) => {
+""" + _grade_field_matcher_js(suffix, coluna_sge) + """
+        const alvoTokens = alvo ? _tokenize(alvo) : [];
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
         const matches = [];
         for (const el of candidates) {
             const name = (el.getAttribute('name') || '').trim();
             const id = (el.getAttribute('id') || '').trim();
-            const attrs = norm(name + ' ' + id);
-            if (!attrs.includes('_' + suffix)) continue;
-            if (coluna && !attrs.includes('_' + norm(coluna) + '_')) continue;
+            if (!_isGradeField(name, id)) continue;
+            if (!_vis(el)) continue;
             let anchored = !alvoTokens.length;
             if (!anchored) {
                 const row = el.closest('tr');
                 if (row) {
-                    const rowTokens = tokenize(row.innerText || '');
+                    const rowTokens = _rowTokens(row);
                     let hit = 0;
-                    for (const t of alvoTokens) { if (rowTokens.includes(t)) hit += 1; }
-                    anchored = hit >= Math.max(1, Math.ceil(alvoTokens.length * 0.6));
+                    let firstHit = false;
+                    for (let k = 0; k < alvoTokens.length; k++) {
+                        const ok = rowTokens.some(rt => _sim(alvoTokens[k], rt) >= 0.8);
+                        if (ok) { hit += 1; if (k === 0) firstHit = true; }
+                    }
+                    const need = Math.max(1, Math.ceil(alvoTokens.length * 0.6));
+                    anchored = allowFirstNameOnly ? firstHit : (hit >= need);
                 }
             }
             if (!anchored) continue;
@@ -4242,7 +4406,7 @@ def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str
             } catch (e) { return 'error'; }
         };
         if (!matches.length) return 'not_found';
-        const byId = matches.find(m => m.id && norm(m.id).includes('_' + suffix));
+        const byId = matches.find(m => m.id && _norm(m.id).includes('_' + suffix));
         if (byId) return fill(byId.el);
         const byName = matches.find(m => m.name);
         if (byName) return fill(byName.el);
@@ -4250,7 +4414,10 @@ def _try_fill_and_verify_js(scope, suffix: str, nota_texto: str, coluna_sge: str
     }
     """
     try:
-        return str(scope.evaluate(js, {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge, "alvo": aluno}))
+        return str(scope.evaluate(
+            js,
+            {"suffix": suffix, "nota": nota_texto, "coluna": coluna_sge, "alvo": aluno, "allowFirstNameOnly": bool(allow_first_name_only)},
+        ))
     except Exception:  # noqa: BLE001
         return "error"
 
@@ -4259,13 +4426,13 @@ def _verify_fill_js(scope, suffix: str, nota_texto: str, coluna_sge: str = "") -
     """Verifica se o campo de nota foi preenchido corretamente (1 round-trip JS)."""
     js = """
     ({suffix, nota, coluna}) => {
+""" + _grade_field_matcher_js(suffix, coluna_sge) + """
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
         for (const el of candidates) {
             const name = (el.getAttribute('name') || '').trim();
             const id = (el.getAttribute('id') || '').trim();
-            const attrs = (name + ' ' + id).toLowerCase();
-            if (!attrs.includes('_' + suffix)) continue;
-            if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
+            if (!_isGradeField(name, id)) continue;
+            if (!_vis(el)) continue;
             const val = (el.value || '').trim().replace(',', '.');
             const target = nota.trim().replace(',', '.');
             if (val === target) return true;
@@ -4290,8 +4457,11 @@ def _try_fill_grade_for_student_on_current_page(page, aluno: str, nota_texto: st
             continue
 
         suffixes = _candidate_suffixes_for_student(aluno, slots)
+        # Primeiro nome unico na grade -> ancora de linha pode aceitar so o 1o
+        # token (cobre sobrenomes completamente corrompidos pela leitura de IA).
+        allow_first = _first_name_unique_in_slots(aluno, slots)
         for suffix in suffixes:
-            result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge=coluna_sge, aluno=aluno)
+            result = _try_fill_and_verify_js(scope, suffix, nota_texto, coluna_sge=coluna_sge, aluno=aluno, allow_first_name_only=allow_first)
             if result in ("filled", "already"):
                 return suffix
 
@@ -4484,8 +4654,8 @@ def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogF
     try:
         input_info = page.evaluate("""
             () => Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'))
-                .slice(0, 20)
-                .map(el => ({ name: el.name || '', id: el.id || '', value: (el.value || '').trim() }))
+                .slice(0, 60)
+                .map(el => ({ name: el.name || '', id: el.id || '', value: (el.value || '').trim(), visible: (el.offsetWidth > 0 || el.getClientRects().length > 0) }))
         """)
         if input_info:
             _log(logger, f"[DEBUG] Inputs na pagina: {input_info}")
@@ -4587,8 +4757,9 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
             if not slots:
                 continue
             suffixes = _candidate_suffixes_for_student(aluno, slots)
+            allow_first = _first_name_unique_in_slots(aluno, slots)
             for suffix in suffixes[:3]:
-                res = _read_grade_value_anchored_js(scope, aluno, suffix, "")
+                res = _read_grade_value_anchored_js(scope, aluno, suffix, "", allow_first_name_only=allow_first)
                 if res is None:
                     continue
                 val, count = res
@@ -4680,18 +4851,19 @@ def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "", strict: bool 
     """
     js = """
     ({suffix, coluna, strict}) => {
+""" + _grade_field_matcher_js(suffix, coluna_sge) + """
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
         const matches = [];
         for (const el of candidates) {
             const name = (el.getAttribute('name') || '').trim();
             const id = (el.getAttribute('id') || '').trim();
-            const attrs = (name + ' ' + id).toLowerCase();
-            if (!attrs.includes('_' + suffix)) continue;
-            if (coluna && !attrs.includes('_' + coluna.toLowerCase() + '_')) continue;
+            if (!_isGradeField(name, id)) continue;
+            if (!_vis(el)) continue;
             matches.push((el.value || '').trim());
         }
-        if (strict && matches.length !== 1) return null;
-        return matches.length ? matches[0] : '';
+        const uniq = [...new Set(matches)];
+        if (strict && uniq.length !== 1) return null;
+        return uniq.length ? uniq[0] : '';
     }
     """
     try:
@@ -4706,39 +4878,52 @@ def _read_grade_value_js(scope, suffix: str, coluna_sge: str = "", strict: bool 
     return None
 
 
-def _read_grade_value_anchored_js(scope, aluno: str, suffix: str, coluna_sge: str = ""):
+def _read_grade_value_anchored_js(scope, aluno: str, suffix: str, coluna_sge: str = "", allow_first_name_only: bool = False):
     """Le o valor do campo de nota ancorando na LINHA que contem o nome do aluno.
 
     Resolve a ambiguidade de paginas com varias colunas/avaliacoes (onde o mesmo
     suffix aparece em varios campos): o campo valido e o que esta dentro da <tr>
     cujo texto contem a maioria dos tokens do nome do aluno.
 
+    Com 'allow_first_name_only' (primeiro nome unico na grade), basta o primeiro
+    token casar para ancorar — mesmo relaxamento usado pelo preenchimento
+    (_try_fill_and_verify_js). Sem isso, a leitura NAO confirma um preenchimento
+    legitimo cujo sobrenome veio corrompido do Notion (ex.: 'Heloisa Sitoria'
+    vs 'HELOISA RAMALHO MOHR'), gerando FALHA-VERIFICACAO falso.
+
     Retorna (valor, num_campos_na_linha) ou None se nao conseguir ancorar. O valor
     e bruto (inclui '0,0' e vazio) para o chamador decidir; count>1 indica linha
     com mais de um campo do suffix (ambiguo -> chamador deve NAO confirmar).
     """
     js = """
-    ({suffix, coluna, alvo}) => {
-        const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
-        const tokenize = s => Array.from(new Set((norm(s).match(/[a-z0-9]{2,}/g) || [])));
-        const alvoTokens = alvo ? tokenize(alvo) : [];
+    ({suffix, coluna, alvo, allowFirstNameOnly}) => {
+""" + _grade_field_matcher_js(suffix, coluna_sge) + """
+        const alvoTokens = alvo ? _tokenize(alvo) : [];
         if (!alvoTokens.length) return null;
         const candidates = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
         const hits = [];
         for (const el of candidates) {
-            const attrs = norm((el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || ''));
-            if (!attrs.includes('_' + suffix)) continue;
-            if (coluna && !attrs.includes('_' + norm(coluna) + '_')) continue;
+            const name = (el.getAttribute('name') || '').trim();
+            const id = (el.getAttribute('id') || '').trim();
+            if (!_isGradeField(name, id)) continue;
+            if (!_vis(el)) continue;
             const row = el.closest('tr');
             if (!row) continue;
-            const rowTokens = tokenize(row.innerText || '');
+            const rowTokens = _rowTokens(row);
             if (!rowTokens.length) continue;
             let hit = 0;
-            for (const t of alvoTokens) { if (rowTokens.includes(t)) hit += 1; }
-            if (hit < Math.max(1, Math.ceil(alvoTokens.length * 0.6))) continue;
+            let firstHit = false;
+            for (let k = 0; k < alvoTokens.length; k++) {
+                const ok = rowTokens.some(rt => _sim(alvoTokens[k], rt) >= 0.8);
+                if (ok) { hit += 1; if (k === 0) firstHit = true; }
+            }
+            const need = Math.max(1, Math.ceil(alvoTokens.length * 0.6));
+            const anchored = allowFirstNameOnly ? firstHit : (hit >= need);
+            if (!anchored) continue;
             const rowInputs = Array.from(row.querySelectorAll('input[type="text"], input[type="number"]')).filter(i => {
-                const a = norm((i.getAttribute('name') || '') + ' ' + (i.getAttribute('id') || ''));
-                return a.includes('_' + suffix);
+                const n = (i.getAttribute('name') || '').trim();
+                const d = (i.getAttribute('id') || '').trim();
+                return _isGradeField(n, d) && _vis(i);
             });
             hits.push({value: (el.value || '').trim(), count: rowInputs.length, matched: hit});
         }
@@ -4748,7 +4933,7 @@ def _read_grade_value_anchored_js(scope, aluno: str, suffix: str, coluna_sge: st
     }
     """
     try:
-        raw = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge, "alvo": aluno})
+        raw = scope.evaluate(js, {"suffix": suffix, "coluna": coluna_sge, "alvo": aluno, "allowFirstNameOnly": bool(allow_first_name_only)})
         if raw is None:
             return None
         return str(raw.get("value", "")), int(raw.get("count", 0))
@@ -4770,8 +4955,9 @@ def _read_grade_value_for_student_raw(page, aluno: str, coluna_sge: str = "") ->
             if not slots:
                 continue
             suffixes = _candidate_suffixes_for_student(aluno, slots)
+            allow_first = _first_name_unique_in_slots(aluno, slots)
             for suffix in suffixes[:3]:
-                res = _read_grade_value_anchored_js(scope, aluno, suffix, coluna_sge)
+                res = _read_grade_value_anchored_js(scope, aluno, suffix, coluna_sge, allow_first_name_only=allow_first)
                 if res is None:
                     continue
                 val, count = res
@@ -5100,6 +5286,96 @@ def _confirm_save(page, logger: Optional[LogFn], data_realizacao: str = "") -> b
     return True  # Assumir sucesso se nao detectou erro explicito
 
 
+def _aplicar_pendentes_revisao(registros: List["RegistroNota"], pendentes: List[dict]):
+    """Aplica decisoes de revisao (confirmar/corrigir) sobre o lote extraido.
+
+    Retorna (registros, forcar). NUNCA devolve lista vazia por falta de match:
+    se nenhuma decisao bate com o lote extraido, o lote e mantido intacto, para
+    um lancamento novo nao zerar silenciosamente o que foi extraido da imagem.
+    """
+    if not pendentes:
+        return registros, False
+    alvos: List[tuple] = []
+    for p in pendentes:
+        if p.get("decisao") in (None, "", "pular"):
+            continue
+        nota = p.get("valor_corrigido") or p.get("nota_esperada")
+        try:
+            nota = float(str(nota).replace(",", "."))
+        except Exception:  # noqa: BLE001
+            nota = 0.0
+        alvos.append((
+            p.get("escola"), p.get("turno"), p.get("turma"),
+            p.get("trimestre"), p.get("atividade"), p.get("aluno"), nota,
+        ))
+    if not alvos:
+        return registros, False
+    filtrados = [
+        r for r in registros
+        if any(
+            a[0] == r.escola and a[1] == r.turno and a[2] == r.turma and
+            a[3] == r.trimestre and a[4] == r.atividade and a[5] == r.aluno
+            for a in alvos
+        )
+    ]
+    if not filtrados:
+        return registros, False
+    for r in filtrados:
+        for a in alvos:
+            if (a[0] == r.escola and a[1] == r.turno and a[2] == r.turma and
+                    a[3] == r.trimestre and a[4] == r.atividade and a[5] == r.aluno):
+                r.nota = a[6]
+                break
+    return filtrados, True
+
+
+def _coletar_ausente(page, contexto, atividade: str, aluno: str, nota_esperada: str,
+                     coluna_sge: str = "", data_realizacao: str = "",
+                     logger: Optional[LogFn] = None) -> Dict[str, Any]:
+    """Monta um item de AUSENTE (nome/imagem ilegivel) para a fila do painel.
+
+    O aluno nao foi localizado na grade do SGE: o nome lido da imagem pode estar
+    ilegivel (o professor corrige o nome) ou a imagem pode estar ilegivel (o
+    professor envia outra imagem). O item carrega screenshot da grade como
+    evidencia para o professor decidir.
+    """
+    item = _coletar_nao_confirmado(
+        page, contexto, atividade, aluno, nota_esperada, "",
+        coluna_sge, logger=logger,
+    )
+    item["tipo"] = "ausente"
+    item["data_realizacao"] = data_realizacao or ""
+    item["aluno_corrigido"] = ""
+    item["nova_imagem"] = ""
+    return item
+
+
+def _aplicar_pendentes_ausentes(pendentes: List[Dict[str, Any]]) -> List["RegistroNota"]:
+    """Converte decisoes de ausentes (nome/imagem ilegivel) em registros para um
+    novo lancamento: usa o nome corrigido digitado pelo professor (se houver) ou
+    o nome originalmente lido da imagem. Itens 'pular' ou sem nome sao ignorados."""
+    novos: List[RegistroNota] = []
+    for p in pendentes or []:
+        if p.get("tipo") != "ausente":
+            continue
+        if p.get("decisao") not in ("retentar",):
+            continue
+        nome = (p.get("aluno_corrigido") or "").strip() or (p.get("aluno") or "").strip()
+        if not nome:
+            continue
+        try:
+            nota = float(str(p.get("nota_esperada") or "0").replace(",", "."))
+        except Exception:  # noqa: BLE001
+            nota = 0.0
+        novos.append(RegistroNota(
+            escola=p.get("escola", ""), turno=p.get("turno", ""),
+            turma=p.get("turma", ""), trimestre=p.get("trimestre", ""),
+            aluno=nome, atividade=p.get("atividade", ""), nota=nota,
+            data_realizacao=p.get("data_realizacao", ""),
+        ))
+    return novos
+
+
 def _group_for_launch(registros: List[RegistroNota]):
     grouped: Dict[Tuple[str, str, str, str, str], List[RegistroNota]] = defaultdict(list)
     for reg in registros:
@@ -5129,9 +5405,7 @@ def _revisar_blocos_apos_lancamento(
     # globais de navegacao podem estar marcados com o contexto/sessao anterior:
     # resetar garante que _select_context refaca a navegacao e que a busca de
     # alunos por paginacao comece do zero nesta pagina nova.
-    global _current_context
-    _current_context = None
-    _student_page_cache.clear()
+    _reset_navigation_cache()
 
     resumo: Dict[str, Any] = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
     resumo["itens_nao_confirmados"] = []
@@ -5261,10 +5535,9 @@ def executar_lancamento(
     if _is_placeholder_env(cpf) or _is_placeholder_env(senha):
         raise LancamentoError("SGE_CPF/SGE_SENHA estao com placeholders. Atualize com valores reais.")
 
-    # Reseta caches de navegacao
-    global _current_context
-    _current_context = None
-    _student_page_cache.clear()
+    # Reseta caches de navegacao (contexto da execucao anterior nao vale aqui:
+    # o browser e novo e pode abrir na tela de selecao de escola).
+    _reset_navigation_cache()
 
     registros = carregar_notas_notion(logger=logger, filtro=filtro)
     _log(logger, f"Total de notas carregadas do Notion: {len(registros)}")

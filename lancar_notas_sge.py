@@ -212,14 +212,207 @@ def _distinct_grade_columns_on_page(page) -> List[str]:
     return [pat for pat, _cnt in _collect_coluna_patterns(page)]
 
 
-def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None, atividade: str = "") -> str:
+_GRADE_INPUT_TOKEN_RE = re.compile(r"(?:^|[_.])(N\d+S|NOTA\s*\d+|Nota\s*\d+|PE|N\d+(?:\.\d+)?S?)(?:[_\s]|$)", re.I)
+
+
+def _extract_coluna_prefix_from_inputs(inputs) -> str:
+    """Extrai o token de coluna mais comum dos inputs (ex.: '_N1S_0001' -> 'N1S')."""
+    counts: Dict[str, int] = {}
+    for it in inputs:
+        attrs = "{} {}".format(it.get("name") or "", it.get("id") or "")
+        m = _GRADE_INPUT_TOKEN_RE.search(attrs)
+        if m:
+            counts[m.group(1).upper()] = counts.get(m.group(1).upper(), 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _cell_contains_date(cell_text: str, data_alvo: str) -> bool:
+    """True se o texto da celula de cabecalho contem a mesma data que data_alvo."""
+    data_dt = _parse_date(data_alvo)
+    if data_dt is None:
+        return False
+    alvo = data_dt.date()
+    for raw in re.findall(r"\d{2}/\d{2}/\d{2,4}", cell_text):
+        dt = _parse_date(_normalize_sge_date(raw))
+        if dt is not None and dt.date() == alvo:
+            return True
+    return False
+
+
+def _collect_header_columns(page) -> List[Dict[str, Any]]:
+    """Coleta a estrutura (cabecalhos + inputs de nota) das grades de nota da pagina.
+
+    Retorna lista de grupos: cada grupo = {'headers': [...], 'inputs': [...]}.
+    Cada cabecalho tem col/span/rowWidth/text; cada input tem col/rowWidth/name/id.
+    """
+    groups: List[Dict[str, Any]] = []
+    for scope in _iter_scopes(page):
+        try:
+            data = scope.evaluate("""
+                () => {
+                    const norm = s => (s || '').replace(/\\s+/g, ' ').trim();
+                    const isGrade = el => {
+                        const attrs = (el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || '');
+                        return /(?:^|[_.])(N\\d+S|NOTA\\s*\\d+|Nota\\s*\\d+|PE|N\\d+(?:\\.\\d+)?S?)(?:[_\\s]|$)/i.test(attrs);
+                    };
+                    const colIndex = td => {
+                        const tr = td.parentElement;
+                        let idx = 0;
+                        for (const cell of tr.children) {
+                            if (cell === td) return idx;
+                            idx += parseInt(cell.getAttribute('colspan'), 10) || 1;
+                        }
+                        return -1;
+                    };
+                    const rowWidth = tr => {
+                        let w = 0;
+                        for (const cell of tr.children) w += parseInt(cell.getAttribute('colspan'), 10) || 1;
+                        return w || 1;
+                    };
+                    const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+                    const byTable = new Map();
+                    for (const inp of inputs) {
+                        if (!isGrade(inp)) continue;
+                        const td = inp.closest('td');
+                        const table = inp.closest('table');
+                        if (!td || !table) continue;
+                        if (!byTable.has(table)) byTable.set(table, []);
+                        byTable.get(table).push({inp, td});
+                    }
+                    const out = [];
+                    for (const [table, entries] of byTable) {
+                        const headers = [];
+                        const dataInputs = [];
+                        for (const tr of table.querySelectorAll('tr')) {
+                            const trInputs = Array.from(tr.querySelectorAll('input[type="text"], input[type="number"]'));
+                            const hasGrade = trInputs.some(isGrade);
+                            if (!hasGrade) {
+                                for (const cell of tr.children) {
+                                    const text = norm(cell.textContent);
+                                    if (!text) continue;
+                                    headers.push({
+                                        col: colIndex(cell),
+                                        span: parseInt(cell.getAttribute('colspan'), 10) || 1,
+                                        rowWidth: rowWidth(tr),
+                                        text: text
+                                    });
+                                }
+                            } else {
+                                for (const {inp, td} of entries) {
+                                    if (inp.closest('tr') === tr) {
+                                        dataInputs.push({
+                                            col: colIndex(td),
+                                            rowWidth: rowWidth(tr),
+                                            name: inp.getAttribute('name'),
+                                            id: inp.getAttribute('id'),
+                                            val: (inp.value || '').trim()
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        if (dataInputs.length) out.push({headers, inputs: dataInputs});
+                    }
+                    return out;
+                }
+            """)
+            if isinstance(data, list):
+                for g in data:
+                    if isinstance(g, dict) and g.get("inputs"):
+                        groups.append({
+                            "headers": g.get("headers") or [],
+                            "inputs": g.get("inputs") or [],
+                        })
+        except Exception:  # noqa: BLE001
+            continue
+    return groups
+
+
+def _detect_coluna_by_header(page, atividade: str, data_alvo: str, logger: Optional[LogFn] = None) -> str:
+    """Detecta a coluna de nota pelo CABECALHO da grade (nome da avaliacao + data).
+
+    O SGE mostra o nome da avaliacao e a data no topo das colunas da grade de
+    lancamento. Esta funcao le esses cabecalhos e casa com a atividade/data do
+    Notion, resolvendo avaliacoes cujo nome nao tem token de coluna (ex.:
+    'SIMULADO 2'), que a deteccao por nome de input (_N1S_/_NOTA1_) nao pega.
+
+    E defensiva: so retorna um prefixo se houver casamento de DATA ou de NOME em
+    um cabecalho que contenha inputs de nota mapeaveis; caso contrario retorna ''
+    (a chamadora cai nos caminhos seguros: leitura/escrita sem filtro de coluna,
+    ou fail-safe de divergencia -> fila de revisao manual).
+    """
+    groups = _collect_header_columns(page)
+    if not groups:
+        _log(logger, "[HEADER-DETECT] Nenhuma grade de nota com cabecalho encontrada.")
+        return ""
+
+    total_inputs = sum(len(g["inputs"]) for g in groups)
+    n_headers = sum(len(g["headers"]) for g in groups)
+    _log(logger, f"[HEADER-DETECT] {len(groups)} grade(s) de nota, {total_inputs} input(s), {n_headers} celula(s) de cabecalho.")
+
+    def _owns_inputs(g, h) -> List[Dict[str, Any]]:
+        start = h["col"] / max(h["rowWidth"], 1)
+        end = (h["col"] + h["span"]) / max(h["rowWidth"], 1)
+        if end - start > 0.9:  # celula que ocupa a grade inteira = titulo, nao coluna
+            return []
+        owned = []
+        for inp in g["inputs"]:
+            frac = (inp["col"] + 0.5) / max(inp["rowWidth"], 1)
+            if start <= frac < end:
+                owned.append(inp)
+        return owned
+
+    # 1a prioridade: cabecalho que contem a DATA alvo (data e o identificador mais seguro).
+    if data_alvo:
+        for g in groups:
+            for h in g["headers"]:
+                if _cell_contains_date(h["text"], data_alvo):
+                    owned = _owns_inputs(g, h)
+                    prefix = _extract_coluna_prefix_from_inputs(owned) if owned else ""
+                    _log(logger, f"[HEADER-DETECT] DATA casou: cabecalho={h['text']!r} -> coluna '{prefix}' ({len(owned)} input(s)).")
+                    if prefix:
+                        return prefix
+
+    # 2a prioridade: cabecalho cujo NOME casa com a atividade (sem data confiavel).
+    best = None  # (header, prefix, span)
+    for g in groups:
+        for h in g["headers"]:
+            owned = _owns_inputs(g, h)
+            if not owned:
+                continue
+            if _activity_match(atividade, h["text"]):
+                prefix = _extract_coluna_prefix_from_inputs(owned)
+                if best is None or h["span"] < best[2]:
+                    best = (h, prefix, h["span"])
+    if best is not None:
+        _log(logger, f"[HEADER-DETECT] NOME casou: cabecalho={best[0]['text']!r} -> coluna '{best[1]}'.")
+        if best[1]:
+            return best[1]
+
+    _log(logger, f"[HEADER-DETECT] Sem casamento confiavel (atividade={atividade!r}, data={data_alvo!r}).")
+    return ""
+
+
+def _detect_coluna_from_page(page, posicao_grid: int, logger: Optional[LogFn] = None, atividade: str = "", data_alvo: str = "") -> str:
     """Detecta o nome real da coluna de nota na pagina do SGE.
 
-    Escaneia os inputs de nota na pagina e retorna o prefixo correto (ex: 'N1S', 'NOTA1', 'PE').
-    Prioriza: (1) coluna que bate com o nome da atividade, (2) coluna padrao de _COLUNA_POR_POSICAO
-    se presente na pagina, (3) padrao mais comum, (4) coluna padrao.
+    Prioriza: (0) casamento pelo CABECALHO da grade (nome da avaliacao + data no
+    topo das colunas), (1) coluna que bate com o nome da atividade, (2) coluna
+    padrao de _COLUNA_POR_POSICAO se presente na pagina, (3) padrao mais comum.
+    data_alvo: data esperada da avaliacao (do Notion) usada para casar cabecalhos.
     """
     coluna_default = _COLUNA_POR_POSICAO.get(posicao_grid, "")
+
+    # Estrategia (0): casar pelo cabecalho da grade. Independente de token no
+    # nome da atividade ou de posicao na GRIDAGENDA (resolve 'SIMULADO 2').
+    try:
+        by_header = _detect_coluna_by_header(page, atividade, data_alvo, logger=logger)
+        if by_header:
+            return by_header
+    except Exception:  # noqa: BLE001
+        pass
 
     patterns = _collect_coluna_patterns(page)
 
@@ -4198,6 +4391,27 @@ def _classificar_leitura(existing: Optional[str], nota_esperada_texto: str) -> s
     return "divergente"
 
 
+def _sobrescrever_divergentes() -> bool:
+    """Permite forcar a sobrescrita de notas divergentes via SGE_SOBRESCREVER_DIVERGENTES=1.
+
+    Por padrao (False), notas ja existentes no SGE com valor diferente do esperado
+    NAO sao sobrescritas: entram na fila de revisao para decisao manual.
+    """
+    return os.environ.get("SGE_SOBRESCREVER_DIVERGENTES", "") in {"1", "true", "True", "yes", "sim"}
+
+
+def _auto_corrigir_revisao() -> bool:
+    """Correcao automatica de nota errada na re-auditoria pos-lancamento.
+
+    Ligada por padrao (SGE_AUTO_CORRIGIR=0 desativa). So age quando o campo do
+    aluno e inequivoco (leitura ancorada com exatamente um campo na linha) E a
+    coluna foi detectada de forma confiavel. Sem coluna (ex.: 2a avaliacao com
+    ambiguidade) o item NAO e regravado aqui — vai para a fila manual de revisao,
+    para nunca escrever na coluna/avaliacao errada.
+    """
+    return os.environ.get("SGE_AUTO_CORRIGIR", "1") not in {"0", "false", "False", "no", "nao"}
+
+
 def _verify_fill_just_made(page, aluno: str, nota_texto: str, logger: Optional[LogFn], coluna_sge: str = "", filled_suffix: str = "") -> bool:
     """Re-le os inputs do aluno apos o preenchimento e confere se o valor gravou.
 
@@ -5399,13 +5613,18 @@ def _revisar_blocos_apos_lancamento(
 
     Para cada aluno lancado no bloco:
       1) Rela o campo via JS (mesmo mecanismo do lancamento) e compara com o esperado.
-      2) Se divergir/nao encontrar, IA com visao (verify_grade_on_screen) confere
-         se a nota esta correta na tela — pega casos que seletores nao pegam.
-      3) Se a IA confirmar, conta como OK. Se NAO confirmar, apenas registra no
-         log como nao confirmado (NAO regrava a nota e NAO marca 'Falha' no Notion:
-         a regravacao nesta fase pode escrever na coluna/avaliacao errada).
+      2) Se o valor divergir e o campo for inequivoco (leitura ancorada com
+         exatamente um campo na linha) E a coluna estiver detectada, REGRAVA no
+         lugar e confirma (correcao automatica segura) — so para as notas erradas.
+         Sem coluna confiavel, NAO regrava (evita escrever na coluna/avaliacao
+         errada) e segue para a fila manual.
+      3) Se nao ancorar, IA com visao (verify_grade_on_screen) confere se a nota
+         esta correta na tela — pega casos que seletores nao pegam.
+      4) Se a IA confirmar, conta como OK. Se NAO confirmar, registra no log e
+         envia para a fila de confirmacao manual (screenshot + esperado vs lido).
 
-    Retorna resumo de revisao: revisados, ok, corrigidos (sempre 0), falhas, ai_usada.
+    Retorna resumo de revisao: revisados, ok, corrigidos, falhas, ai_usada,
+    itens_nao_confirmados (fila manual) e regs_corrigidos (notas corrigidas).
     """
     # Re-auditoria roda numa SEGUNDA sessao do navegador (novo login). Os caches
     # globais de navegacao podem estar marcados com o contexto/sessao anterior:
@@ -5415,6 +5634,7 @@ def _revisar_blocos_apos_lancamento(
 
     resumo: Dict[str, Any] = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
     resumo["itens_nao_confirmados"] = []
+    resumo["regs_corrigidos"] = []
     MAX_AI_PER_BLOCO = 3
 
     for bloco in blocos:
@@ -5465,8 +5685,9 @@ def _revisar_blocos_apos_lancamento(
             resumo["falhas"] += len(itens)
             continue
 
-        coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade)
+        coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade, data_alvo=data_realizacao)
         ai_calls_bloco = 0
+        regs_corrigidos_bloco: List[RegistroNota] = []
 
         for reg in itens:
             nota_texto = str(reg.nota).replace(".", ",")
@@ -5479,6 +5700,26 @@ def _revisar_blocos_apos_lancamento(
                 _log(logger, f"  [REVISAO-OK] {reg.aluno}: nota {nota_texto} confirmada (leitura ancorada na linha).")
                 resumo["ok"] += 1
                 continue
+
+            # Correcao automatica da nota errada: so quando o campo do aluno e
+            # inequivoco (leitura ancorada com exatamente um campo na linha) E a
+            # coluna foi detectada de forma confiavel. Nesses casos sabemos EXATAMENTE
+            # qual campo corrigir — a regravacao no lugar e segura. Quando a coluna
+            # nao foi detectada (ex.: 2a avaliacao com ambiguidade), NAO corrige aqui:
+            # sem coluna, reescrever pode atingir a coluna/avaliacao errada.
+            if (
+                existing is not None
+                and coluna_sge
+                and _auto_corrigir_revisao()
+            ):
+                filled = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=logger, coluna_sge=coluna_sge)
+                if filled and _verify_fill_just_made(page, reg.aluno, nota_texto, logger=logger, coluna_sge=coluna_sge, filled_suffix=filled):
+                    _log(logger, f"  [REVISAO-CORRIGIDO] {reg.aluno}: nota '{existing}' reescrita para '{nota_texto}' e confirmada.")
+                    resumo["corrigidos"] += 1
+                    resumo["ok"] += 1
+                    regs_corrigidos_bloco.append(reg)
+                    continue
+                _log(logger, f"  [REVISAO-CORRECAO-FALHOU] {reg.aluno}: tentativa de corrigir '{existing}' para '{nota_texto}' nao confirmada.")
 
             if existing is not None:
                 _log(logger, f"  [REVISAO-DIVERGENTE] {reg.aluno}: esperado {nota_texto}, leu {existing}.")
@@ -5504,11 +5745,11 @@ def _revisar_blocos_apos_lancamento(
             if confirmado_ia:
                 continue
 
-            # A re-auditoria NAO regrava a nota nem marca "Falha" no Notion nesta fase:
-            # roda numa sessao nova do navegador e a regravacao a partir de uma re-leitura
-            # duvidosa pode escrever na coluna/avaliacao errada (corrompendo a nota).
-            # O item entra na FILA DE CONFIRMACAO do painel (screenshot + esperado vs lido)
-            # para o professor decidir manualmente.
+            # Itens que nao puderam ser corrigidos com seguranca (coluna indefinida,
+            # campo nao ancorado ou correcao nao confirmada) NAO sao regravados aqui:
+            # uma regravacao duvidosa pode escrever na coluna/avaliacao errada. O
+            # item entra na FILA DE CONFIRMACAO do painel (screenshot + esperado vs
+            # lido) para o professor decidir manualmente.
             item = _coletar_nao_confirmado(
                 page, contexto, atividade, reg.aluno, nota_texto, existing, coluna_sge, logger=logger
             )
@@ -5516,6 +5757,14 @@ def _revisar_blocos_apos_lancamento(
             _log(logger, f"  [REVISAO-NAO-CONFIRMADO] {reg.aluno}: nota {nota_texto} nao confirmada na tela. "
                          f"Enviada para confirmacao manual (id={item['id']}).")
             resumo["falhas"] += 1
+
+        if regs_corrigidos_bloco:
+            try:
+                _confirm_save(page, logger=logger, data_realizacao=data_realizacao)
+                _log(logger, f"[REVISAO] Salvamento confirmado apos {len(regs_corrigidos_bloco)} correcao(oes) automatica(s).")
+            except Exception as exc:  # noqa: BLE001
+                _log(logger, f"[REVISAO] Falha ao confirmar salvamento das correcoes: {exc}")
+            resumo["regs_corrigidos"].extend(regs_corrigidos_bloco)
 
     return resumo
 
@@ -5590,6 +5839,7 @@ def executar_lancamento(
     notas_ok = 0
     falhas = 0
     ausentes = 0
+    divergencias = 0
 
     blocos_lancados: List[Dict[str, Any]] = []
     falhas_verificacao: List[Dict[str, Any]] = []
@@ -5695,7 +5945,7 @@ def executar_lancamento(
             regs_ausentes_bloco: List[RegistroNota] = []
             novos_preenchimentos = 0
             regs_ja_no_sge: List[RegistroNota] = []
-            coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade)
+            coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade, data_alvo=data_mais_comum)
             check_estrutura = _check_estrutura_sge(page, logger, contexto=contexto, atividade=atividade)
             if not check_estrutura["ok"]:
                 _log(logger, f"[ESTRUTURA-CHANGED] Execucao ABORTADA sem gravar. Evidencia em {ESTRUTURA_DIR}.")
@@ -5712,15 +5962,29 @@ def executar_lancamento(
             MAX_AI_CALLS_PER_BLOCK = 3
             for reg in itens:
                 existing = _read_existing_grade_for_student(page, reg.aluno, logger=logger, coluna_sge=coluna_sge)
-                if existing is not None:
-                    nota_texto = str(reg.nota).replace(".", ",")
-                    if _grade_value_matches_target(existing, nota_texto):
-                        _log(logger, f"  [SGE-JA] Nota '{existing}' ja existe no SGE para '{reg.aluno}'. Status vazio no Notion → marcando Lancada.")
-                        notas_ok += 1
-                        regs_ok_bloco.append(reg)
-                        regs_ja_no_sge.append(reg)
-                        continue
-                    _log(logger, f"  Nota existente '{existing}' difere da esperada '{nota_texto}' para '{reg.aluno}'. Atualizando...")
+                nota_texto = str(reg.nota).replace(".", ",")
+                classe = _classificar_leitura(existing, nota_texto)
+                if classe == "ok":
+                    _log(logger, f"  [SGE-JA] Nota '{existing}' ja existe no SGE para '{reg.aluno}'. Status vazio no Notion → marcando Lancada.")
+                    notas_ok += 1
+                    regs_ok_bloco.append(reg)
+                    regs_ja_no_sge.append(reg)
+                    continue
+                if classe == "divergente" and not _sobrescrever_divergentes():
+                    divergencias += 1
+                    falhas += 1
+                    regs_fail_bloco.append(reg)
+                    _log(logger, f"  [DIVERGENCIA] Nota '{existing}' no SGE difere da esperada '{nota_texto}' para '{reg.aluno}'. NAO sobrescrita; enviada para revisao.")
+                    try:
+                        item_falha = _coletar_nao_confirmado(
+                            page, contexto, atividade, reg.aluno, nota_texto, existing, coluna_sge, logger=logger
+                        )
+                        falhas_verificacao.append(item_falha)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                if classe == "divergente":
+                    _log(logger, f"  [SOBRESCREVER] Sobrescrevendo '{existing}' por '{nota_texto}' para '{reg.aluno}' (SGE_SOBRESCREVER_DIVERGENTES=1).")
 
                 filled_suffix = _fill_grade_for_student(page, reg.aluno, reg.nota, logger=logger, coluna_sge=coluna_sge)
                 if not filled_suffix and ai_is_enabled() and ai_calls_this_block < MAX_AI_CALLS_PER_BLOCK:
@@ -5875,7 +6139,7 @@ def executar_lancamento(
         "falhas": falhas,
         "revisao": revisao_resumo,
         "itens_nao_confirmados": itens_nao_confirmados,
-        "divergencias": len(itens_nao_confirmados),
+        "divergencias": divergencias,
     }
 
 

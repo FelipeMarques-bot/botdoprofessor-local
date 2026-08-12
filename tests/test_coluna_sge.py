@@ -272,3 +272,139 @@ class TestGradeFieldMatcher:
 
         assert _grade_field_attr_matches("_N2S_0002", "0002", "N2S") is True
         assert _grade_field_attr_matches("_NOTA_0002", "0002", "N2S") is False
+
+
+class FakeHeaderScope:
+    def __init__(self, groups):
+        self._groups = groups
+        self.frames = []
+
+    def evaluate(self, js, arg=None):
+        return self._groups
+
+
+def _header_group():
+    """Grade no estilo SGE: cabecalho com nome da avaliacao + data, inputs _N1S_/_N2S_."""
+    return [{
+        "headers": [
+            {"col": 0, "span": 1, "rowWidth": 4, "text": "ALUNO"},
+            {"col": 1, "span": 1, "rowWidth": 4, "text": "2º SIMULADO - 01/06/2026"},
+            {"col": 2, "span": 1, "rowWidth": 4, "text": "SITUAÇÃO"},
+            {"col": 3, "span": 1, "rowWidth": 4, "text": "1º SIMULADO - 15/05/2026"},
+        ],
+        "inputs": [
+            {"col": 1, "rowWidth": 4, "name": "_N2S_0001", "id": ""},
+            {"col": 1, "rowWidth": 4, "name": "_N2S_0002", "id": ""},
+            {"col": 3, "rowWidth": 4, "name": "_N1S_0001", "id": ""},
+        ],
+    }]
+
+
+class TestDetectColunaByHeader:
+    """Deteccao de coluna pelo CABECALHO (nome da avaliacao + data no topo)."""
+
+    def test_data_casa_coluna_do_2o_simulado(self):
+        import lancar_notas_sge as m
+
+        page = FakeHeaderScope(_header_group())
+
+        assert m._detect_coluna_by_header(page, "SIMULADO 2", "2026-06-01") == "N2S"
+
+    def test_nome_casa_sem_data(self):
+        import lancar_notas_sge as m
+
+        page = FakeHeaderScope(_header_group())
+
+        assert m._detect_coluna_by_header(page, "SIMULADO 2", "") == "N2S"
+
+    def test_data_desambigua_dois_simulados_mesmo_nome(self):
+        import lancar_notas_sge as m
+
+        group = _header_group()
+        group[0]["headers"][1]["text"] = "SIMULADO - 01/06/2026"
+        group[0]["headers"][3]["text"] = "SIMULADO - 15/05/2026"
+        page = FakeHeaderScope(group)
+
+        assert m._detect_coluna_by_header(page, "SIMULADO", "2026-06-01") == "N2S"
+        assert m._detect_coluna_by_header(page, "SIMULADO", "2026-05-15") == "N1S"
+
+    def test_sem_casamento_retorna_vazio(self):
+        import lancar_notas_sge as m
+
+        page = FakeHeaderScope(_header_group())
+
+        assert m._detect_coluna_by_header(page, "PROVA FINAL", "2026-12-01") == ""
+
+    def test_cabecalho_full_width_e_titulo_e_ignorado(self):
+        import lancar_notas_sge as m
+
+        group = [{
+            "headers": [
+                {"col": 0, "span": 4, "rowWidth": 4, "text": "NOTAS DA AVALIAÇÃO - 2º SIMULADO 01/06/2026"},
+            ],
+            "inputs": [
+                {"col": 1, "rowWidth": 4, "name": "_N2S_0001", "id": ""},
+                {"col": 2, "rowWidth": 4, "name": "_N2S_0002", "id": ""},
+            ],
+        }]
+        page = FakeHeaderScope(group)
+
+        # Titulo ocupa a grade inteira -> nao mapeia coluna (evita escrever em tudo).
+        assert m._detect_coluna_by_header(page, "SIMULADO 2", "") == ""
+
+    def test_cabecalho_com_colspan_agrupa_inputs_da_coluna(self):
+        import lancar_notas_sge as m
+
+        # Cabecalho "SIMULADO 2 - 01/06/2026" cobre 2 colunas (nota + situacao).
+        group = [{
+            "headers": [
+                {"col": 0, "span": 1, "rowWidth": 5, "text": "ALUNO"},
+                {"col": 1, "span": 2, "rowWidth": 5, "text": "SIMULADO 2 - 01/06/2026"},
+                {"col": 3, "span": 2, "rowWidth": 5, "text": "SIMULADO 1 - 15/05/2026"},
+            ],
+            "inputs": [
+                {"col": 1, "rowWidth": 5, "name": "_N2S_0001", "id": ""},
+                {"col": 2, "rowWidth": 5, "name": "_N2S_0001", "id": ""},
+                {"col": 3, "rowWidth": 5, "name": "_N1S_0001", "id": ""},
+            ],
+        }]
+        page = FakeHeaderScope(group)
+
+        assert m._detect_coluna_by_header(page, "SIMULADO 2", "2026-06-01") == "N2S"
+
+    def test_detect_coluna_from_page_prefere_cabecalho(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        monkeypatch.setattr(m, "_detect_coluna_by_header", lambda *a, **k: "N2S")
+        monkeypatch.setattr(m, "_iter_scopes", lambda page: page._scopes)
+        scope = FakeScope({"N1S": 30, "N2S": 30})
+        page = FakePage([scope])
+        result = m._detect_coluna_from_page(page, posicao_grid=1, atividade="SIMULADO 2", data_alvo="2026-06-01")
+        assert result == "N2S"
+
+    def test_detect_coluna_from_page_fallback_quando_cabecalho_vazio(self, monkeypatch):
+        import lancar_notas_sge as m
+
+        monkeypatch.setattr(m, "_detect_coluna_by_header", lambda *a, **k: "")
+        monkeypatch.setattr(m, "_iter_scopes", lambda page: page._scopes)
+        scope = FakeScope({"N1S": 30, "N2S": 30})
+        page = FakePage([scope])
+        result = m._detect_coluna_from_page(page, posicao_grid=2, atividade="N2S")
+        assert result == "N2S"
+
+
+class TestCellContainsDate:
+    def test_data_igual_retorna_true(self):
+        import lancar_notas_sge as m
+
+        assert m._cell_contains_date("2º SIMULADO - 01/06/2026", "2026-06-01") is True
+
+    def test_data_diferente_retorna_false(self):
+        import lancar_notas_sge as m
+
+        assert m._cell_contains_date("2º SIMULADO - 01/06/2026", "2026-05-15") is False
+
+    def test_sem_data_alvo_retorna_false(self):
+        import lancar_notas_sge as m
+
+        assert m._cell_contains_date("2º SIMULADO - 01/06/2026", "") is False

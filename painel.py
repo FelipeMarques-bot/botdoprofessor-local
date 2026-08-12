@@ -644,6 +644,46 @@ def carregar_env():
     return ""
 
 
+def _listar_turmas_notion():
+    """Lista as turmas disponiveis no Notion para os filtros atuais.
+
+    Quando um filtro generico (ex.: "6o Ano") casa com mais de uma turma
+    (ex.: "6º Ano 1" e "6º Ano 2"), o lancamento automatico monta blocos de
+    todas elas e a navegacao entre turmas no SGE pode falhar. Este helper
+    alimenta o seletor que permite lancar UMA turma por vez.
+    """
+    from lancar_notas_sge import listar_contextos_disponiveis, _normalize
+
+    if st.session_state.notion_token:
+        os.environ["NOTION_TOKEN"] = st.session_state.notion_token
+    if st.session_state.root_page_id:
+        os.environ["ROOT_PAGE_ID"] = st.session_state.root_page_id
+
+    escola = (st.session_state.get("escola") or "").strip()
+    turno = (st.session_state.get("turno") or "").strip()
+    trimestre = (st.session_state.get("trimestre") or "").strip()
+
+    def _sub(value: str, expected: str) -> bool:
+        if not expected:
+            return True
+        return _normalize(expected) in _normalize(value)
+
+    turmas = set()
+    try:
+        for ctx in listar_contextos_disponiveis():
+            if not _sub(ctx.get("escola", ""), escola):
+                continue
+            if not _sub(ctx.get("turno", ""), turno):
+                continue
+            if not _sub(ctx.get("trimestre", ""), trimestre):
+                continue
+            if ctx.get("turma"):
+                turmas.add(ctx["turma"])
+    except Exception:
+        return []
+    return sorted(turmas)
+
+
 # Carrega config salva para preencher campos automaticamente
 config_salva = carregar_config()
 for k, v in config_salva.items():
@@ -1364,6 +1404,40 @@ with st.sidebar:
             )
             st.session_state.lote = lote
 
+            if not lote and st.session_state.get("fonte", "notion") == "notion":
+                st.markdown("---")
+                st.markdown("**Lancar uma turma por vez** (quando ha 2 turmas do mesmo ano)")
+                st.caption(
+                    "Ex.: filtrando '6o Ano' o bot encontra '6º Ano 1' e '6º Ano 2'. "
+                    "Escolha uma turma abaixo para lancar apenas ela nesta execucao."
+                )
+                _filtros_atual = (
+                    st.session_state.get("escola", ""),
+                    st.session_state.get("turno", ""),
+                    st.session_state.get("trimestre", ""),
+                )
+                if st.session_state.get("turmas_notion_filtros") != _filtros_atual:
+                    st.session_state.pop("turmas_notion", None)
+                    st.session_state.turma_especifica = ""
+                if st.button("Carregar turmas disponíveis", key="btn_listar_turmas", use_container_width=True):
+                    with st.spinner("Consultando o Notion..."):
+                        turmas = _listar_turmas_notion()
+                    st.session_state["turmas_notion"] = turmas
+                    st.session_state["turmas_notion_filtros"] = _filtros_atual
+                turmas = st.session_state.get("turmas_notion", [])
+                if turmas:
+                    turma_especifica = st.selectbox(
+                        "Turma para lancar agora (uma por vez)",
+                        options=[""] + list(turmas),
+                        format_func=lambda x: x or "Todas as turmas",
+                        key="turma_especifica_select",
+                    )
+                    st.session_state.turma_especifica = turma_especifica
+                    if turma_especifica:
+                        st.success(f"Lancando apenas: **{turma_especifica}**")
+                else:
+                    st.session_state.turma_especifica = ""
+
     ia_opcao = st.radio(
         "Assistencia IA:",
         options=["nenhuma", "assistida", "aprendizado"],
@@ -1840,6 +1914,10 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         filtro["turno"] = st.session_state.turno
                     if st.session_state.turma:
                         filtro["turma"] = st.session_state.turma
+                    turma_especifica = st.session_state.get("turma_especifica", "")
+                    if turma_especifica:
+                        filtro["turma"] = turma_especifica
+                        log_progress(f"[TURMA-ESPECIFICA] Lancando apenas a turma: '{turma_especifica}'")
                     if st.session_state.trimestre:
                         filtro["trimestre"] = st.session_state.trimestre
                     # Atalho: filtrar por avaliacao especifica

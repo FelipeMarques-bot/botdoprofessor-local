@@ -118,6 +118,8 @@ def test_revisao_divergente_ia_nao_confirma_nao_regrava(monkeypatch):
     monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "N1S")
     monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: "6,0")
     monkeypatch.setattr(m, "ai_is_enabled", lambda: True)
+    # Correcao automatica tentada e falhando (campo nao preenchido): cai na fila.
+    monkeypatch.setattr(m, "_fill_grade_for_student", lambda *a, **k: "")
 
     def fake_verify_grade(shot, nota, aluno, logger=None):
         return {"found": True, "confirmed": False, "read_value": "6,0", "notes": "valor difere"}
@@ -129,6 +131,62 @@ def test_revisao_divergente_ia_nao_confirma_nao_regrava(monkeypatch):
     assert res["corrigidos"] == 0
     assert res["falhas"] == 1
     assert res["ai_usada"] == 1
+
+
+def test_revisao_divergente_sem_coluna_nao_regrava(monkeypatch):
+    """Sem coluna detectada (ambiguidade tipo 2a avaliacao), NAO corrige no lugar:
+    o item vai para a fila manual — nunca regrava as cegas."""
+    import lancar_notas_sge as m
+    page = DummyPage()
+    reg = _make_reg("ALUNO A", 8.5)
+    blo = _make_bloco([reg])
+
+    monkeypatch.setattr(m, "_select_context", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_open_assessment_for_context", lambda *a, **k: True)
+    monkeypatch.setattr(m, "_handle_assessment_period_page", lambda *a, **k: False)
+    monkeypatch.setattr(m, "_select_activity", lambda *a, **k: (True, "", 1))
+    monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "")
+    monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: "6,0")
+    monkeypatch.setattr(m, "ai_is_enabled", lambda: False)
+    monkeypatch.setattr(m, "threading", threading)
+
+    def assert_nao_chamado(*a, **k):
+        raise AssertionError("nao deveria ter chamado _fill_grade_for_student sem coluna")
+    monkeypatch.setattr(m, "_fill_grade_for_student", assert_nao_chamado)
+
+    res = _revisar_blocos_apos_lancamento(page, blo)
+    assert res["revisados"] == 1
+    assert res["corrigidos"] == 0
+    assert res["falhas"] == 1
+
+
+def test_revisao_divergente_auto_corrige_com_coluna(monkeypatch):
+    """Com coluna detectada e campo inequivoco, a nota errada e corrigida no lugar
+    (so as notas erradas), confirmada e salva."""
+    import lancar_notas_sge as m
+    page = DummyPage()
+    reg = _make_reg("ALUNO A", 8.5)
+    blo = _make_bloco([reg])
+
+    monkeypatch.setattr(m, "_select_context", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_open_assessment_for_context", lambda *a, **k: True)
+    monkeypatch.setattr(m, "_handle_assessment_period_page", lambda *a, **k: False)
+    monkeypatch.setattr(m, "_select_activity", lambda *a, **k: (True, "", 1))
+    monkeypatch.setattr(m, "_detect_coluna_from_page", lambda *a, **k: "N1S")
+    monkeypatch.setattr(m, "_read_grade_value_for_student_raw", lambda *a, **k: "6,0")
+    monkeypatch.setattr(m, "ai_is_enabled", lambda: False)
+    monkeypatch.setattr(m, "_fill_grade_for_student", lambda *a, **k: "0001")
+    monkeypatch.setattr(m, "_verify_fill_just_made", lambda *a, **k: True)
+    monkeypatch.setattr(m, "threading", threading)
+
+    res = _revisar_blocos_apos_lancamento(page, blo)
+    assert res["revisados"] == 1
+    assert res["corrigidos"] == 1
+    assert res["ok"] == 1
+    assert res["falhas"] == 0
+    assert res["ai_usada"] == 0
+    assert len(res["regs_corrigidos"]) == 1
+    assert res["regs_corrigidos"][0].aluno == "ALUNO A"
 
 
 def test_revisao_ia_confirma_mesmo_sem_ler_deterministico(monkeypatch):

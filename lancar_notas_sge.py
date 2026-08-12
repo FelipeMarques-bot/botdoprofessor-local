@@ -1375,7 +1375,8 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
 
     Estrategia (por prioridade):
     1) Numero explicito no nome da coluna (ex: "Atividade 3" → 3)
-    2) Encontra ancora "Data realização N" para cada coluna de nota (proximo no dict)
+    2) Atribuicao um-para-um pela ordem das colunas de nota no Notion
+       (1a coluna sem numero -> menor "Status lancamento N" livre)
     3) Fallback: tenta extrair numero de padroes como "24 - Resolução 1" → 1
     4) Fallback: mapeia para a primeira Status lancamento disponivel (por ordem N)
     """
@@ -1408,22 +1409,27 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
         if m:
             ancora_por_n[m.group(1)] = idx
 
-    # 3) Para cada coluna de nota sem numero no nome, encontra a ancora mais proxima
-    #    (em caso de empate, menor N vence — garante mapeamento deterministico)
+    # 3) Colunas de nota sem numero no nome: atribuicao um-para-um preservando a
+    #    ORDEM de aparicao das colunas no Notion (1a coluna -> menor N livre, etc.).
+    #    A ordem absoluta da API pode variar, mas a ordem relativa das colunas de nota
+    #    reflete a ordem das atividades no diario. Proximidade com "Data realização N"
+    #    era fragil: quando as ancoras aparecem em ordem decrescente (3, 2, 1), colunas
+    #    vizinhas colapsavam no mesmo status (ex.: '21-Atividade Avaliativa Individua'
+    #    e '3-Pesquisa', ambas antes de 'Data realização 1') ou ficavam invertidas,
+    #    deixando outro status orfao e pousando/saltando alunos da atividade errada.
+    usados = set(grade_status_map.values())
+    livres = [
+        f"Status lancamento {n}"
+        for n in sorted(ancora_por_n.keys())
+        if f"Status lancamento {n}" not in usados and n in existing_status_n
+    ]
     for idx, name in enumerate(prop_names):
         if name in grade_status_map:
             continue
         if not _is_probably_grade_column(name):
             continue
-        best_n = ""
-        best_dist = len(prop_names) + 1
-        for n in sorted(ancora_por_n.keys()):
-            dist = abs(idx - ancora_por_n[n])
-            if dist < best_dist:
-                best_dist = dist
-                best_n = n
-        if best_n and best_n in existing_status_n:
-            grade_status_map[name] = f"Status lancamento {best_n}"
+        if livres:
+            grade_status_map[name] = livres.pop(0)
 
     # 4) Fallback para colunas sem ancora: extrai numero do nome (ex: "Atividade 2")
     for idx, name in enumerate(prop_names):

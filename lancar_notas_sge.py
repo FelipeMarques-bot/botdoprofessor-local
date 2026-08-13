@@ -9,7 +9,7 @@ import threading
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -629,6 +629,7 @@ class RegistroNota:
     notion_page_id: str = ""
     notion_status_prop: str = ""
     data_realizacao: str = ""
+    status_by_col: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1667,6 +1668,54 @@ def _build_grade_status_map(props: Dict[str, Dict]) -> Dict[str, str]:
     return grade_status_map
 
 
+def _status_pair_is_explicit(name: str, status_prop: str) -> bool:
+    """True quando o par nota→status veio do NUMERO explicito no nome da coluna
+    (ex.: "Atividade 3" → "Status lancamento 3").
+
+    Esse par e confiavel (o proprio nome da coluna diz qual status). Ja os pares
+    inferidos por ORDEM das colunas podem inverter quando a ordem do Notion nao
+    acompanha a ordem do diario do SGE (ex.: '3-Pesquisa' antes de
+    '21-Atividade Avaliativa Individua' no Mulde 9o, invertendo 1↔2).
+    """
+    num_match = re.search(r"(?:atividade|activity|avaliacao|prova|trabalho)\s*(\d+)", _normalize(name))
+    if not num_match:
+        return False
+    return f"Status lancamento {num_match.group(1)}" == (status_prop or "").strip()
+
+
+def _collect_status_values(props: Dict[str, Dict]) -> Dict[str, str]:
+    """Retorna {nome_resolvido_da_coluna_de_status: valor} para todas as colunas
+    'Status lancamento N' da linha.
+
+    Usado no lancamento para decidir (com a coluna correta, derivada da POSICAO
+    na GRIDAGENDA do SGE) se uma atividade ja foi lancada — em vez de confiar no
+    mapeamento por ordem de colunas, que pode inverter os pares.
+    """
+    resultado: Dict[str, str] = {}
+    if not props:
+        return resultado
+    for pname in props.keys():
+        norm = _normalize(pname)
+        if "status" in norm and "lancamento" in norm:
+            resolved = _resolve_existing_status_prop(props, pname)
+            info = props.get(resolved) or props.get(pname) or {}
+            ptype = info.get("type", "")
+            valor = ""
+            if ptype == "select":
+                valor = ((info.get("select") or {}).get("name") or "").strip()
+            elif ptype == "status":
+                valor = ((info.get("status") or {}).get("name") or "").strip()
+            elif ptype == "rich_text":
+                rt = info.get("rich_text") or []
+                if isinstance(rt, list):
+                    valor = "".join(t.get("plain_text", "") for t in rt).strip()
+            elif ptype == "checkbox":
+                valor = "Lancada" if info.get("checkbox") else ""
+            if valor:
+                resultado[resolved] = valor
+    return resultado
+
+
 def _is_probably_grade_column(col_name: str) -> bool:
     clean = col_name.strip()
     if not clean:
@@ -1858,6 +1907,12 @@ def carregar_notas_notion(
         for row in rows:
             props = row.get("properties", {})
 
+            # Valores de TODAS as colunas 'Status lancamento N' desta linha. O
+            # lancamento decide 'ja lancada' pela coluna derivada da posicao na
+            # GRIDAGENDA (e nao pelo mapeamento por ordem de colunas, que pode
+            # inverter os pares quando a ordem do Notion difere da do diario).
+            status_by_col = _collect_status_values(props)
+
             aluno = ""
             if "Nome" in props:
                 aluno = _extract_plain_text(props["Nome"]).strip()
@@ -1935,11 +1990,17 @@ def carregar_notas_notion(
                 raw_val = _extract_plain_text(prop)
                 nota = _to_float(raw_val)
                 if nota is None:
-                    if status_val == "Lancada":
+                    if status_val == "Lancada" and _status_pair_is_explicit(atividade_nome, status_prop_nome):
                         _log(logger, f"  [skip] '{aluno}' - '{atividade_nome}' ja lancada (status Lancada, nota ausente)")
                     continue
 
-                if status_val == "Lancada":
+                # Skip rapido no load SOMENTE quando o par nota->status e explicito
+                # no nome (ex.: "Atividade 3" → Status 3). Pairs inferidos por
+                # ORDEM das colunas podem estar invertidos (ex.: Mulde 9o) e o
+                # skip errado mataria a avaliacao antes mesmo de abrir o SGE;
+                # nesses casos a decisao e tomada no lancamento pela posicao da
+                # GRIDAGENDA (ver _select_activity / bloco de lancamento).
+                if status_val == "Lancada" and _status_pair_is_explicit(atividade_nome, status_prop_nome):
                     _log(logger, f"  [skip] '{aluno}' - '{atividade_nome}' ja lancada (status Lancada, nota={nota})")
                     continue
 
@@ -1955,6 +2016,7 @@ def carregar_notas_notion(
                         notion_page_id=row.get("id", ""),
                         notion_status_prop=status_prop_nome,
                         data_realizacao=data_realizacao,
+                        status_by_col=status_by_col,
                     )
                 )
 
@@ -3673,6 +3735,102 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
         pass
     _log(logger, f"Aviso: avaliacao nao encontrada na tela: {atividade}")
     return False, "", 0
+
+
+# Ordem das avaliacoes na GRIDAGENDA por contexto: {key: [(nome, posicao), ...]}.
+# A POSICAO da GRIDAGENDA e a fonte confiavel para 'Status lancamento N' (a
+# atribuicao por ordem das colunas do Notion pode inverter quando as ordens
+# divergem, ex.: Mulde 9o com '3-Pesquisa' antes de '21-Atividade').
+_sge_grade_order_cache: Dict[Tuple[str, str, str, str], List[Tuple[str, int]]] = {}
+
+
+def _scan_gridagenda_order(page, contexto: ContextoTurma, logger: Optional[LogFn] = None) -> List[Tuple[str, int]]:
+    """Le a GRIDAGENDA (tela do professor, sem clicar) e guarda a ordem das
+    avaliacoes (nome, posicao) do contexto. Retorna a lista (mesmo vazia)."""
+    key = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
+    if key in _sge_grade_order_cache:
+        return _sge_grade_order_cache[key]
+
+    order: List[Tuple[str, int]] = []
+    try:
+        scope = _find_gridagenda_scope(page, timeout_ms=4000)
+        if scope is not None:
+            agenda = scope.locator("table#GRIDAGENDA")
+            if agenda.count() > 0:
+                elems = agenda.evaluate("""
+                    (table) => {
+                        const out = [];
+                        let pos = 0;
+                        for (const a of table.querySelectorAll('a')) {
+                            const t = (a.textContent || '').trim();
+                            if (t) { pos++; out.push([t, pos]); }
+                        }
+                        for (const td of table.querySelectorAll('td[onclick], td[style*="cursor:pointer"]')) {
+                            const t = (td.textContent || '').trim();
+                            if (t) { pos++; out.push([t, pos]); }
+                        }
+                        return out;
+                    }
+                """)
+                for item in elems or []:
+                    try:
+                        order.append((str(item[0]).strip(), int(item[1])))
+                    except Exception:  # noqa: BLE001
+                        continue
+                _log(logger, f"[GRID-PRE-SCAN] {len(order)} avaliacao(oes) na GRIDAGENDA de {contexto.turma}: {[f'{n}@{p}' for n, p in order]}")
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, f"[GRID-PRE-SCAN] Falha ao ler GRIDAGENDA: {exc}")
+
+    _sge_grade_order_cache[key] = order
+    return order
+
+
+def _posicao_do_pre_scan(contexto: ContextoTurma, atividade: str) -> int:
+    """Posicao da atividade na GRIDAGENDA pre-scanneada (0 se nao encontrada)."""
+    key = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
+    for nome, posicao in _sge_grade_order_cache.get(key, []):
+        if _activity_match(atividade, nome):
+            return posicao
+    return 0
+
+
+def _voltar_ao_portal_para_proximo_bloco(page, logger: Optional[LogFn] = None) -> None:
+    """Apos salvar um bloco, retorna ao portal do professor para que o proximo
+    bloco encontre a GRIDAGENDA (a tela de notas hdiscturalunonota.aspx nao tem).
+
+    Reseta o cache de contexto: a proxima chamada a _select_context refaz a
+    navegacao (escola/turno/turma/trimestre) a partir do dashboard.
+    """
+    global _current_context
+    _current_context = None
+
+    try:
+        url = (page.url or "").lower()
+        if "hdiscturalunonota" in url or "hdisciplinaturmaaluno" in url:
+            page.go_back(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(600)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _find_gridagenda_scope(page, timeout_ms=2500) is None:
+        _log(logger, "[NAV] Voltando ao portal do professor para o proximo bloco...")
+        try:
+            page.goto(_resolve_sge_login_url(logger=logger), wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(800)
+        except Exception as exc:  # noqa: BLE001
+            _log(logger, f"[NAV] Falha ao voltar ao portal: {exc}")
+
+    try:
+        if _is_school_selection_page(page):
+            _log(logger, "[NAV] Tela de selecao de escola detectada apos voltar. Selecionando escola do bloco anterior...")
+            ctx_temp = ContextoTurma(escola="", turno="", turma="", trimestre="")
+            _select_school(page, ctx_temp, logger=logger)
+        if _is_period_selection_page(page):
+            _log(logger, "[NAV] Tela de selecao de periodo detectada apos voltar. Confirmando periodo...")
+            ctx_temp = ContextoTurma(escola="", turno="", turma="", trimestre="")
+            _select_period(page, ctx_temp, logger=logger)
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, f"[NAV] Erro ao tratar telas pos-navegacao: {exc}")
 
 
 def _find_student_row(page, aluno: str):
@@ -5637,7 +5795,7 @@ def _revisar_blocos_apos_lancamento(
     resumo["regs_corrigidos"] = []
     MAX_AI_PER_BLOCO = 3
 
-    for bloco in blocos:
+    for idx, bloco in enumerate(blocos, start=1):
         contexto = bloco.get("contexto")
         atividade = bloco.get("atividade", "")
         itens = bloco.get("itens", []) or []
@@ -5646,6 +5804,12 @@ def _revisar_blocos_apos_lancamento(
             continue
 
         _log(logger, f"[REVISAO] Bloco: {contexto.escola} | {contexto.turma} | {atividade} ({len(itens)} aluno(s))")
+
+        # Entre blocos da revisao, volta ao portal do professor (a tela de notas
+        # hdiscturalunonota.aspx nao tem GRIDAGENDA e o cache de contexto nao
+        # navegaria de novo). Tambem permite re-escaniar a GRIDAGENDA.
+        if idx > 1:
+            _voltar_ao_portal_para_proximo_bloco(page, logger=logger)
 
         # Apos o login novo podem aparecer telas de selecao de escola/periodo
         # antes do dashboard. Trata aqui por bloco (a escola/periodo do bloco).
@@ -5840,6 +6004,7 @@ def executar_lancamento(
     falhas = 0
     ausentes = 0
     divergencias = 0
+    ja_lancadas = 0
 
     blocos_lancados: List[Dict[str, Any]] = []
     falhas_verificacao: List[Dict[str, Any]] = []
@@ -5891,7 +6056,33 @@ def executar_lancamento(
                 _log(logger, "[DATA] Nenhuma data de realizacao definida no Notion para esta atividade.")
 
             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
+
+            # Entre blocos: volta ao portal do professor. Apos salvar um bloco a
+            # pagina fica em hdiscturalunonota.aspx, onde NAO ha GRIDAGENDA, e o
+            # cache de contexto faria _select_context retornar sem navegar.
+            if idx > 1:
+                _voltar_ao_portal_para_proximo_bloco(page, logger=logger)
+
             _select_context(page, contexto, logger=logger)
+
+            # Pre-escaneia a GRIDAGENDA (uma vez por contexto) para conhecer a
+            # POSICAO real das avaliacoes. Se TODOS os registros do bloco ja
+            # estao "Lancada" na coluna correta (derivada da posicao), pula o
+            # bloco sem abrir o SGE. Isso corrige o mapeamento nota→status por
+            # ordem de colunas (invertido no Mulde 9o) e evita re-lancamentos.
+            if not _sge_grade_order_cache.get((escola, turno, turma, trimestre)):
+                _scan_gridagenda_order(page, contexto, logger=logger)
+            posicao_prescan = _posicao_do_pre_scan(contexto, atividade)
+            if posicao_prescan > 0:
+                status_prescan = f"Status lancamento {posicao_prescan}"
+                todos_lancados = bool(itens) and all(
+                    (reg.status_by_col or {}).get(status_prescan) == "Lancada" for reg in itens
+                )
+                if todos_lancados:
+                    _log(logger, f"[PULADO] '{atividade}' ja lançada em '{status_prescan}' para os {len(itens)} aluno(s) (posicao {posicao_prescan} da GRIDAGENDA). Pulando bloco.")
+                    ja_lancadas += len(itens)
+                    notas_ok += len(itens)
+                    continue
 
             # Fluxo hibrido assistido: abre o icone de avaliacao da linha da
             # turma/turno/trimestre antes de tentar localizar a atividade.
@@ -5945,6 +6136,28 @@ def executar_lancamento(
             regs_ausentes_bloco: List[RegistroNota] = []
             novos_preenchimentos = 0
             regs_ja_no_sge: List[RegistroNota] = []
+
+            # Filtro de ja-lancadas usando a COLUNA CORRETA (derivada da posicao
+            # na GRIDAGENDA). O mapeamento nota→status por ordem de colunas pode
+            # estar invertido (Mulde 9o); aqui o status e lido da mesma coluna em
+            # que o lancamento gravaria "Lancada".
+            if status_forcado:
+                itens_filtrados: List[RegistroNota] = []
+                for reg in itens:
+                    if (reg.status_by_col or {}).get(status_forcado) == "Lancada":
+                        _log(logger, f"  [JA-LANCADA] '{reg.aluno}' ja lançada em '{status_forcado}' (coluna correta da GRIDAGENDA). Pulando registro.")
+                        regs_ok_bloco.append(reg)
+                        regs_ja_no_sge.append(reg)
+                        ja_lancadas += 1
+                        notas_ok += 1
+                        continue
+                    itens_filtrados.append(reg)
+                if len(itens_filtrados) != len(itens):
+                    itens = itens_filtrados
+                    if not itens:
+                        _log(logger, "[BLOCO] Todos os registros ja lançados na coluna correta. Nada a preencher.")
+                        continue
+
             coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=logger, atividade=atividade, data_alvo=data_mais_comum)
             check_estrutura = _check_estrutura_sge(page, logger, contexto=contexto, atividade=atividade)
             if not check_estrutura["ok"]:
@@ -6110,7 +6323,7 @@ def executar_lancamento(
             f"Falhas: {revisao_resumo['falhas']} | IA usada: {revisao_resumo['ai_usada']}"
         ))
 
-    _log(logger, f"Finalizado. Notas preenchidas: {notas_ok} | Ausentes: {ausentes} | Falhas: {falhas}")
+    _log(logger, f"Finalizado. Notas preenchidas: {notas_ok} | Ja lançadas (puladas): {ja_lancadas} | Ausentes: {ausentes} | Falhas: {falhas}")
 
     if AI_LEARN_MODE and ai_is_available():
         _log(logger, "[AI] Modo aprendizado ativo. Gerando plano de automacao...")
@@ -6135,6 +6348,7 @@ def executar_lancamento(
         "blocos": total_blocos,
         "notas": total_notas,
         "notas_preenchidas": notas_ok,
+        "ja_lancadas": ja_lancadas,
         "ausentes": ausentes,
         "falhas": falhas,
         "revisao": revisao_resumo,

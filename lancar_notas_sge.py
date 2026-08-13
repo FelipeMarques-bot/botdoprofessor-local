@@ -3559,7 +3559,7 @@ def _grade_entry_indicators_visible(page) -> bool:
     return False
 
 
-def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[bool, str, int]:
+def _select_activity(page, atividade: str, logger: Optional[LogFn], posicao_fallback: int = 0, outras_atividades: Optional[List[str]] = None) -> Tuple[bool, str, int]:
     _log(logger, f"Selecionando avaliacao: {atividade}")
 
     max_grid_retries = 2
@@ -3660,6 +3660,52 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
         """)
         _log(logger, f"[GRID-SCAN] {len(js_elements)} elemento(s) encontrados na GRIDAGENDA via JS.")
 
+        def _tentar_clicar_item(item) -> Optional[int]:
+            """Tenta clicar em um item da GRIDAGENDA (por seletor, JS ou texto).
+            Retorna a posicao da avaliacao se a grade de lancamento abriu, ou None."""
+            texto_item = item["text"]
+            posicao_item = item["posicao"]
+            selector = None
+            if item["tag"] == "a":
+                selector = f"table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) a"
+            elif item["tag"] == "td":
+                selector = f"table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) td[onclick], table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) td[style*='cursor:pointer']"
+            else:
+                selector = f"table#GRIDAGENDA input[type='image'], table#GRIDAGENDA input[type='submit'], table#GRIDAGENDA button"
+
+            if selector:
+                clicked = False
+                try:
+                    loc = agenda_scope.locator(selector).first
+                    if loc.count() > 0:
+                        loc.click(timeout=ACTION_TIMEOUT_MS)
+                        clicked = True
+                        page.wait_for_timeout(250)
+                        if _esperar_grade_lancamento():
+                            _log(logger, f"[GRID-SCAN] Posicao: {posicao_item} → Status lancamento {posicao_item}")
+                            return posicao_item
+                except Exception:
+                    pass
+                # Fallback: clique via JS
+                if not clicked:
+                    try:
+                        el_js = agenda_scope.locator(selector).first
+                        if el_js.count() > 0:
+                            el_js.evaluate("el => el.click()")
+                            page.wait_for_timeout(300)
+                            if _esperar_grade_lancamento():
+                                _log(logger, f"[GRID-SCAN-JS] Posicao: {posicao_item} → Status lancamento {posicao_item}")
+                                return posicao_item
+                    except Exception:
+                        pass
+
+            # Fallback: clicar por texto
+            if _click_text_any_scope(page, texto_item):
+                page.wait_for_timeout(250)
+                if _esperar_grade_lancamento():
+                    return posicao_item
+            return None
+
         # Matching em Python (rapido, sem chamadas ao DOM)
         for item in js_elements:
             texto = item["text"]
@@ -3668,46 +3714,35 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn]) -> Tuple[boo
             _log(logger, f"[GRID-SCAN] {item['tag']}[pos={item['posicao']}] texto={texto!r}")
             if _activity_match(atividade, texto):
                 _log(logger, f"[GRID-SCAN] MATCH encontrado: {texto!r}")
-                # Clique direto no elemento por seletor
-                posicao = item["posicao"]
-                selector = None
-                if item["tag"] == "a":
-                    selector = f"table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) a"
-                elif item["tag"] == "td":
-                    selector = f"table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) td[onclick], table#GRIDAGENDA tr:nth-child({item['rowIdx'] + 1}) td[style*='cursor:pointer']"
+                posicao = _tentar_clicar_item(item)
+                if posicao is not None:
+                    return True, "", posicao
+
+        # Fallback por POSICAO: quando nenhuma avaliacao da GRIDAGENDA casa com o
+        # NOME da atividade, usa a posicao derivada de 'Status lancamento N' do
+        # Notion (o SGE pode nomear a mesma avaliacao diferente, ex.: 'Atividade 3'
+        # no Notion vs '28-Autoavaliacao' na GRIDAGENDA). A posicao da GRIDAGENDA
+        # e a fonte confiavel do 'Status lancamento N' (ver _scan_gridagenda_order).
+        if posicao_fallback > 0:
+            item_posicao = next(
+                (it for it in js_elements if it.get("posicao") == posicao_fallback and it.get("text")),
+                None,
+            )
+            if item_posicao is None:
+                _log(logger, f"[GRID-SCAN-POSICAO] Fallback por posicao {posicao_fallback}: nenhuma avaliacao nessa posicao da GRIDAGENDA.")
+            else:
+                texto_posicao = item_posicao["text"]
+                conflito = ""
+                for outra in outras_atividades or []:
+                    if _activity_match(outra, texto_posicao):
+                        conflito = outra
+                        break
+                if conflito:
+                    _log(logger, f"[GRID-SCAN-POSICAO] Fallback BLOQUEADO: posicao {posicao_fallback} e '{texto_posicao}', que casa com a atividade '{conflito}'. Nao vou clicar.")
                 else:
-                    selector = f"table#GRIDAGENDA input[type='image'], table#GRIDAGENDA input[type='submit'], table#GRIDAGENDA button"
-
-                if selector:
-                    clicked = False
-                    try:
-                        loc = agenda_scope.locator(selector).first
-                        if loc.count() > 0:
-                            loc.click(timeout=ACTION_TIMEOUT_MS)
-                            clicked = True
-                            page.wait_for_timeout(250)
-                            if _esperar_grade_lancamento():
-                                _log(logger, f"[GRID-SCAN] Posicao: {posicao} → Status lancamento {posicao}")
-                                return True, "", posicao
-                    except Exception:
-                        pass
-                    # Fallback: clique via JS
-                    if not clicked:
-                        try:
-                            el_js = agenda_scope.locator(selector).first
-                            if el_js.count() > 0:
-                                el_js.evaluate("el => el.click()")
-                                page.wait_for_timeout(300)
-                                if _esperar_grade_lancamento():
-                                    _log(logger, f"[GRID-SCAN-JS] Posicao: {posicao} → Status lancamento {posicao}")
-                                    return True, "", posicao
-                        except Exception:
-                            pass
-
-                # Fallback: clicar por texto
-                if _click_text_any_scope(page, texto):
-                    page.wait_for_timeout(250)
-                    if _esperar_grade_lancamento():
+                    _log(logger, f"[GRID-SCAN-POSICAO] Nome '{atividade}' nao casou; usando posicao {posicao_fallback} da GRIDAGENDA ({texto_posicao!r}).")
+                    posicao = _tentar_clicar_item(item_posicao)
+                    if posicao is not None:
                         return True, "", posicao
 
     # Fallback: tentar clicar no texto da atividade diretamente
@@ -5085,79 +5120,59 @@ def _read_existing_grade_for_student(page, aluno: str, logger: Optional[LogFn], 
     """Le o valor atual da celula de nota no SGE para o aluno (via JS, rapido).
 
     Retorna o valor como string se preenchido com valor != zero, ou None.
-    Tenta com coluna_sge; se definida, NAO usa fallback sem filtro (evita ler
-    o valor de outra avaliacao exibida na mesma pagina).
+    A leitura e SEMPRE ancorada na LINHA que contem o nome do aluno: os suffixs
+    candidatos (_candidate_suffixes_for_student) podem incluir suffixs de OUTROS
+    alunos (homonimos/parciais/ausentes). Sem a ancora, o fallback lia o campo de
+    um aluno vizinho ja preenchido, gerando falso [SGE-JA] e falso DIVERGENCIA
+    (notas validas nao gravadas). A leitura ancorada so retorna valor quando o
+    campo esta na <tr> do proprio aluno (count == 1), com a mesma folga de nome
+    usada no preenchimento.
     """
     if not _normalize_loose(aluno):
         return None
 
-    def _try_read(cols: str) -> Optional[str]:
+    def _try_read_anchored(cols: str) -> Optional[str]:
         try:
             for scope in _iter_scopes(page):
                 slots = _wait_student_slots(scope)
                 if not slots:
                     continue
-
                 suffixes = _candidate_suffixes_for_student(aluno, slots)
+                allow_first = _first_name_unique_in_slots(aluno, slots)
                 for suffix in suffixes[:3]:
-                    val = _read_grade_value_js(scope, suffix, cols, strict=True)
-                    if val is not None:
+                    res = _read_grade_value_anchored_js(scope, aluno, suffix, cols, allow_first_name_only=allow_first)
+                    if res is None:
+                        continue
+                    val, count = res
+                    if count != 1:
+                        continue
+                    if val and not _is_zero_like_value(val):
                         return val
         except Exception:  # noqa: BLE001
             pass
         return None
 
     if coluna_sge:
-        result = _try_read(coluna_sge)
+        result = _try_read_anchored(coluna_sge)
         if result is not None:
             return result
         # IMPORTANTE: nao confiar em leitura sem filtro de coluna para decidir
         # "ja lancada". Ela pode retornar o valor de OUTRA avaliacao exibida na
         # mesma pagina (ex.: nota de avaliacao anterior), causando falso [SGE-JA]
         # e pulando a gravacao da nota correta na coluna alvo.
-        other = _try_read("")
+        other = _try_read_anchored("")
         if other is not None:
             _log(logger, f"[DEBUG] Coluna '{coluna_sge}' sem valor para '{aluno}' (outra coluna contem '{other}'; NAO tratado como ja lancado).")
         return None
 
-    # Sem coluna definida: leitura sem filtro so e confiavel se a pagina tiver
-    # no maximo UMA coluna de nota distinta (ex.: pagina 'Notas da Avaliacao'
-    # com '_NOTA_<suffix>'). Paginas com varias colunas podem retornar o valor de
-    # outra avaliacao (ex.: nota do 1o trimestre) no primeiro campo correspondente
-    # ao suffix do aluno, causando [SGE-JA] falso (nota 2o=0,0 lida como 9,2).
-    # Sem coluna definida: tenta primeiro a leitura ANCORADA na linha do aluno.
-    # Ela resolve a ambiguidade de paginas com varias colunas/avaliacoes usando o
-    # nome do aluno para isolar o campo certo (o mesmo suffix aparece em varias
-    # linhas; a <tr> do aluno desambigua).
-    try:
-        for scope in _iter_scopes(page):
-            slots = _wait_student_slots(scope)
-            if not slots:
-                continue
-            suffixes = _candidate_suffixes_for_student(aluno, slots)
-            allow_first = _first_name_unique_in_slots(aluno, slots)
-            for suffix in suffixes[:3]:
-                res = _read_grade_value_anchored_js(scope, aluno, suffix, "", allow_first_name_only=allow_first)
-                if res is None:
-                    continue
-                val, count = res
-                if count != 1:
-                    continue
-                if val and not _is_zero_like_value(val):
-                    _log(logger, f"[DEBUG] Leitura ancorada na linha encontrou nota '{val}' para '{aluno}'")
-                    return val
-    except Exception:  # noqa: BLE001
-        pass
-
-    distinct = _distinct_grade_columns_on_page(page)
-    if len(distinct) > 1:
-        _log(logger, f"[DEBUG] Leitura sem filtro ignorada para '{aluno}': pagina com varias colunas de nota ({distinct}).")
-        return None
-    result = _try_read("")
+    # Sem coluna definida: unica leitura confiavel e a ANCORADA na linha do aluno.
+    # Nao existe fallback por suffix puro: o suffix candidato pode pertencer a
+    # outro aluno e a leitura sem ancora retornaria a nota dele (bug de leitura
+    # cruzada). Campo vazio/0,0 na linha do aluno => None (o chamador grava).
+    result = _try_read_anchored("")
     if result is not None:
-        _log(logger, f"[DEBUG] Leitura sem filtro de coluna encontrou nota '{result}' para '{aluno}'")
-        return result
-    return None
+        _log(logger, f"[DEBUG] Leitura ancorada encontrou nota '{result}' para '{aluno}'")
+    return result
 
 
 def _find_grade_input_for_student(page, aluno: str, coluna_sge: str = ""):
@@ -5843,7 +5858,13 @@ def _revisar_blocos_apos_lancamento(
                 avaliacao_abriu = False
             _handle_assessment_period_page(page, contexto, logger=logger)
 
-        atividade_encontrada, _data_sge, posicao_grid = _select_activity(page, atividade, logger=logger)
+        posicao_fallback_rev = 0
+        for reg in itens:
+            m_rev = re.search(r"status\s*lancamento\s*(\d+)", _normalize((reg.notion_status_prop or "").strip()))
+            if m_rev:
+                posicao_fallback_rev = int(m_rev.group(1))
+                break
+        atividade_encontrada, _data_sge, posicao_grid = _select_activity(page, atividade, logger=logger, posicao_fallback=posicao_fallback_rev)
         if not atividade_encontrada:
             _log(logger, f"[REVISAO] Atividade '{atividade}' nao reencontrada. Nao foi possivel re-auditar.")
             resumo["falhas"] += len(itens)
@@ -6099,7 +6120,14 @@ def executar_lancamento(
             if not avaliacao_abriu:
                 _log(logger, f"Aviso: nao foi possivel abrir icone de avaliacao para {atividade}. Tentando navegacao direta...")
 
-            atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=logger)
+            posicao_fallback = 0
+            for reg in itens:
+                m_fb = re.search(r"status\s*lancamento\s*(\d+)", _normalize((reg.notion_status_prop or "").strip()))
+                if m_fb:
+                    posicao_fallback = int(m_fb.group(1))
+                    break
+            outras_atividades = sorted({k[4] for k in grouped if k[:4] == key[:4] and k[4] != atividade})
+            atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=logger, posicao_fallback=posicao_fallback, outras_atividades=outras_atividades)
             if not atividade_encontrada:
                 _log(logger, f"Aviso: atividade '{atividade}' nao encontrada no SGE. Pulando bloco.")
                 for reg in itens:

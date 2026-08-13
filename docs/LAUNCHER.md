@@ -103,6 +103,13 @@ python -m PyInstaller BotDoProfessor.spec --noconfirm --clean
 
 ## Changelog técnico
 
+- **v1.4.40** — correção da leitura de nota já existente no SGE: a verificação
+  agora é ancorada na linha do aluno (coluna correta), eliminando a leitura
+  cruzada que podia ler o campo de OUTRO aluno e marcar falsamente como
+  `[SGE-JA]`/`[DIVERGENCIA]` (ex.: aluno com campo vazio pulado como "já
+  lançada"). Aluno sem linha na grade do SGE (não é possível acrescentar a
+  linha no sistema) agora é apenas pulado — o bot segue para o próximo aluno
+  sem lançar e sem tratar como falha.
 - **v1.4.9** — leitor de planilhas (Excel/CSV/Google Sheets/Google Drive): a coluna
   `Data realização N` agora é lida e associada à atividade correspondente
   (`data_realizacao` no registro), permitindo que a data aplicada no SGE seja a

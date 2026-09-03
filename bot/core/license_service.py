@@ -14,7 +14,7 @@ class LicenseService:
     PLANS = {
         "basico": {
             "dias": 30,
-            "preco": 49.90,
+            "preco": 59.90,
             "portais": 1,
             "ai_assist": False,
             "multi_portal": False,

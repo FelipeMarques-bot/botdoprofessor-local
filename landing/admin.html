@@ -184,9 +184,9 @@
                 </select>
                 <select id="filterPlan" onchange="loadPayments()">
                     <option value="">Todos os planos</option>
+                    <option value="mensal">Mensal</option>
                     <option value="1ano">1 Ano</option>
                     <option value="2anos">2 Anos</option>
-                    <option value="3anos">3 Anos</option>
                 </select>
             </div>
             <div style="display:flex;gap:10px">
@@ -248,9 +248,9 @@
             <input type="text" id="newCpf" placeholder="000.000.000-00">
             <label>Plano</label>
             <select id="newPlan">
-                <option value="1ano">1 Ano — R$ 99,90</option>
-                <option value="2anos">2 Anos — R$ 169,83</option>
-                <option value="3anos">3 Anos — R$ 224,78</option>
+                <option value="mensal">Mensal — R$ 59,90</option>
+                <option value="1ano">1 Ano — R$ 575,04</option>
+                <option value="2anos">2 Anos — R$ 1006,32</option>
             </select>
             <label>Método de pagamento</label>
             <select id="newMethod">
@@ -284,9 +284,9 @@
             <input type="text" id="msCpf" placeholder="000.000.000-00">
             <label>Plano</label>
             <select id="msPlan">
-                <option value="1ano">1 Ano — R$ 99,90</option>
-                <option value="2anos">2 Anos — R$ 169,83</option>
-                <option value="3anos">3 Anos — R$ 224,78</option>
+                <option value="mensal">Mensal — R$ 59,90</option>
+                <option value="1ano">1 Ano — R$ 575,04</option>
+                <option value="2anos">2 Anos — R$ 1006,32</option>
             </select>
             <label>Observação (opcional)</label>
             <textarea id="msNotes" placeholder="Motivo da assinatura manual..."></textarea>
@@ -407,12 +407,12 @@ function maskCpf(cpf) {
 }
 
 function planLabel(plan) {
-    const m = { '1ano':'1 Ano', '2anos':'2 Anos', '3anos':'3 Anos' };
+    const m = { 'mensal':'Mensal', '1ano':'1 Ano', '2anos':'2 Anos' };
     return m[plan] || plan;
 }
 
 function planAmount(plan) {
-    const m = { '1ano':99.90, '2anos':169.83, '3anos':224.78 };
+    const m = { 'mensal':59.90, '1ano':575.04, '2anos':1006.32 };
     return m[plan] || 0;
 }
 

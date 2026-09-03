@@ -29,12 +29,11 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 PLANOS = {
-    "basico": {"dias": 30, "preco": 49.90, "label": "Basico", "portais": 1, "ai_assist": False, "multi_portal": False},
+    "basico": {"dias": 30, "preco": 59.90, "label": "Basico", "portais": 1, "ai_assist": False, "multi_portal": False},
     "profissional": {"dias": 30, "preco": 99.90, "label": "Profissional", "portais": 3, "ai_assist": True, "multi_portal": True},
     "premium": {"dias": 30, "preco": 199.90, "label": "Premium", "portais": -1, "ai_assist": True, "multi_portal": True},
-    "1ano": {"dias": 365, "preco": 99.90, "label": "1 ano"},
-    "2anos": {"dias": 730, "preco": 169.83, "label": "2 anos"},
-    "3anos": {"dias": 1095, "preco": 224.78, "label": "3 anos"},
+    "1ano": {"dias": 365, "preco": 575.04, "label": "1 ano"},
+    "2anos": {"dias": 730, "preco": 1006.32, "label": "2 anos"},
 }
 
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "")

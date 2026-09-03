@@ -93,9 +93,9 @@
         const params = new URLSearchParams(window.location.search);
         const plan = params.get('plan') || '1ano';
         const plans = {
-            '1ano': { label: '1 Ano — R$ 99,90', amount: 99.90, desc: 'Acesso por 12 meses ao BotDoProfessor' },
-            '2anos': { label: '2 Anos — R$ 169,83', amount: 169.83, desc: 'Acesso por 24 meses. Economia de 15%.' },
-            '3anos': { label: '3 Anos — R$ 224,78', amount: 224.78, desc: 'Acesso por 36 meses. Economia de 25%.' },
+            'mensal': { label: 'Mensal — R$ 59,90', amount: 59.90, desc: 'Acesso por 1 mês ao BotDoProfessor' },
+            '1ano': { label: '1 Ano — R$ 575,04', amount: 575.04, desc: 'Acesso por 12 meses ao BotDoProfessor. Economia de 20%.' },
+            '2anos': { label: '2 Anos — R$ 1006,32', amount: 1006.32, desc: 'Acesso por 24 meses. Economia de 30%.' },
         };
         const planInfo = plans[plan] || plans['1ano'];
         document.getElementById('plan-label').textContent = planInfo.label;

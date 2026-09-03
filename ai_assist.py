@@ -1397,6 +1397,7 @@ def record_demonstration_step(
     _ensure_recording_dir()
     screenshot_path = os.path.join(AI_RECORDING_DIR, f"step_{step:03d}_screen.png")
     metadata_path = os.path.join(AI_RECORDING_DIR, f"step_{step:03d}_meta.json")
+    dom_path = os.path.join(AI_RECORDING_DIR, f"step_{step:03d}_dom.txt")
 
     try:
         page.screenshot(path=screenshot_path, full_page=True)
@@ -1411,6 +1412,23 @@ def record_demonstration_step(
         }
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+        # Grava tambem o resumo estrutural do DOM para o aprendizado hibrido.
+        # Permite gerar seletores reais (nao "chutados" pela imagem) no plano.
+        try:
+            html = page.content()
+            dom = dom_summary(html)
+            with open(dom_path, "w", encoding="utf-8") as f:
+                f.write(dom)
+            metadata["has_dom"] = True
+        except Exception as exc:
+            metadata["has_dom"] = False
+            _log(logger, f"[AI] Aviso: nao foi possivel gravar DOM do passo {step}: {exc}")
+        try:
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
         _log(logger, f"[AI] Passo {step} registrado: {action_performed}")
         return screenshot_path
@@ -1453,6 +1471,15 @@ def learn_from_recording(logger: Optional[LogFn] = None) -> Optional[Dict[str, A
         with open(img_path, "rb") as f:
             img_bytes = f.read()
 
+        # Carrega o resumo estrutural do DOM gravado (se houver).
+        dom_sum = ""
+        dom_file = step_file.replace("_screen.png", "_dom.txt")
+        dom_path = os.path.join(AI_RECORDING_DIR, dom_file)
+        if os.path.exists(dom_path):
+            with open(dom_path, "r", encoding="utf-8") as f:
+                dom_sum = f.read()
+        metadata["dom"] = dom_sum[:4000]
+
         screenshots_data.append({
             "step": step_num,
             "metadata": metadata,
@@ -1463,18 +1490,31 @@ def learn_from_recording(logger: Optional[LogFn] = None) -> Optional[Dict[str, A
 Voce esta analisando uma gravacao de {len(screenshots_data)} passos de um usuario
 navegando no portal do professor para lancar notas/alunos.
 
-Cada passo contem um screenshot da tela e metadados (URL, acao realizada,
-descricao do usuario).
+Cada passo contem um screenshot da tela, metadados (URL, acao realizada,
+descricao do usuario) E a ESTRUTURA REAL DA PAGINA (DOM resumido: inputs,
+botoes, selects, links com name/id/class/valor).
 
 Sua tarefa e:
 1. Entender o fluxo completo que o usuario executou
 2. Identificar padroes (em que tela ele clicou, o que preencheu, etc.)
 3. Gerar um plano de automacao que possa replicar este fluxo
 
+IMPORTANTE: Use a estrutura DOM de cada passo para definir seletores CSS
+REAIS e exatos (name/id/class), nao chute seletores genericos pela imagem.
+
+Ver detalhes:
+{json.dumps([
+    {"step": sd["step"],
+     "url": sd["metadata"].get("url", ""),
+     "action": sd["metadata"].get("action", ""),
+     "dom": sd["metadata"].get("dom", "")}
+    for sd in screenshots_data
+], ensure_ascii=False, indent=2)[:12000]}
+
 O plano deve conter, para cada passo:
 - "screen_match": como identificar a tela (url, texto visivel, elemento especifico)
 - "action": "click", "fill", "select", "wait"
-- "target": seletor ou descricao do elemento alvo
+- "target": seletor CSS REAL (da estrutura DOM)
 - "value": valor a preencher (se aplicavel)
 - "fallback": seletor alternativo caso o principal falhe
 
@@ -1782,3 +1822,366 @@ def adapt_selector(
     except Exception as exc:
         _log(logger, f"[AI-Adapt] Erro: {exc}")
         return {"alternatives": [], "page_changed": False}
+
+
+# =====================================================================
+#  MODO HIBRIDO (screenshot + DOM) — para portais sem adapter dedicado
+# =====================================================================
+# Essa camada NAO substitui o fluxo DOM dos adapters conhecidos (SGE,
+# Professor Online). Ela so e usada por portais novos/desconhecidos, ou
+# como fallback quando o seletor DOM ja falhou. O SGE nunca chega aqui.
+
+_HYBRID_LEAF_TAGS = {
+    "input", "button", "select", "textarea", "a", "option",
+    "img", "label", "td", "th", "li", "span", "h1", "h2", "h3", "h4",
+}
+
+
+def dom_summary(html: str, max_items: int = 120, max_len: int = 220) -> str:
+    """Extrai um resumo estrutural de um HTML sem depender de IA.
+
+    Converte um HTML potencialmente enorme (ASP.NET, etc.) em uma lista
+    compacta de elementos interativos (inputs, botoes, selects, links,
+    tabelas). Isso permite enviar "contexto estrutural" para modelos de
+    visao locais (Ollama) que tem janela de contexto pequena.
+
+    Args:
+        html: Conteudo HTML bruto da pagina (page.content()).
+        max_items: Limite de elementos retornados (recorte do tamanho).
+        max_len: Tamanho maximo de cada atributo/texto extraido.
+
+    Returns:
+        String em formato legivel (nao-JSON), pronta para ir no prompt.
+    """
+    if not html:
+        return ""
+    try:
+        from html.parser import HTMLParser
+    except ImportError:
+        return (html or "")[: max_len * 3]
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack = []
+            self.items = []
+            self.cur_tag = None
+            self.cur_attrs = {}
+            self.soft_text = ""
+
+        def handle_starttag(self, tag, attrs):
+            self.cur_tag = None
+            self.soft_text = ""
+            lower = tag.lower()
+            if lower in _HYBRID_LEAF_TAGS:
+                a = dict(attrs)
+                info = {}
+                for k in ("name", "id", "class", "type", "value", "title",
+                          "alt", "src", "for", "href", "placeholder"):
+                    if a.get(k):
+                        info[k] = str(a[k])[:max_len]
+                info["tag"] = lower
+                sel = _build_selector(lower, a)
+                if sel:
+                    info["selector"] = sel
+                self.items.append(info)
+                self.cur_tag = info
+
+        def handle_data(self, data):
+            t = (data or "").strip()
+            if t and self.cur_tag is not None:
+                if len(self.soft_text) + len(t) <= max_len:
+                    self.soft_text += (" " if self.soft_text else "") + t
+
+        def handle_endtag(self, tag):
+            if self.cur_tag is not None and self.soft_text:
+                self.cur_tag["text"] = self.soft_text[:max_len]
+            self.cur_tag = None
+            self.soft_text = ""
+
+    def _build_selector(tag, attrs):
+        # Prioriza id, depois name, depois class - o mais especifico possivel.
+        if attrs.get("id"):
+            return f"#{attrs['id']}"
+        if attrs.get("name"):
+            return f"{tag}[name='{attrs['name']}']"
+        if attrs.get("class"):
+            cls = ".".join(str(attrs["class"]).split())
+            if cls:
+                return f"{tag}.{cls}"
+        return f"{tag}"
+
+    parser = _P()
+    try:
+        parser.feed(html or "")
+        parser.close()
+    except Exception:
+        return (html or "")[: max_len * 3]
+
+    lines = []
+    for it in parser.items[:max_items]:
+        parts = [it.get("selector", it["tag"])]
+        for k in ("type", "name", "value", "for"):
+            if it.get(k):
+                parts.append(f"{k}={it[k][:max_len]}")
+        if it.get("placeholder"):
+            parts.append(f"ph={it['placeholder'][:max_len]}")
+        if it.get("text"):
+            parts.append(f"txt='{it['text'][:max_len]}'")
+        lines.append(" | ".join(parts))
+
+    return "\n".join(lines) if lines else (html or "")[: max_len * 3]
+
+
+def _hybrid_prompt_with_dom(prompt: str, dom: str) -> str:
+    """Anexa o resumo estrutural do DOM a um prompt, com limite de tamanho."""
+    if not dom:
+        return prompt
+    # Recorta para nao estourar a janela do Ollama local.
+    if len(dom) > 6000:
+        dom = dom[:6000] + "\n...(truncado)"
+    return (
+        prompt
+        + "\n\n--- ESTRUTURA DA PAGINA (DOM/HTML resumido) ---\n"
+        + "Observe tambem os elementos reais da pagina abaixo (name/id/class/valor). "
+        + "Use esses seletores exatos sempre que possivel, em vez de chutar pela imagem:\n"
+        + dom
+        + "\n--- FIM DA ESTRUTURA ---"
+    )
+
+
+def _call_ai_inline(prompt: str, screenshot_bytes: bytes = None, html: str = "", logger: Optional[LogFn] = None):
+    """Chama a IA juntando screenshot + resumo DOM no prompt.
+
+    Usa _call_ai (respeita AI_PROVIDER), entao funciona com Ollama local OU
+    APIs web. Retorna o texto bruto (JSON esperado).
+    """
+    if html:
+        prompt = _hybrid_prompt_with_dom(prompt, dom_summary(html))
+    return _call_ai(prompt, screenshot_bytes)
+
+
+def suggest_action_hybrid(
+    screenshot_bytes: bytes,
+    html: str,
+    objective: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Versao hibrida de suggest_next_action: imagem + estrutura DOM.
+
+    Usada para navegar em portais novos (sem adapter dedicado), onde o
+    seletor exato e incerto. A IA cruza o visual (screenshot) com os
+    elementos reais da pagina (DOM) para sugerir a proxima acao.
+    """
+    if not is_available():
+        return {"action": None, "error": "IA nao configurada"}
+
+    history_str = json.dumps((history or [])[-5:], indent=2, default=str) if history else "nenhuma"
+
+    prompt = f"""
+Voce esta automatizando um portal de professores (portal generico/novo).
+
+Objetivo atual: {objective}
+
+Historico de acoes recentes:
+{history_str}
+
+Analise a IMAGEM da tela atual E a ESTRUTURA DA PAGINA fornecida abaixo.
+
+Decida a PROXIMA acao. Prefira SEMPRE usar um "selector" real da estrutura
+da pagina (evite inventar). Use o numero/posicao do elemento ou o seletor
+exato listado.
+
+Retorne APENAS JSON:
+{{
+  "action": "click" / "fill" / "select" / "wait" / "done" / "error",
+  "selector": "seletor CSS real do elemento alvo (da estrutura da pagina)",
+  "value": "valor a preencher (se action=fill ou select)",
+  "description": "descricao da acao em portugues",
+  "reason": "porque esta acao faz sentido agora",
+  "confidence": "high/medium/low"
+}}
+"""
+    try:
+        text = _call_ai_inline(prompt, screenshot_bytes, html, logger=logger)
+        return _safe_json_parse(text, {"action": None, "error": "Resposta nao-JSON da IA"})
+    except Exception as exc:
+        return {"action": None, "error": str(exc)}
+
+
+def find_element_hybrid(
+    screenshot_bytes: bytes,
+    html: str,
+    target_description: str,
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Versao hibrida de find_element_on_screen: imagem + estrutura DOM."""
+    if not is_available():
+        return {"found": False, "error": "IA nao configurada"}
+
+    prompt = f"""
+Analise a imagem DA TELA do portal de professores E a ESTRUTURA DA PAGINA abaixo.
+
+Preciso encontrar: {target_description}
+
+Use prioritariamente um selector REAL da estrutura (name/id/class listados).
+Retorne APENAS JSON:
+{{
+  "found": true/false,
+  "selector": "seletor CSS do elemento (da estrutura, se possivel)",
+  "text": "texto visivel no elemento",
+  "coordinates": [x, y],
+  "confidence": "high/medium/low",
+  "explanation": "porque este elemento corresponde a descricao"
+}}
+"""
+    try:
+        text = _call_ai_inline(prompt, screenshot_bytes, html, logger=logger)
+        return _safe_json_parse(text, {"found": False, "error": "Resposta nao-JSON da IA"})
+    except Exception as exc:
+        return {"found": False, "error": str(exc)}
+
+
+def adapt_selector_hybrid(
+    original_selector: str,
+    action: str,
+    error: str,
+    screenshot_bytes: bytes,
+    html: str,
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Versao hibrida de adapt_selector: imagem + estrutura DOM.
+
+    Muito mais precisa que a versao so-imagem, pois a IA ve o seletor real
+    quebrado E os elementos reais atuais da pagina.
+    """
+    if not is_available():
+        return {"alternatives": [], "page_changed": False}
+
+    prompt = f"""
+O seletor CSS "{original_selector}" parou de funcionar nesta pagina web.
+
+Acao que estava sendo tentada: {action}
+Erro obtido: {error}
+
+Analise a IMAGEM DA TELA E a ESTRUTURA DA PAGINA fornecida abaixo.
+Sugira ate 3 seletores CSS alternativos, de preferencia usando elementos
+REAIS da estrutura (name/id/class listados), que possam substituir o seletor quebrado.
+
+Retorne APENAS um JSON valido:
+{{
+  "alternatives": [
+    {{"selector": "novo_selector_1", "reason": "motivo"}},
+    {{"selector": "novo_selector_2", "reason": "motivo"}},
+    {{"selector": "novo_selector_3", "reason": "motivo"}}
+  ],
+  "page_changed": true/false (se a pagina parece ter mudado completamente)
+}}
+"""
+    try:
+        text = _call_ai_inline(prompt, screenshot_bytes, html, logger=logger)
+        result = _safe_json_parse(text, {"alternatives": [], "page_changed": False})
+        alts = result.get("alternatives", [])
+        if alts:
+            _log(logger, f"[AI-Adapt-Hibrido] {len(alts)} seletores alternativos via DOM")
+        return result
+    except Exception as exc:
+        _log(logger, f"[AI-Adapt-Hibrido] Erro: {exc}")
+        return {"alternatives": [], "page_changed": False}
+
+
+def analyze_portal_failure_hybrid(
+    screenshot_bytes: bytes,
+    error: str,
+    html: str,
+    operation: str = "",
+    context: str = "",
+    logger: Optional[LogFn] = None,
+) -> Dict[str, Any]:
+    """Versao hibrida de analyze_portal_failure: imagem + estrutura DOM."""
+    if not is_available():
+        return {"diagnosis": "IA nao disponivel", "suggested_fixes": [], "needs_rediscovery": False}
+
+    prompt = (
+        _PORTAL_FAILURE_ANALYSIS_PROMPT.format(
+            error=error,
+            operation=operation or "desconhecida",
+            context=context or "nenhum",
+        )
+        + "\n\nUse preferencialmente os seletores REAIS da ESTRUTURA DA PAGINA fornecida abaixo."
+    )
+
+    try:
+        text = _call_ai_inline(prompt, screenshot_bytes, html, logger=logger)
+        result = _safe_json_parse(text, {
+            "diagnosis": "Resposta nao-JSON",
+            "suggested_fixes": [],
+            "needs_rediscovery": False,
+        })
+        _log(logger, f"[AI-Falha-Hibrido] Diagnostico: {result.get('diagnosis', '')[:100]}")
+        return result
+    except Exception as exc:
+        _log(logger, f"[AI-Falha-Hibrido] Erro: {exc}")
+        return {"diagnosis": str(exc), "suggested_fixes": [], "needs_rediscovery": False}
+
+
+def execute_action_hybrid(
+    page: Any,
+    action: Dict[str, Any],
+    logger: Optional[LogFn] = None,
+) -> bool:
+    """Executa uma acao sugerida pela IA (click/fill/select) na pagina.
+
+    Usado pelo HybridNavigator para portais genericos. Tenta o selector
+    real primeiro; se nao achar, tenta por texto visivel.
+    """
+    act = (action or {}).get("action", "")
+    selector = (action or {}).get("selector", "") or ""
+    value = (action or {}).get("value", "") or ""
+    description = (action or {}).get("description", "") or ""
+
+    _log(logger, f"[Hibrido] Executando: {description or act}")
+
+    if act in ("done", "error", "wait"):
+        if act == "wait":
+            page.wait_for_timeout(int(value or "1000"))
+        return True
+
+    selector = str(selector).replace("{", "").replace("}", "").strip().strip("'\"")
+    if not selector and description:
+        return False
+
+    try:
+        if act == "click":
+            loc = page.locator(selector)
+            if loc.count() > 0:
+                loc.first.click(timeout=5000)
+                page.wait_for_timeout(400)
+                return True
+            # fallback por texto
+            txt_loc = page.get_by_text(description, exact=False)
+            if txt_loc.count() > 0:
+                txt_loc.first.click(timeout=5000)
+                page.wait_for_timeout(400)
+                return True
+            return False
+        if act == "fill":
+            loc = page.locator(selector)
+            if loc.count() > 0:
+                loc.first.fill(str(value))
+                return True
+            return False
+        if act == "select":
+            loc = page.locator(selector)
+            if loc.count() > 0:
+                try:
+                    loc.first.select_option(label=str(value))
+                except Exception:
+                    loc.first.select_option(value=str(value))
+                return True
+            return False
+    except Exception as exc:
+        _log(logger, f"[Hibrido] Erro executando {act}: {exc}")
+        return False
+    return False

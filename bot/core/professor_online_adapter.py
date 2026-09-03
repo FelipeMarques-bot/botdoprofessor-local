@@ -22,8 +22,11 @@ Fluxos suportados (parser em ``professor_online_parser.py``):
 - Planejamentos semanal/anual: leitura (Grids).
 """
 
+import os
 import re
-from typing import Optional, List, Dict
+import time
+from datetime import datetime
+from typing import Optional, List, Dict, Callable
 from bot.core.portal_adapter import (
     PortalAdapter, PortalContext, LessonPlan,
 )
@@ -57,9 +60,13 @@ class ProfessorOnlineAdapter(PortalAdapter):
 
     def __init__(self, base_url: str = ""):
         self._base_url = (base_url or self.BASE_URL).rstrip("/")
+        m = re.search(r"\.(?:aspx?|php|html?)$", self._base_url.rsplit("/", 1)[-1], re.IGNORECASE)
+        if m:
+            self._base_url = self._base_url.rsplit("/", 1)[0]
         self._page: Optional[Page] = None
         self._browser: Optional[Browser] = None
         self._pw = None
+        self._headless = False
         self.memory = PortalMemory("ProfessorOnline")
         self._logged_in = False
         self._current_url = ""
@@ -80,6 +87,7 @@ class ProfessorOnlineAdapter(PortalAdapter):
     def start(self, headless: bool = False):
         if sync_playwright is None:
             raise RuntimeError("Playwright nao instalado")
+        self._headless = headless
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=headless)
         self._page = self._browser.new_page()
@@ -124,7 +132,7 @@ class ProfessorOnlineAdapter(PortalAdapter):
     #  Login                                                              #
     # ------------------------------------------------------------------ #
 
-    def login(self, cpf: str, senha: str) -> bool:
+    def login(self, cpf: str, senha: str, log: Optional[Callable[[str], None]] = None) -> bool:
         p_ = self.page
         try:
             self._goto(self.LOGIN_PATH)
@@ -135,8 +143,18 @@ class ProfessorOnlineAdapter(PortalAdapter):
         html = self._html()
         if p.is_login_page(html):
             try:
-                p_.locator("input[name='vCPF']").fill(cpf, timeout=self.ACTION_TIMEOUT)
-                p_.locator("input[name='vSENHA']").fill(senha, timeout=self.ACTION_TIMEOUT)
+                cpf_f = p_.locator("input[name='vCPF']")
+                senha_f = p_.locator("input[name='vSENHA']")
+                cpf_f.fill(cpf, timeout=self.ACTION_TIMEOUT)
+                senha_f.fill(senha, timeout=self.ACTION_TIMEOUT)
+                cpf_f.dispatch_event("change")
+                cpf_f.dispatch_event("blur")
+                senha_f.dispatch_event("change")
+                senha_f.dispatch_event("blur")
+                self._wait_settle(700)
+                if log:
+                    v_cpf = cpf_f.input_value()
+                    log(f"[ProfessorOnline] CPF preenchido: {len(v_cpf)} digitos")
                 btn = p_.locator("input[name='BUTTON1']")
                 if btn.count() == 0:
                     btn = p_.locator("input[value*='Entrar' i]")
@@ -153,28 +171,83 @@ class ProfessorOnlineAdapter(PortalAdapter):
         self._logged_in = p.is_logged_in(html)
 
         if self._logged_in:
+            self._current_url = self.page.url
             self._turmas = p.extract_turmas(html)
             self.memory.record_success("login", self._base_url)
+            if log:
+                log(f"[ProfessorOnline] Login OK. Turmas no grid: {len(self._turmas)}. {self._resumo_pagina()}")
             return True
 
         # Falhou: identifica motivo (captcha, credenciais, sessao).
         motivo = self._login_failure_reason(html)
-        self.memory.record_failure("login", cpf, motivo)
         if motivo == "captcha":
-            print("[ProfessorOnline] Captcha detectado. Complete o captcha e o login manualmente no navegador.")
+            msg = (
+                "Captcha detectado no login. Se o navegador estiver VISIVEL, "
+                "complete o captcha e clique em Entrar dentro de 5 minutos."
+            )
+            if log:
+                log(f"[ProfessorOnline] {msg}")
+            else:
+                print(f"[ProfessorOnline] {msg}")
+            if not self._headless:
+                for i in range(150):
+                    time.sleep(2)
+                    html = self._html()
+                    if p.is_logged_in(html):
+                        self._logged_in = True
+                        self._turmas = p.extract_turmas(html)
+                        self.memory.record_success("login", self._base_url)
+                        return True
+                    if i % 15 == 0 and log:
+                        log(f"[ProfessorOnline] Aguardando voce completar o captcha... ({(i + 1) * 2}s)")
+                if log:
+                    log("[ProfessorOnline] Tempo esgotado aguardando o captcha manual.")
+                motivo = "captcha_tempo_esgotado"
+        self.memory.record_failure("login", cpf, f"{motivo} url={self._current_url}")
+        try:
+            shot = self._capture()
+            if shot and log:
+                log(f"[ProfessorOnline] Screenshot: {shot}")
+        except Exception:
+            pass
         return False
+
+    def _capture(self) -> Optional[str]:
+        """Salva um screenshot da pagina atual em artifacts/screenshots."""
+        try:
+            base = os.path.join(
+                os.path.expanduser("~"), ".bot_local", "artifacts", "screenshots"
+            )
+            os.makedirs(base, exist_ok=True)
+            path = os.path.join(
+                base, f"po_login_falha_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+            )
+            self.page.screenshot(path=path)
+            return path
+        except Exception:
+            return None
 
     def _login_failure_reason(self, html: str) -> str:
         if p.is_login_page(html):
             err = re.search(r"id=\"gxErrorViewer\"[^>]*>(.*?)</span>", html, re.S)
             msg = re.sub(r"<[^>]+>", "", err.group(1)) if err else ""
             msg = msg.strip()
-            if "captcha" in msg.lower() or "captcha" in (p.gxstate_value(html, "_HTML_RENDERED", "")):
+            if re.search(r"recaptcha|hcaptcha|g-recaptcha|name=\"vCAPTCHA\"|id=\"g-recaptcha\"", html, re.I):
                 return "captcha"
             if msg:
                 return f"erro_apresentado={msg[:120]}"
             return "nao_logado"
         return "sessao_indeterminada"
+
+    def _resumo_pagina(self) -> str:
+        """Texto visivel + URL da pagina atual (para diagnosticos)."""
+        try:
+            url = self.page.url
+            txt = self.page.locator("body").inner_text(timeout=3000)
+            txt = re.sub(r"\s+", " ", txt or "").strip()
+            return f"url={url} texto='{txt[:220]}'"
+        except Exception:
+            return f"url={getattr(self, '_current_url', '')} texto='<erro ao ler>'"
 
     def is_logged_in(self) -> bool:
         return self._logged_in and p.is_logged_in(self._html())
@@ -192,6 +265,22 @@ class ProfessorOnlineAdapter(PortalAdapter):
     # ------------------------------------------------------------------ #
     #  Navegacao                                                          #
     # ------------------------------------------------------------------ #
+
+    def _confirmar_periodo(self) -> bool:
+        """Se a pagina for 'Selecao de Periodo', clica em Continuar (BTNCONFIRMAR)."""
+        try:
+            html = self._html()
+            if "Grid1ContainerDataV" in html:
+                return False
+            btn = self.page.locator("input[name='BTNCONFIRMAR']")
+            if btn.count() == 0:
+                return False
+            btn.first.click(timeout=self.ACTION_TIMEOUT)
+            self._wait_network_idle()
+            self._wait_settle(1500)
+            return True
+        except Exception:
+            return False
 
     def navigate_to(self, context: PortalContext) -> bool:
         """Seleciona a turma (escola/turma) na Tela Inicial.
@@ -215,7 +304,16 @@ class ProfessorOnlineAdapter(PortalAdapter):
         turmas = p.extract_turmas(html)
         self._turmas = turmas
         if not turmas:
-            self.memory.record_failure("navigate_to", context.turma, "grid_sem_turmas")
+            if self._confirmar_periodo():
+                html = self._html()
+                turmas = p.extract_turmas(html)
+                self._turmas = turmas
+        if not turmas:
+            self.memory.record_failure(
+                "navigate_to", context.turma,
+                f"grid_sem_turmas {self._resumo_pagina()} "
+                f"grid_no_html={'Grid1ContainerDataV' in html}",
+            )
             return False
 
         alvo = self._match_turma(turmas, context)
@@ -244,15 +342,29 @@ class ProfessorOnlineAdapter(PortalAdapter):
     def _match_turma(turmas: List[Dict[str, str]], context: PortalContext) -> Optional[Dict[str, str]]:
         """Encontra a linha do Grid1 correspondente ao contexto.
 
-        Prioriza correspondencia por escola + turma; sem escola, so pela
-        turma. Retorna a primeira linha (disciplina) que casa.
+        Casa por escola + turma. A turma pode vir como codigo (ex: "201")
+        ou como ano/serie (ex: "3º Ano", "3 - SÉRIE"). Retorna a primeira
+        linha (disciplina) que casa.
         """
         norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())  # noqa: E731
-        turma_alvo = norm(context.turma)
+
+        def num(s: str) -> str:
+            m = re.search(r"\d+", s or "")
+            return m.group(0) if m else ""
+
+        alvo_norm = norm(context.turma)
+        alvo_num = num(context.turma)
         escola_alvo = norm(context.escola)
         cands = []
         for t in turmas:
-            ok_turma = not turma_alvo or turma_alvo in norm(t.get("turma", "")) or turma_alvo in norm(t.get("sigla", ""))
+            serie = norm(t.get("serie", ""))
+            turma = norm(t.get("turma", ""))
+            ok_turma = (not alvo_norm) or (
+                alvo_norm in turma
+                or alvo_norm in serie
+                or (alvo_num and alvo_num in serie)
+                or (alvo_num and alvo_num in turma)
+            )
             ok_escola = not escola_alvo or escola_alvo in norm(t.get("escola", ""))
             if ok_turma and ok_escola:
                 cands.append(t)
@@ -414,6 +526,56 @@ class ProfessorOnlineAdapter(PortalAdapter):
 
     def save_chamada(self) -> bool:
         return self._click_button(["input[name='BTN_CONFIRMAR']", "input[value*='Confirmar' i]"])
+
+    def set_chamada_dia(self, dia: str) -> bool:
+        """Ajusta a data (vDATA) da chamada. ``dia`` no formato DD/MM/AAAA."""
+        if not self.is_logged_in():
+            return False
+        try:
+            loc = self.page.locator("input[name='vDATA']")
+            if loc.count() == 0:
+                return False
+            loc.first.fill(dia, timeout=self.ACTION_TIMEOUT)
+            loc.first.blur()
+            self._wait_settle(800)
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------ #
+    #  Faltas do mes                                                      #
+    # ------------------------------------------------------------------ #
+
+    def open_faltas_mes(self) -> bool:
+        """Abre a tela de faltas do mes (cadfaltasmesnovo.aspx) da turma."""
+        return self._navigate_menu_path(self.FALTAS_MES_PATH)
+
+    def read_faltas_mes(self) -> Dict:
+        """Le as faltas do mes da turma atual (tela de leitura)."""
+        return dict(p.extract_faltas_mes(self._html()))
+
+    # ------------------------------------------------------------------ #
+    #  Turmas / escolas                                                   #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def turmas(self) -> List[Dict[str, str]]:
+        """Turmas conhecidas (grid da Tela Inicial)."""
+        return list(self._turmas)
+
+    def detectar_escolas(self) -> List[str]:
+        """Escolas unicas (por nome) presentes nas turmas do professor."""
+        escolas: List[str] = []
+        vistos = set()
+        for t in self._turmas:
+            nome = (t.get("escola") or "").strip()
+            if not nome:
+                continue
+            chave = re.sub(r"[^a-z0-9]", "", nome.lower())
+            if chave not in vistos:
+                vistos.add(chave)
+                escolas.append(nome)
+        return escolas
 
     # ------------------------------------------------------------------ #
     #  Diario de classe                                                   #

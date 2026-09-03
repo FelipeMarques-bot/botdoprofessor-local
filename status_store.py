@@ -107,6 +107,59 @@ class StatusStore:
         reg = self._dados["registros"].get(chave, {})
         return reg.get("status", "")
 
+    def obter_status_tolerante(self, escola: str, turno: str, turma: str,
+                               trimestre: str, aluno: str, atividade: str) -> str:
+        """Busca o status tolerando campos de contexto vazios na consulta.
+
+        1. Tenta a chave exata.
+        2. Varre os registros casando aluno+atividade e exigir igualdade apenas
+           nos campos de contexto preenchidos na consulta (linhas do painel podem
+           ter Turno/Trimestre vazios que foram preenchidos pelos filtros no
+           momento do lancamento). Varios casamentos: prefere o de contexto mais
+           completo.
+        """
+        exato = self.obter_status(escola, turno, turma, trimestre, aluno, atividade)
+        if exato:
+            return exato
+
+        aluno_n = aluno.strip().lower()
+        atividade_n = atividade.strip().lower()
+        if not aluno_n or not atividade_n:
+            return ""
+
+        alvo = {
+            "escola": escola.strip().lower(),
+            "turno": turno.strip().lower(),
+            "turma": turma.strip().lower(),
+            "trimestre": trimestre.strip().lower(),
+        }
+        melhor_score = -1
+        melhor_status = ""
+        for chave, reg in self._dados["registros"].items():
+            partes = chave.split("|")
+            if len(partes) != 6:
+                continue
+            p_escola, p_turno, p_turma, p_trimestre, p_aluno, p_atividade = partes
+            if p_aluno != aluno_n or p_atividade != atividade_n:
+                continue
+            contexto = {
+                "escola": p_escola, "turno": p_turno,
+                "turma": p_turma, "trimestre": p_trimestre,
+            }
+            score = 0
+            compativel = True
+            for campo, valor in alvo.items():
+                if not valor:
+                    continue
+                if contexto[campo] != valor:
+                    compativel = False
+                    break
+                score += 1
+            if compativel and score > melhor_score:
+                melhor_score = score
+                melhor_status = reg.get("status", "")
+        return melhor_status
+
     def marcar_lancada(self, escola: str, turno: str, turma: str, trimestre: str,
                         aluno: str, atividade: str, nota: float) -> None:
         """Marca uma nota como lancada com sucesso."""

@@ -19,7 +19,7 @@ import urllib.error
 import csv
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
@@ -204,6 +204,157 @@ def _start_log_file() -> str:
     return path
 
 
+def _stats_globais_path() -> str:
+    stats_dir = os.path.join(os.path.expanduser("~"), ".bot_local")
+    os.makedirs(stats_dir, exist_ok=True)
+    return os.path.join(stats_dir, "stats_globais.json")
+
+
+def _registrar_stats_resultado(resultado: dict) -> None:
+    """Acumula sucessos/falhas globais para calcular a taxa de acerto do bot."""
+    if not isinstance(resultado, dict):
+        return
+    sucesso = int(
+        resultado.get("notas_preenchidas")
+        or resultado.get("preenchidas")
+        or resultado.get("planejamentos")
+        or 0
+    )
+    falhas = int(resultado.get("falhas", 0) or 0)
+    if sucesso <= 0 and falhas <= 0:
+        return
+    path = _stats_globais_path()
+    try:
+        try:
+            with open(path, encoding="utf-8") as f:
+                dados = json.load(f)
+        except Exception:  # noqa: BLE001
+            dados = {"sucesso": 0, "falha": 0}
+        dados["sucesso"] = int(dados.get("sucesso", 0)) + sucesso
+        dados["falha"] = int(dados.get("falha", 0)) + falhas
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _taxa_acerto_global() -> tuple:
+    """Retorna (percentual, total_lancamentos); (None, 0) se sem historico."""
+    try:
+        with open(_stats_globais_path(), encoding="utf-8") as f:
+            dados = json.load(f)
+        sucesso = int(dados.get("sucesso", 0))
+        falha = int(dados.get("falha", 0))
+        total = sucesso + falha
+        if total <= 0:
+            return None, 0
+        return round(100.0 * sucesso / total), total
+    except Exception:  # noqa: BLE001
+        return None, 0
+
+
+from contextlib import contextmanager
+
+
+@st.cache_resource(show_spinner=False)
+def _nav_persistente_estado():
+    """Navegadores reutilizados entre execucoes, um por portal (chave = URL)."""
+    return {"portais": {}, "atexit_ok": False}
+
+
+def _fechar_navegador_persistente(url_portal: str = "") -> None:
+    """Fecha sessoes persistidas. Sem url informada, fecha TODOS os portais."""
+    est = _nav_persistente_estado()
+    chaves = [url_portal] if url_portal else list(est["portais"].keys())
+    for chave in chaves:
+        sess = est["portais"].pop(chave, None)
+        if not sess:
+            continue
+        for obj_key in ("page", "ctx", "browser"):
+            obj = sess.get(obj_key)
+            if obj is not None:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+        pw = sess.get("pw")
+        if pw is not None:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+
+
+def _obter_page_persistente(headless_flag, url_portal: str, cpf: str, senha: str):
+    """Page viva do portal indicado; troca de URL/credenciais descarta a sessao."""
+    import atexit
+
+    est = _nav_persistente_estado()
+    if not est.get("atexit_ok"):
+        atexit.register(_fechar_navegador_persistente)
+        est["atexit_ok"] = True
+
+    chave = (url_portal or "").strip().rstrip("/").lower()
+    sess = est["portais"].get(chave)
+    alvo_headless = bool(headless_flag)
+
+    if sess and (sess.get("cpf") != (cpf or "") or sess.get("senha") != (senha or "")):
+        _fechar_navegador_persistente(chave)
+        sess = None
+    if sess and sess.get("headless") is not None and sess["headless"] != alvo_headless:
+        _fechar_navegador_persistente(chave)
+        sess = None
+
+    try:
+        if sess is None or sess["browser"] is None or sess["browser"].is_connected():
+            if sess is not None:
+                _fechar_navegador_persistente(chave)
+            from playwright.sync_api import sync_playwright
+            sess = {
+                "pw": sync_playwright().start(),
+                "headless": alvo_headless,
+                "cpf": cpf or "",
+                "senha": senha or "",
+                "ctx": None,
+                "page": None,
+            }
+            sess["browser"] = sess["pw"].chromium.launch(headless=alvo_headless)
+            est["portais"][chave] = sess
+        pagina = sess.get("page")
+        viva = False
+        if pagina is not None and not pagina.is_closed():
+            try:
+                pagina.evaluate("1")
+                viva = True
+            except Exception:
+                viva = False
+        if not viva:
+            sess["ctx"] = sess["browser"].new_context()
+            sess["page"] = sess["ctx"].new_page()
+            from lancar_notas_sge import ACTION_TIMEOUT_MS
+            sess["page"].set_default_timeout(ACTION_TIMEOUT_MS)
+        return sess["page"]
+    except Exception:
+        _fechar_navegador_persistente(chave)
+        raise
+
+
+@contextmanager
+def _sessao_navegador(headless_flag, url_portal: str, cpf: str, senha: str):
+    """Entrega a Page persistente do portal sem fecha-la ao fim da execucao.
+
+    O navegador (e o login) sobrevivem entre execucoes enquanto o painel estiver
+    aberto. Se algo falhar no meio, a sessao deste portal e descartada para a
+    proxima execucao comecar limpa.
+    """
+    page = _obter_page_persistente(headless_flag, url_portal, cpf, senha)
+    try:
+        yield page
+    except Exception:
+        _fechar_navegador_persistente((url_portal or "").strip().rstrip("/").lower())
+        raise
+
+
 def _validar_template(fonte: str, caminho: str, tipo: str) -> tuple:
     try:
         if tipo == "notas":
@@ -254,7 +405,7 @@ def _aplicar_status_salvo(linhas: List[Dict]) -> None:
     from status_store import StatusStore
     store = StatusStore(_PAINEL_SOURCE_PATH, logger=None)
     for ln in linhas:
-        status = store.obter_status(
+        status = store.obter_status_tolerante(
             ln.get("escola", ""), ln.get("turno", ""), ln.get("turma", ""),
             ln.get("trimestre", ""), ln.get("aluno", ""), ln.get("atividade", ""),
         )
@@ -291,7 +442,7 @@ def _sincronizar_status_painel(status_store) -> None:
     """Grava no painel o status final registrado pelo StatusStore apos o lancamento."""
     linhas = st.session_state.get("planilha_linhas", [])
     for ln in linhas:
-        status = status_store.obter_status(
+        status = status_store.obter_status_tolerante(
             ln.get("escola", ""), ln.get("turno", ""), ln.get("turma", ""),
             ln.get("trimestre", ""), ln.get("aluno", ""), ln.get("atividade", ""),
         )
@@ -652,12 +803,17 @@ def _listar_turmas_notion():
     todas elas e a navegacao entre turmas no SGE pode falhar. Este helper
     alimenta o seletor que permite lancar UMA turma por vez.
     """
-    from lancar_notas_sge import listar_contextos_disponiveis, _normalize
-
     if st.session_state.notion_token:
         os.environ["NOTION_TOKEN"] = st.session_state.notion_token
     if st.session_state.root_page_id:
         os.environ["ROOT_PAGE_ID"] = st.session_state.root_page_id
+
+    # lancar_notas_sge le NOTION_TOKEN/ROOT_PAGE_ID no import (globais de
+    # modulo); sem reload, o token preenchido na tela nao e visto pelo botao.
+    import importlib
+    import lancar_notas_sge as _sge_mod
+    importlib.reload(_sge_mod)
+    from lancar_notas_sge import _normalize, listar_contextos_disponiveis
 
     escola = (st.session_state.get("escola") or "").strip()
     turno = (st.session_state.get("turno") or "").strip()
@@ -679,7 +835,8 @@ def _listar_turmas_notion():
                 continue
             if ctx.get("turma"):
                 turmas.add(ctx["turma"])
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Falha ao carregar turmas do Notion: {exc}")
         return []
     return sorted(turmas)
 
@@ -873,7 +1030,7 @@ with st.sidebar:
     st.markdown("### Configuracoes")
 
     with st.expander("Portal do Professor", expanded=True):
-        portal_options = ["SGE", "Professor Online", "Novo Portal"]
+        portal_options = ["SGE", "Professor Online", "Novo Portal", "Auto (detecta pela escola)"]
         portal_index = 0
         saved_portal = st.session_state.get("portal_selecionado", "SGE")
         if saved_portal in portal_options:
@@ -883,12 +1040,19 @@ with st.sidebar:
             options=portal_options,
             index=portal_index,
             key="portal_selecionar",
-            help="SGE ou Professor Online: bot ja conhece o acesso. Novo Portal: a IA local aprende o acesso."
+            help="SGE ou Professor Online: bot ja conhece o acesso. Novo Portal: a IA local aprende o acesso. Auto: detecta o portal pela escola filtrada."
         )
         st.session_state.portal_selecionado = portal_selecionado
 
+        if portal_selecionado == "Auto (detecta pela escola)":
+            st.caption(
+                "**Auto**: o bot consulta o registro de escolas (~/.sge_bot/escolas.json). "
+                "Se a escola filtrada for conhecida do **Professor Online**, executa nele; "
+                "caso contrario, usa o **SGE**. As credenciais do Professor Online ficam salvas na config."
+            )
+
         if portal_selecionado == "Professor Online":
-            portal_default_url = "https://professoronline.sed.sc.gov.br/CadLoginProfCaptchaCopy1.aspx"
+            portal_default_url = "https://professoronline.sed.sc.gov.br"
             portal_url_key = "po_url_input"
             portal_cpf_key = "po_cpf_input"
             portal_senha_key = "po_senha_input"
@@ -906,6 +1070,10 @@ with st.sidebar:
             portal_senha_key = "sge_senha_input"
             portal_env = carregar_env()
 
+        if st.session_state.get("portal_url_para") != portal_selecionado:
+            st.session_state["portal_url_para"] = portal_selecionado
+            st.session_state["portal_url_value"] = portal_env or portal_default_url
+
         portal_url = st.text_input(
             "URL do Portal do Professor",
             value=st.session_state.get("portal_url_value", portal_env or portal_default_url),
@@ -921,6 +1089,11 @@ with st.sidebar:
         with col2:
             senha = st.text_input("Senha", value=st.session_state.get("portal_senha_value", config_salva.get("sge_senha", "")), key=portal_senha_key, type="password")
             st.session_state.portal_senha_value = senha
+
+        if st.button("Fechar navegador do portal", help="Encerra a sessao que fica aberta entre execucoes. Use se o portal travar ou para entrar com outro usuario."):
+            _fechar_navegador_persistente()
+            st.toast("Navegador fechado. A proxima execucao fara novo login.")
+        st.caption("Entre execucoes o bot reaproveita o portal ja aberto, sem repetir login. Trocou de portal ou de senha? A sessao e renovada automaticamente.")
 
         if (senha or "").strip().lower() in {"123456", "12345678", "12345", "123", "senha", "sua_senha", "teste", "test", "password"}:
             st.warning(
@@ -954,9 +1127,20 @@ with st.sidebar:
         st.session_state.np_cpf = cpf
         st.session_state.np_senha = senha
 
-    with st.expander("API Keys", expanded=True):
+    with st.expander("Chaves de conexao (Notion)", expanded=True):
+        st.caption(
+            "**O que e isso?** O Notion guarda suas planilhas de notas. Para o bot ler as notas "
+            "de la, ele precisa de duas 'chaves' (codigos de acesso). **So preencha se voce usa Notion** — "
+            "quem usa Google Forms ou Excel pode pular esta secao."
+        )
+        st.caption(
+            "**Como obter:** 1) No navegador, acesse notion.so/profile/sessions (logado) e clique em "
+            "'Criar integracao' em notion.so/my-integrations; 2) Copie a chave que comeca com **secret_** e cole abaixo; "
+            "3) Abra a pagina do seu boletim no Notion, clique nos '...' > 'Conexoes' > adicione sua integracao; "
+            "4) O **ID da pagina** sao os 32 caracteres no final da URL da pagina."
+        )
         notion_token = st.text_input(
-            "Notion Token (secret_...)",
+            "Chave do Notion (comeca com secret_)",
             value=st.session_state.get("notion_token", ""),
             key="notion_token_input",
             type="password",
@@ -964,7 +1148,7 @@ with st.sidebar:
         st.session_state.notion_token = notion_token
 
         root_page_id = st.text_input(
-            "Root Page ID",
+            "ID da pagina raiz (32 caracteres)",
             value=st.session_state.get("root_page_id", ""),
             key="root_page_id_input",
         )
@@ -989,6 +1173,14 @@ with st.sidebar:
         key="ai_provider_select",
     )
     st.session_state.ai_provider = ai_provider
+
+    st.caption(
+        "**Dica:** a IA Local (Ollama) é gratuita, privada e não precisa de internet. "
+        "Porém, para **portais complexos ou novos**, conectar **sua própria API** "
+        "**(Gemini/OpenAI/Anthropic)** deixa a navegação híbrida **mais rápida e precisa** "
+        "(modelos em nuvem lidam melhor com HTML extenso). Fica a seu critério: "
+        "Local para custo zero, API para máximo desempenho."
+    )
 
     # Campo de API key dinamico conforme provider
     if ai_provider == "local":
@@ -1131,6 +1323,130 @@ with st.sidebar:
                 "um arquivo **.xlsx/.csv** la para preencher a tabela. A coluna **Status** "
                 "(Lancada/Falha) pode ser editada por linha e fica salva entre execucoes."
             )
+            with st.expander("Importar relatorio do Google Forms"):
+                st.markdown(
+                    "Para avaliacoes aplicadas via **Google Forms**: baixe o relatorio "
+                    "(.xlsx) e importe aqui. O bot converte a pontuacao bruta em nota "
+                    "(acertos x valor por questao, ex.: 19 x 0,5 = 9,5), mantendo apenas "
+                    "a ultima resposta de cada aluno. Nao afeta a leitura das outras "
+                    "planilhas nem do Notion."
+                )
+                gf_arquivo = st.file_uploader(
+                    "Relatorio .xlsx do Google Forms",
+                    type=["xlsx"],
+                    key="gf_upload",
+                )
+                gf_total_auto = None
+                gf_turmas: List[str] = []
+                if gf_arquivo:
+                    gf_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
+                    gf_dir.mkdir(exist_ok=True)
+                    gf_path = gf_dir / gf_arquivo.name
+                    with open(gf_path, "wb") as f:
+                        f.write(gf_arquivo.getbuffer())
+                    st.session_state["gf_path"] = str(gf_path)
+                    try:
+                        from leitor_planilhas import detectar_total_questoes_forms, detectar_turmas_forms
+                        gf_total_auto = detectar_total_questoes_forms(str(gf_path))
+                        gf_turmas = detectar_turmas_forms(str(gf_path))
+                    except Exception:
+                        gf_total_auto = None
+                        gf_turmas = []
+                    if gf_total_auto:
+                        st.caption(f"Total de questoes detectado: **{gf_total_auto}**")
+                gf_n_q = st.number_input(
+                    "Total de questoes",
+                    min_value=1,
+                    step=1,
+                    value=int(gf_total_auto or 20),
+                    key="gf_n_questoes",
+                )
+                gf_valor = st.number_input(
+                    "Valor de cada questao (pontos)",
+                    min_value=0.05,
+                    max_value=10.0,
+                    step=0.05,
+                    value=0.5,
+                    key="gf_valor_questao",
+                )
+                gf_atividade = st.text_input(
+                    "Nome da atividade (igual ao portal SGE)",
+                    key="gf_atividade",
+                    placeholder="Ex: Avaliacao de Humanas - Livros Sagrados",
+                )
+                _tri_opcoes = ["", "1o Trimestre", "2o Trimestre", "3o Trimestre"]
+                _tri_atual = str(st.session_state.get("trimestre") or "")
+                gf_trimestre = st.selectbox(
+                    "Trimestre (preenchido na tabela)",
+                    options=_tri_opcoes,
+                    index=_tri_opcoes.index(_tri_atual) if _tri_atual in _tri_opcoes else 0,
+                    key="gf_trimestre",
+                    help="Gravado em cada linha importada e usado para abrir o "
+                         "periodo certo no portal. A data nao e necessaria: a "
+                         "avaliacao e localizada pelo nome.",
+                )
+                gf_mapa_turno: Dict[str, str] = {}
+                if gf_turmas:
+                    st.markdown("**Turno de cada turma** (o bot abre a turma certa no portal):")
+                    from leitor_planilhas import _normalize as _norm_turma
+                    for _t in gf_turmas:
+                        _escolhido = st.selectbox(
+                            f"Turma {_t}",
+                            options=["", "Matutino", "Vespertino", "Noturno"],
+                            key=f"gf_turno_{_norm_turma(_t)}",
+                        )
+                        if _escolhido:
+                            gf_mapa_turno[_norm_turma(_t)] = _escolhido
+                    if len(gf_mapa_turno) < len(gf_turmas):
+                        st.caption(
+                            "Deixe o filtro de Turno (aba Filtros) **vazio** para "
+                            "lancar em todos os turnos; cada turma usara o turno "
+                            "marcado acima."
+                        )
+                if st.button("Importar para a tabela", key="gf_importar", use_container_width=True):
+                    gf_caminho = st.session_state.get("gf_path", "")
+                    if not gf_caminho:
+                        st.error("Selecione o arquivo .xlsx do Google Forms primeiro.")
+                    else:
+                        from leitor_planilhas import (
+                            ler_notas_google_forms,
+                            registros_para_linhas,
+                            _normalize as _norm_linha,
+                        )
+                        try:
+                            gf_regs = ler_notas_google_forms(
+                                gf_caminho,
+                                valor_questao=float(gf_valor),
+                                atividade=gf_atividade,
+                                n_questoes=int(gf_n_q),
+                                logger=log,
+                            )
+                        except Exception as exc:
+                            st.error(f"Erro ao ler o relatorio: {exc}")
+                            gf_regs = []
+                        if gf_regs:
+                            gf_linhas = registros_para_linhas(gf_regs)
+                            for ln in gf_linhas:
+                                t_norm = _norm_linha(str(ln.get("turma") or ""))
+                                if t_norm in gf_mapa_turno:
+                                    ln["turno"] = gf_mapa_turno[t_norm]
+                                if gf_trimestre:
+                                    ln["trimestre"] = gf_trimestre
+                            _aplicar_status_salvo(gf_linhas)
+                            st.session_state.planilha_linhas = gf_linhas
+                            sem_turno = sum(
+                                1 for ln in gf_linhas if not str(ln.get("turno") or "").strip()
+                            ) if gf_mapa_turno else 0
+                            msg = f"{len(gf_regs)} aluno(s) importado(s)."
+                            if sem_turno:
+                                msg += f" Atencao: {sem_turno} linha(s) sem turno definido."
+                            st.success(msg + " Confira na aba **Planilha** e execute.")
+                            st.rerun()
+                        else:
+                            st.warning(
+                                "Nenhuma resposta valida encontrada. Verifique se o "
+                                "arquivo tem as colunas de nome e Score/Pontuacao."
+                            )
         elif fonte == "google_sheets":
             st.info(
                 "Cole o link compartilhavel do **Google Sheets** abaixo.\n\n"
@@ -1187,11 +1503,12 @@ with st.sidebar:
     with st.expander("Filtros"):
         tipo = st.radio(
             "Tipo de lancamento:",
-            options=["notas", "chamada", "sequencia"],
+            options=["notas", "chamada", "sequencia", "faltas"],
             format_func=lambda x: {
                 "notas": "Notas",
                 "chamada": "Chamada (foto do diario)",
                 "sequencia": "Sequência Didática",
+                "faltas": "Faltas do mês (leitura)",
             }.get(x, x),
             horizontal=True,
             key="tipo_radio",
@@ -1199,24 +1516,94 @@ with st.sidebar:
         st.session_state.tipo = tipo
 
         col_f1, col_f2 = st.columns(2)
+        _linhas_painel = (
+            st.session_state.get("planilha_linhas", [])
+            if st.session_state.get("fonte", "") == "planilha" else []
+        )
         with col_f1:
-            escola = st.text_input(
-                "Escola",
-                key="escola_input",
-                placeholder="vazio = todas as escolas",
-            )
+            from leitor_planilhas import valores_distintos as _val_dist
+            _escolas_disp = _val_dist(_linhas_painel, "escola")
+            if _escolas_disp:
+                escola = st.selectbox(
+                    "Escola",
+                    options=[""] + _escolas_disp,
+                    key="escola_opcoes",
+                    help="Opcoes vindas da tabela do painel.",
+                )
+                st.session_state["escola_input"] = escola
+            else:
+                escola = st.text_input(
+                    "Escola",
+                    key="escola_input",
+                    placeholder="vazio = todas as escolas",
+                )
             st.session_state.escola = escola
-            turma = st.text_input(
-                "Turma (ex: 6o Ano)",
-                key="turma_input",
-                placeholder="vazio = todas as turmas",
-            )
+            _turmas_disp = _val_dist(_linhas_painel, "turma")
+            if _turmas_disp:
+                turma = st.selectbox(
+                    "Turma",
+                    options=[""] + _turmas_disp,
+                    key="turma_opcoes",
+                    help="Opcoes vindas da tabela do painel.",
+                )
+                st.session_state["turma_input"] = turma
+            else:
+                turma = st.text_input(
+                    "Turma (ex: 6o Ano)",
+                    key="turma_input",
+                    placeholder="vazio = todas as turmas",
+                )
             st.session_state.turma = turma
         with col_f2:
             turno = st.selectbox("Turno", options=["", "Matutino", "Vespertino", "Noturno"], key="turno_select")
             st.session_state.turno = turno
             trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select")
             st.session_state.trimestre = trimestre
+
+        # Com a tabela do painel carregada, Turno/Trimestre selecionados nos
+        # filtros preenchem as CELULAS VAZIAS correspondentes SOMENTE nas
+        # linhas que casam com os demais filtros (Escola/Turma), para o turno
+        # de uma turma nao vazar para outra (ex.: 6°2 vespertino nao pode
+        # preencher as linhas da 6°1).
+        if st.session_state.get("fonte", "") == "planilha" and _linhas_painel:
+            _filtros_p = {
+                "escola": str(st.session_state.get("escola") or "").strip(),
+                "turno": str(st.session_state.get("turno") or "").strip(),
+                "turma": str(st.session_state.get("turma") or "").strip(),
+                "trimestre": str(st.session_state.get("trimestre") or "").strip(),
+            }
+            _preenche_turno = bool(_filtros_p["turno"])
+            _preenche_tri = bool(_filtros_p["trimestre"])
+            if _preenche_turno or _preenche_tri:
+                from leitor_planilhas import _normalize as _norm_campo
+
+                def _linha_casa_filtros(_ln: Dict[str, Any]) -> bool:
+                    for _campo, _alvo in _filtros_p.items():
+                        if not _alvo:
+                            continue
+                        _valor = _norm_campo(str(_ln.get(_campo) or ""))
+                        if _valor and _valor != _norm_campo(_alvo):
+                            return False
+                    return True
+
+                _preencheu = False
+                for _ln in st.session_state.planilha_linhas:
+                    if not _linha_casa_filtros(_ln):
+                        continue
+                    if _preenche_turno and not str(_ln.get("turno") or "").strip():
+                        _ln["turno"] = _filtros_p["turno"]
+                        _preencheu = True
+                    if _preenche_tri and not str(_ln.get("trimestre") or "").strip():
+                        _ln["trimestre"] = _filtros_p["trimestre"]
+                        _preencheu = True
+                if _preencheu:
+                    st.caption(
+                        "Turno/Trimestre do filtro preenchidos apenas nas linhas "
+                        "que batem com os filtros de Escola/Turma. Para turnos "
+                        "diferentes por turma, deixe o Turno vazio e use o "
+                        "mapeamento do importador do Google Forms."
+                    )
+                    st.rerun()
 
         if st.session_state.get("fonte", "") == "google_drive" and tipo == "notas":
             st.markdown("**Arquivo no Google Drive**")
@@ -1236,8 +1623,11 @@ with st.sidebar:
                 st.caption(f"Filtros ativos: {', '.join(filtros_ativos)}")
 
             if st.session_state.get("fonte", "") == "google_drive":
-                st.markdown("**Links do Google Drive por Ano**")
-                st.caption("Cole os links dos PDFs para cada ano. Deixe vazio o que nao for lancar.")
+                st.markdown("**Links do Google Drive por Turma**")
+                st.caption(
+                    "Digite o nome da turma exatamente como aparece no portal (ex.: '6º Ano' ou '6º Ano 1') "
+                    "e cole o link do arquivo compartilhado. Deixe vazio o que nao for lancar."
+                )
 
                 if "seq_drive_links" not in st.session_state:
                     st.session_state.seq_drive_links = [
@@ -1248,13 +1638,13 @@ with st.sidebar:
                     ]
 
                 for i, entry in enumerate(st.session_state.seq_drive_links):
-                    cols = st.columns([1.2, 4, 0.5])
+                    cols = st.columns([1.4, 4, 0.5])
                     with cols[0]:
-                        entry["ano"] = st.selectbox(
-                            "Ano",
-                            ["6º Ano", "7º Ano", "8º Ano", "9º Ano"],
-                            index=["6º Ano", "7º Ano", "8º Ano", "9º Ano"].index(entry["ano"]),
+                        entry["ano"] = st.text_input(
+                            "Ano/Turma",
+                            value=entry["ano"],
                             key=f"seq_drive_ano_{i}",
+                            placeholder="Ex.: 6º Ano 1",
                             label_visibility="collapsed",
                         )
                     with cols[1]:
@@ -1271,8 +1661,8 @@ with st.sidebar:
                                 st.session_state.seq_drive_links.pop(i)
                                 st.rerun()
 
-                if st.button("+ Adicionar ano", key="add_drive_link", use_container_width=True):
-                    st.session_state.seq_drive_links.append({"ano": "6º Ano", "link": ""})
+                if st.button("+ Adicionar turma", key="add_drive_link", use_container_width=True):
+                    st.session_state.seq_drive_links.append({"ano": "", "link": ""})
                     st.rerun()
 
                 st.markdown("**Campos comuns a todos os anos:**")
@@ -1446,33 +1836,33 @@ with st.sidebar:
         key="ia_radio",
     )
 
-    if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal" and ia_opcao != "aprendizado":
-        st.error(
-            "Portal **Novo Portal**: e **obrigatorio** marcar **'Sim - Aprendizado'** aqui. "
-            "Assim a IA local grava seu acesso manual e ensina o bot a usar o novo portal."
-        )
+    if st.session_state.get("portal_selecionado", "SGE") in ("Novo Portal", "Professor Online") and ia_opcao != "aprendizado":
+        if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
+            st.error(
+                "Portal **Novo Portal**: e **obrigatorio** marcar **'Sim - Aprendizado'** aqui. "
+                "Assim a IA local grava seu acesso manual e ensina o bot a usar o novo portal."
+            )
+        else:
+            st.warning(
+                "Portal **Professor Online**: acoes ainda nao suportadas (ex.: criacao/upload de "
+                "planejamento) usam o **Modo Aprendizado** para a IA gravar o fluxo e incluir a "
+                "nova funcionalidade ao sistema. Marque **'Sim - Aprendizado'** quando for ensinar "
+                "um fluxo novo."
+            )
 
     st.markdown("---")
     st.markdown("**Opcoes de execucao**")
 
-    with st.expander("Modo headless (navegador invisivel)"):
+    with st.expander("Janela do navegador"):
         st.markdown(
             "Quando ativado, o navegador roda em **segundo plano** sem mostrar nada na tela. "
             "Deixe marcado para uso normal.\n\n"
-            "**Desmarque** apenas se quiser **ver** o navegador sendo controlado passo a passo "
-            "(para entender o que o programa faz ou para tirar duvidas)."
+            "**Desmarque** quando o portal pedir **captcha** no login: o navegador abre visivel, "
+            "voce completa o captcha manualmente e o bot continua sozinho. Tambem use para "
+            "**ver** o navegador sendo controlado passo a passo."
         )
         headless_mode = st.checkbox("Rodar em segundo plano (recomendado)", value=st.session_state.headless_mode, key="headless_check")
         st.session_state.headless_mode = headless_mode
-
-    with st.expander("Modo Dry-run (apenas simular)"):
-        st.markdown(
-            "Quando ativado, o programa **apenas simula** o lancamento — ele mostra o que "
-            "seria feito, mas **nao envia nada** para o portal.\n\n"
-            "Use sempre marcado na primeira vez para conferir se os dados estao corretos.\n"
-            "**Desmarque** quando quiser realmente enviar as notas para o portal."
-        )
-        dry_run = st.checkbox("Simular sem enviar (recomendado)", value=True, key="dry_run_check")
 
     with st.expander("Casamento de nomes dos alunos"):
         st.markdown(
@@ -1490,7 +1880,7 @@ with st.sidebar:
         )
         st.session_state.primeiro_nome_match = primeiro_nome_match
 
-    with st.expander("Auto-fix IA (correcao automatica)"):
+    with st.expander("Correção automática de erros (IA)"):
         st.markdown(
             "Quando ativado, se acontecer algum erro (ex: data no formato errado, link invalido, "
             "demora para carregar), o programa **tenta corrigir sozinho** usando inteligencia "
@@ -1541,8 +1931,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# === LEMBRETE PERMANENTE: SEMPRE REVISAR AS NOTAS ===
+_acerto_pct, _acerto_total = _taxa_acerto_global()
+if _acerto_pct is not None:
+    st.warning(
+        f"**Importante:** revise sempre as notas lancadas ao final — o bot pode errar! "
+        f"Taxa de acerto dos seus ultimos lancamentos: **{_acerto_pct}%** "
+        f"({_acerto_total} nota(s) processada(s)). "
+        f"Confira no portal e na aba **Pendencias**.",
+        icon="\U0001F440",
+    )
+else:
+    st.warning(
+        "**Importante:** revise sempre as notas lancadas ao final — o bot pode errar. "
+        "Confira cada nota no portal depois do envio e use a aba **Pendencias**.",
+        icon="\U0001F440",
+    )
+
 # === ABAS DO PAINEL ===
-tab_plan, tab_rev, tab_logs = st.tabs(["Planilha", "Revisao IA", "Logs"])
+tab_plan, tab_rev, tab_logs = st.tabs(["Planilha", "Pendências", "Logs"])
 
 with tab_plan:
     if st.session_state.get("fonte", "notion") == "planilha":
@@ -1621,14 +2028,33 @@ with tab_plan:
             "(Origem dos Dados) para editar as notas nesta aba."
         )
 
+# === DIALOGO DE CONFIRMACAO DE ENVIO ===
+@st.dialog("Confirmar envio ao portal")
+def _confirmar_envio_dialog(resumo: tuple) -> None:
+    st.markdown("Voce esta enviando **de verdade** para o portal. Confira o resumo:")
+    for _linha in resumo:
+        if _linha.endswith(": ``") or _linha.endswith(": ''"):
+            continue
+        st.markdown(f"- {_linha}")
+    st.caption("Depois do envio, revise as notas gravadas no portal (aba Pendencias e o proprio portal).")
+    _c1, _c2 = st.columns(2)
+    if _c1.button("Sim, enviar agora", type="primary", use_container_width=True):
+        st.session_state.confirmar_envio = True
+        st.session_state.executar_agora = True
+        st.rerun()
+    if _c2.button("Cancelar", use_container_width=True):
+        st.rerun()
+
 # === EXECUCAO (stepper + botao + gate) ===
 st.markdown('<div class="main-header">Execucao</div>', unsafe_allow_html=True)
 
-stepper_fases = ["Carregar", "Validar", "Dry-run", "Lancar", "Revisar"]
+dry_run = False
+
+stepper_fases = ["Carregar", "Validar", "Lancar", "Revisar"]
 if st.session_state.get("executando"):
-    stepper_idx = 2 if dry_run else 3
+    stepper_idx = 2
 elif st.session_state.get("resultado"):
-    stepper_idx = 4 if st.session_state.get("revisao_fase") != "pendente" else 4
+    stepper_idx = 3
 else:
     stepper_idx = -1
 stepper_cols = st.columns(len(stepper_fases))
@@ -1641,7 +2067,7 @@ for _i, _fase in enumerate(stepper_fases):
         else:
             st.markdown(f"<div style='text-align:center;background:#f1f3f4;border:1px solid #dadce0;border-radius:8px;padding:4px 6px;font-size:0.8rem;color:#5f6368;'>{_fase}</div>", unsafe_allow_html=True)
 
-col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
+col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
     portal_ativo = st.session_state.get("portal_selecionado", "SGE")
@@ -1656,6 +2082,11 @@ with col_btn1:
             and st.session_state.get("np_cpf", "")
             and st.session_state.get("np_senha", "")
         )
+    elif portal_ativo == "Auto (detecta pela escola)":
+        pode_executar = bool(
+            (st.session_state.get("sge_cpf", "") and st.session_state.get("sge_senha", ""))
+            or (st.session_state.get("po_cpf", "") and st.session_state.get("po_senha", ""))
+        )
     else:
         pode_executar = bool(
             st.session_state.get("sge_cpf", "")
@@ -1664,35 +2095,27 @@ with col_btn1:
     if not pode_executar:
         st.warning("Preencha URL, CPF e Senha do portal na barra lateral")
 
-    dry_run_ativo = dry_run
-    if not dry_run_ativo:
-        st.session_state.confirmar_envio = st.checkbox(
-            "Confirmo que quero **ENVIAR de verdade** para o portal (dry-run desligado)",
-            value=st.session_state.get("confirmar_envio", False),
-            key="confirmar_envio_check",
-        )
-        if not st.session_state.get("confirmar_envio", False):
-            st.warning("Marque a confirmacao acima para liberar o envio real.")
-    else:
-        st.session_state.confirmar_envio = False
+    _resumo_envio = [
+        f"**Portal:** {portal_ativo}",
+        f"**Escola:** {st.session_state.get('escola', '') or 'todas'}",
+        f"**Turma:** {st.session_state.get('turma', '') or 'todas'}",
+        f"**Turno:** {st.session_state.get('turno', '') or 'todos'}",
+        f"**Trimestre:** {st.session_state.get('trimestre', '') or 'todos'}",
+    ]
+    _df_atual = st.session_state.get("df")
+    if _df_atual is not None and hasattr(_df_atual, "empty") and not _df_atual.empty:
+        _resumo_envio.append(f"**Registros na tabela:** {len(_df_atual)}")
 
     executar_btn = st.button(
-        "EXECUTAR LANCAMENTO",
+        "ENVIAR NOTAS AO PORTAL",
         type="primary",
-        disabled=(
-            not pode_executar
-            or st.session_state.executando
-            or (not dry_run_ativo and not st.session_state.get("confirmar_envio", False))
-        ),
+        disabled=(not pode_executar or st.session_state.executando),
         use_container_width=True,
     )
+    if executar_btn:
+        _confirmar_envio_dialog(tuple(_resumo_envio))
 
 with col_btn2:
-    abrir_terminal = st.button("Abrir Terminal")
-    if abrir_terminal:
-        st.info("Para usar via terminal: python app.py")
-
-with col_btn3:
     ajuda_btn = st.button("Ajuda / Tutorial", use_container_width=True)
 
 if ajuda_btn:
@@ -1700,24 +2123,44 @@ if ajuda_btn:
     st.markdown("""
     1. **Portal**: Escolha SGE, Professor Online ou Novo Portal
     2. **Novo Portal**: informe URL, CPF e senha e marque **'Sim - Aprendizado'** na Assistencia IA. O navegador abre visivel, voce faz o acesso manualmente e a IA local aprende.
-    3. **API Keys**: Cole o token do Notion e o ID da pagina raiz
+    3. **API Keys**: Cole o token do Notion e o ID da pagina raiz (veja as instrucoes na propria secao)
     4. **Origem**: Escolha de onde ler os dados (Notion, Excel, CSV, Google)
     5. **Filtros**: Opcionais - para filtrar por escola/turma
     6. **Modo Lote**: Marque para processar todas as escolas, turmas e trimestres automaticamente
-    7. **Dry-run**: Recomendado para testar antes do envio real
-    8. **Executar**: Clique no botao verde e acompanhe os logs
+    7. **Executar**: Clique no botao, confira o resumo e confirme. Depois acompanhe os logs
+    8. **Importante**: Sempre revise as notas lancadas no portal ao final
     """)
 
 # === EXECUCAO ===
 _rev_aplicar = st.session_state.pop("revisao_aplicar", False)
 _rev_retentar = st.session_state.pop("revisao_retentar_ausentes", False)
-if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplicar or _rev_retentar:
+if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofix_trigger", False) or _rev_aplicar or _rev_retentar:
     st.session_state.executando = True
     st.session_state.logs = []
+    st.session_state.pop("imagem_descartes", None)
     st.session_state.log_file = _start_log_file()
     st.session_state.resultado = None
 
     log("Iniciando execucao...")
+
+    # === RESOLVE PORTAL (Auto: detecta pela escola registrada) ===
+    portal_escolhido = st.session_state.get("portal_selecionado", "SGE")
+    portal_resolvido = portal_escolhido
+    if portal_escolhido == "Auto (detecta pela escola)":
+        try:
+            from bot.core.escola_registry import portal_da_escola
+            escola_filtro = st.session_state.get("escola", "")
+            auto = portal_da_escola(escola_filtro) if escola_filtro else None
+            portal_resolvido = "Professor Online" if auto == "professor_online" else "SGE"
+        except Exception as exc:
+            portal_resolvido = "SGE"
+            log(f"[AUTO] Aviso: falha ao consultar registro de escolas: {exc}")
+        log(f"[AUTO] Escola '{st.session_state.get('escola', '') or '(vazia)'}' -> portal {portal_resolvido}")
+        if portal_resolvido == "Professor Online":
+            st.info(f"**Auto**: escola '{st.session_state.get('escola', '')}' reconhecida do **Professor Online**. Executando neste portal.")
+        else:
+            st.info("**Auto**: escola nao registrada no Professor Online. Executando no **SGE**.")
+    st.session_state["portal_resolvido"] = portal_resolvido
 
     # === BARRA DE PROGRESSO ===
     status = st.status("Iniciando...", expanded=True)
@@ -1736,6 +2179,8 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
             elif "Concluido" in msg or "concluido" in msg.lower():
                 progress_bar.progress(1.0, text="Concluido!")
                 status.update(label="Concluido!", state="complete")
+            elif "ESTRUTURA-CHANGED" in msg:
+                status.update(label="Estrutura do SGE mudou — nada gravado", state="error")
             elif "ERRO" in msg or "erro" in msg.lower():
                 status.update(label=msg[:80], state="error")
             elif "Iniciando" in msg or "Carregando" in msg or "Login" in msg or "login" in msg:
@@ -1769,7 +2214,6 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                 "seq_n_aulas": st.session_state.get("seq_n_aulas", 4),
                 "link_url": st.session_state.get("link_url", ""),
                 "headless_mode": st.session_state.get("headless_mode", True),
-                "dry_run": st.session_state.get("dry_run", True),
             }
             result = attempt_autofix(str(exc), tb_str, ctx, logger=lp, attempt=attempts)
             if result and result.get("fixable"):
@@ -1790,11 +2234,11 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
         # Prepara variaveis de ambiente
         os.environ["HEADLESS"] = "1" if st.session_state.get("headless_mode", True) else "0"
         os.environ["SGE_REVISAR_APOS"] = "1" if st.session_state.get("revisar_apos", True) else "0"
-        if st.session_state.get("portal_selecionado", "SGE") == "Professor Online":
+        if st.session_state.get("portal_resolvido", "SGE") == "Professor Online":
             os.environ["PO_BASE_URL"] = st.session_state.get("po_url", "")
             os.environ["PO_CPF"] = st.session_state.get("po_cpf", "")
             os.environ["PO_SENHA"] = st.session_state.get("po_senha", "")
-        elif st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
+        elif st.session_state.get("portal_resolvido", "SGE") == "Novo Portal":
             os.environ["NP_URL"] = st.session_state.get("np_url", "")
             os.environ["NP_CPF"] = st.session_state.get("np_cpf", "")
             os.environ["NP_SENHA"] = st.session_state.get("np_senha", "")
@@ -1864,7 +2308,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                 log_progress(f"Aviso: API key para {ai_provider.upper()} nao fornecida. IA sera desabilitada.")
 
         # ===== NOVO PORTAL: sessao de aprendizado do acesso =====
-        if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
+        if st.session_state.get("portal_resolvido", "SGE") == "Novo Portal":
             if ia_opcao != "aprendizado":
                 log_progress("ERRO: Para ensinar um portal novo, marque a opcao 'Sim - Aprendizado' (Modo aprendizado) na Assistencia IA.")
                 st.error("Para o portal **Novo Portal**, marque **'Sim - Aprendizado'** na **Assistencia IA** antes de executar.")
@@ -1895,7 +2339,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
 
         # Determina tipo de execucao
         if st.session_state.tipo == "notas":
-            if st.session_state.fonte == "notion" and st.session_state.get("portal_selecionado", "SGE") != "Professor Online":
+            if st.session_state.fonte == "notion" and st.session_state.get("portal_resolvido", "SGE") != "Professor Online":
                 log_progress("Carregando dados do Notion...")
                 import importlib
                 import lancar_notas_sge as _sge_mod
@@ -1989,21 +2433,79 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         log_progress(f"[IMAGEM] Atividade: '{atividade}' | Data: {data_realizacao or 'nao informada'}")
 
                         from leitor_planilhas import RegistroNota
+
+                        # === SALVAGUARDAS DA EXTRACAO POR IMAGEM ===
+                        _nota_max = float(os.environ.get("NOTA_MAX_IMAGEM", "10"))
+                        _descartes: list = []
+                        _duplicados: list = []
+                        _vistos: dict = {}
+                        registros_img: list = []
+
+                        def _chave_nome(nome: str) -> str:
+                            import unicodedata
+                            return re.sub(
+                                r"\s+", " ",
+                                unicodedata.normalize("NFD", (nome or "").strip().lower())
+                                .encode("ascii", "ignore").decode(),
+                            )
+
                         for item in extraidas:
-                            aluno = item.get("aluno", "").strip()
+                            aluno = str(item.get("aluno", "")).strip()
                             nota = str(item.get("nota", "")).strip().replace(",", ".")
-                            if not aluno or not nota:
+
+                            if not aluno:
+                                _descartes.append("(sem nome): leitura incompleta")
                                 continue
+                            if not nota:
+                                _descartes.append(f"{aluno}: nota ilegivel/vazia")
+                                continue
+
+                            chave = _chave_nome(aluno)
+                            if chave in _vistos:
+                                _duplicados.append(f"{aluno} (lido 2x: '{_vistos[chave]}' e '{nota}'; usando '{_vistos[chave]}')")
+                                continue
+                            _vistos[chave] = nota
+
                             try:
-                                float(nota)
+                                num = float(nota)
                             except ValueError:
+                                _descartes.append(f"{aluno}: nota ilegivel ('{nota}')")
                                 continue
-                            registros.append(RegistroNota(
+                            if num < 0 or num > _nota_max:
+                                _descartes.append(
+                                    f"{aluno}: nota suspeita ({nota}) fora da faixa 0-{_nota_max:g}"
+                                    f" — provavel leitura errada da foto"
+                                )
+                                continue
+
+                            registros_img.append(RegistroNota(
                                 escola=escola, turno=turno, turma=turma,
                                 trimestre=trimestre, aluno=aluno,
                                 atividade=atividade, nota=nota,
                                 data_realizacao=data_realizacao,
                             ))
+
+                        for d in _duplicados:
+                            log_progress(f"[IMAGEM] Nome duplicado na foto: {d}")
+                        for d in _descartes:
+                            log_progress(f"[IMAGEM] IGNORADO -> {d}. Corrija manualmente no portal ou envie foto melhor.")
+                        if _duplicados or _descartes:
+                            log_progress(
+                                f"[IMAGEM] RESUMO: {len(_duplicados)} duplicado(s), "
+                                f"{len(_descartes)} ignorado(s), {len(registros_img)} valido(s)."
+                            )
+                        st.session_state["imagem_descartes"] = _descartes
+                        registros.extend(registros_img)
+
+                        # Checagem de contagem contra a tabela carregada (se houver)
+                        _df_ref = st.session_state.get("df")
+                        if _df_ref is not None and hasattr(_df_ref, "empty") and not _df_ref.empty:
+                            _esperados = len(_df_ref)
+                            if len(extraidas) < _esperados:
+                                log_progress(
+                                    f"AVISO [IMAGEM]: li apenas {len(extraidas)} aluno(s) na foto, mas a tabela "
+                                    f"tem {_esperados}. A foto pode ter cortado o final — confira se todos foram lancados."
+                                )
 
                     except Exception as exc:
                         log_progress(f"ERRO ao processar imagem com IA: {exc}")
@@ -2014,9 +2516,19 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
 
                 elif fonte == "planilha":
                     fonte_path = _PAINEL_SOURCE_PATH
-                    from leitor_planilhas import linhas_para_registros
-                    registros = linhas_para_registros(
+                    from leitor_planilhas import linhas_para_registros, filtrar_linhas_por_filtros
+                    linhas_fonte, _descartadas = filtrar_linhas_por_filtros(
                         st.session_state.get("planilha_linhas", []),
+                        {
+                            "escola": st.session_state.get("escola", ""),
+                            "turno": st.session_state.get("turno", ""),
+                            "turma": st.session_state.get("turma", ""),
+                            "trimestre": st.session_state.get("trimestre", ""),
+                        },
+                        logger=log_progress,
+                    )
+                    registros = linhas_para_registros(
+                        linhas_fonte,
                         defaults={
                             "escola": st.session_state.get("escola", ""),
                             "turno": st.session_state.get("turno", ""),
@@ -2026,9 +2538,22 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         logger=log_progress,
                     )
                     if not registros:
-                        log_progress("ERRO: Nenhuma linha valida na planilha do painel.")
-                        st.error("Preencha a planilha no painel: ao menos aluno, atividade e nota (0-10).")
                         st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
+                        if _descartadas:
+                            log_progress(
+                                f"ERRO: Todas as {_descartadas} linha(s) foram ignoradas "
+                                "pelos filtros selecionados. Use na Escola/Turma os "
+                                "valores exatos da tabela (ou deixe vazio)."
+                            )
+                            st.error(
+                                f"Nenhuma linha bateu com os filtros ({_descartadas} "
+                                "ignorada(s)). Os campos Escola/Turma agora mostram os "
+                                "valores exatos da tabela — reavalie os filtros ou "
+                                "deixe vazio para lancar tudo."
+                            )
+                        else:
+                            log_progress("ERRO: Nenhuma linha valida na planilha do painel.")
+                            st.error("Preencha a planilha no painel: ao menos aluno, atividade e nota (0-10).")
                         st.stop()
                     log_progress(f"{len(registros)} notas validas carregadas da planilha do painel.")
 
@@ -2059,7 +2584,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                     st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
                     st.stop()
 
-                portal_ativo = st.session_state.get("portal_selecionado", "SGE")
+                portal_ativo = st.session_state.get("portal_resolvido", "SGE")
 
                 if portal_ativo == "Professor Online" and fonte == "notion":
                     log_progress("ERRO: Portal Professor Online nao usa fonte Notion. Use Excel/CSV/Google.")
@@ -2075,7 +2600,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         fonte_path=fonte_path,
                         filtro=None,
                         logger=log_progress,
-                        dry_run=dry_run,
+                        dry_run=False,
                         cpf=st.session_state.get("po_cpf", ""),
                         senha=st.session_state.get("po_senha", ""),
                         base_url=st.session_state.get("po_url", ""),
@@ -2089,16 +2614,6 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         f"Falhas: {resultado['falhas']}"
                     )
 
-                elif dry_run:
-                    log_progress("[DRY-RUN] Nenhum dado sera enviado ao SGE.")
-                    from collections import Counter
-                    contextos = set((r.escola, r.turno, r.turma, r.trimestre) for r in registros)
-                    st.session_state.resultado = {
-                        "blocos": len(contextos),
-                        "notas": len(registros),
-                        "notas_preenchidas": 0,
-                        "falhas": 0,
-                    }
                 else:
                     log_progress("Iniciando navegador e login no portal...")
                     from lancar_notas_sge import (
@@ -2107,16 +2622,15 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         _login_sge,
                         _select_context,
                         _open_assessment_for_context,
+                        TurmaNaoEncontradaError,
                         _handle_assessment_period_page,
                         _select_activity,
                         _fill_grade_for_student,
                         _read_existing_grade_for_student,
                         _classificar_leitura,
                         _confirm_save,
-                        ACTION_TIMEOUT_MS,
                         HEADLESS,
                     )
-                    from playwright.sync_api import sync_playwright
                     from status_store import StatusStore
 
                     status_store_path = fonte_path or os.path.join(_revisao_dir(), "retentar_ausentes")
@@ -2174,11 +2688,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                     divergencias = 0
                     blocos_lancados = []
 
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(headless=HEADLESS)
-                        ctx = browser.new_context()
-                        page = ctx.new_page()
-                        page.set_default_timeout(ACTION_TIMEOUT_MS)
+                    with _sessao_navegador(HEADLESS, st.session_state.sge_url, st.session_state.sge_cpf, st.session_state.sge_senha) as page:
 
                         _login_sge(page, cpf=st.session_state.sge_cpf, senha=st.session_state.sge_senha, logger=log_progress)
                         from lancar_notas_sge import _reset_navigation_cache
@@ -2208,16 +2718,25 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
 
                             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
                             _select_context(page, contexto, logger=log_progress)
+                            motivo_pulo = ""
                             try:
                                 _open_assessment_for_context(page, contexto, logger=log_progress)
+                            except TurmaNaoEncontradaError as exc:
+                                motivo_pulo = str(exc)
                             except Exception:  # noqa: BLE001
                                 pass
-                            if _handle_assessment_period_page(page, contexto, logger=log_progress):
+                            if not motivo_pulo and _handle_assessment_period_page(page, contexto, logger=log_progress):
                                 try:
                                     _open_assessment_for_context(page, contexto, logger=log_progress)
+                                except TurmaNaoEncontradaError as exc:
+                                    motivo_pulo = str(exc)
                                 except Exception:  # noqa: BLE001
                                     pass
                                 _handle_assessment_period_page(page, contexto, logger=log_progress)
+                            if motivo_pulo:
+                                log_progress(f"  [PULO] Bloco ignorado: {motivo_pulo} Nenhuma nota gravada nesta turma.")
+                                falhas += len(itens)
+                                continue
                             atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=log_progress)
 
                             if not atividade_encontrada:
@@ -2232,7 +2751,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                             if data_sge and data_mais_comum:
                                 log_progress(f"  [DATA] Datas conferem: SGE {data_sge} = planilha {data_mais_comum}")
                             elif not data_sge and data_mais_comum:
-                                log_progress(f"  [DATA] Data da atividade nao encontrada no SGE. Prosseguindo sem validacao de data.")
+                                log_progress("  [DATA] Data da atividade nao encontrada no SGE. Prosseguindo sem validacao de data.")
 
                             from lancar_notas_sge import _detect_coluna_from_page
                             coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=log_progress, atividade=atividade)
@@ -2307,6 +2826,11 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                                         reg.aluno, reg.nota, coluna_sge,
                                         logger=log_progress,
                                     )
+                                    status_store.marcar_falha(
+                                        reg.escola, reg.turno, reg.turma, reg.trimestre,
+                                        reg.aluno, reg.atividade, reg.nota,
+                                        erro="aluno nao localizado na grade",
+                                    )
                                     ausentes_count += 1
 
                             if novos > 0:
@@ -2318,6 +2842,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                                     "data_realizacao": data_mais_comum,
                                 })
 
+                        falhas_revisao_qtd = 0
                         if st.session_state.get("revisar_apos", True) and blocos_lancados:
                             from lancar_notas_sge import _revisar_blocos_apos_lancamento
                             log_progress(f"[REVISAO] Re-auditoria pos-lancamento de {len(blocos_lancados)} bloco(s)...")
@@ -2327,10 +2852,33 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                                 f"Corrigidos: {revisao['corrigidos']} | Falhas: {revisao['falhas']} | IA usada: {revisao['ai_usada']}"
                             )
 
-                        ctx.close()
-                        browser.close()
+                            # Reflete o resultado da revisao na coluna Status do painel:
+                            # confirmados (leitura ou IA) e corrigidos viram Lancada;
+                            # nao confirmados viram Falha e entram na fila de revisao.
+                            for reg_ok in list(revisao.get("regs_ok", [])) + list(revisao.get("regs_corrigidos", [])):
+                                status_store.marcar_lancada(
+                                    reg_ok.escola, reg_ok.turno, reg_ok.turma, reg_ok.trimestre,
+                                    reg_ok.aluno, reg_ok.atividade, reg_ok.nota,
+                                )
+                            rev_itens = revisao.get("itens_nao_confirmados", []) or []
+                            for item in rev_itens:
+                                try:
+                                    nota_item = float(str(item.get("nota_esperada", "")).replace(",", "."))
+                                except ValueError:
+                                    nota_item = 0.0
+                                status_store.marcar_falha(
+                                    item.get("escola", ""), item.get("turno", ""), item.get("turma", ""),
+                                    item.get("trimestre", ""), item.get("aluno", ""), item.get("atividade", ""),
+                                    nota_item, erro="revisao: nota nao confirmada no SGE",
+                                )
+                            _alimentar_fila_revisao(revisao, log_progress)
+                            falhas_revisao_qtd = len(rev_itens)
+                            if rev_itens:
+                                log_progress(f"[PAINEL] {len(rev_itens)} linha(s) marcada(s) como Falha na planilha do painel (revisao).")
 
-                    log_progress(f"Status local: {ja_lancadas} ja lancadas, {ja_no_sge} ja no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas, {divergencias} divergencias")
+                        # Navegador persistente permanece aberto (reutilizado na proxima execucao).
+
+                    log_progress(f"Status local: {ja_lancadas} ja lancadas, {ja_no_sge} ja no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas, {divergencias} divergencias, {falhas_revisao_qtd} falhas de revisao")
 
                     if fonte == "planilha":
                         _sincronizar_status_painel(status_store)
@@ -2339,16 +2887,22 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                     st.session_state.revisao_forcar = False
                     fila_atual = st.session_state.get("revisao_fila", [])
                     st.session_state.revisao_fila = [it for it in fila_atual if it.get("decisao") in (None, "")]
-                    st.session_state.revisao_fase = "pendente" if divergencias > 0 else "fim"
+                    st.session_state.revisao_fase = "pendente" if (divergencias > 0 or falhas_revisao_qtd > 0) else "fim"
                     st.session_state.resultado = {
                         "blocos": len(grouped),
                         "notas": len(registros_sge),
                         "notas_preenchidas": notas_ok,
                         "ausentes": ausentes_count,
-                        "falhas": falhas,
+                        "falhas": falhas + falhas_revisao_qtd,
+                        "falhas_revisao": falhas_revisao_qtd,
                         "divergencias": divergencias,
                     }
-                    log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas}, Divergencias para revisao: {divergencias}")
+                    log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas + falhas_revisao_qtd} (sendo {falhas_revisao_qtd} da revisao), Divergencias para revisao: {divergencias}")
+
+                    if fonte == "planilha":
+                        # A tabela do painel foi renderizada antes do lancamento
+                        # (mesmo ciclo); força novo ciclo para exibir os status.
+                        st.rerun()
 
         elif st.session_state.tipo == "chamada":
             from lancar_chamada_sge import executar_chamada as executar_chamada_sge
@@ -2377,18 +2931,38 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
 
             log_progress(f"[CHAMADA] Dia: {dia_sge} | Escola: {st.session_state.get('escola', '') or 'todas'}")
             try:
-                resultado = executar_chamada_sge(
-                    filtro={
-                        "escola": st.session_state.get("escola", ""),
-                        "turno": st.session_state.get("turno", ""),
-                        "turma": st.session_state.get("turma", ""),
-                        "disciplina": st.session_state.get("chamada_disciplina", ""),
-                        "dia": dia_sge,
-                    },
-                    foto_path=foto_path,
-                    logger=log_progress,
-                    dry_run=dry_run,
-                )
+                portal_para_chamada = st.session_state.get("portal_resolvido", "SGE")
+                if portal_para_chamada == "Professor Online":
+                    from lancar_professor_online import executar_chamada as executar_chamada_po
+                    log_progress("[CHAMADA] Portal: Professor Online")
+                    resultado = executar_chamada_po(
+                        filtro={
+                            "escola": st.session_state.get("escola", ""),
+                            "turno": st.session_state.get("turno", ""),
+                            "turma": st.session_state.get("turma", ""),
+                            "dia": dia_input.strip(),
+                        },
+                        foto_path=foto_path,
+                        logger=log_progress,
+                        dry_run=dry_run,
+                        cpf=st.session_state.get("po_cpf", ""),
+                        senha=st.session_state.get("po_senha", ""),
+                        base_url=st.session_state.get("po_url", ""),
+                    )
+                else:
+                    log_progress("[CHAMADA] Portal: SGE")
+                    resultado = executar_chamada_sge(
+                        filtro={
+                            "escola": st.session_state.get("escola", ""),
+                            "turno": st.session_state.get("turno", ""),
+                            "turma": st.session_state.get("turma", ""),
+                            "disciplina": st.session_state.get("chamada_disciplina", ""),
+                            "dia": dia_sge,
+                        },
+                        foto_path=foto_path,
+                        logger=log_progress,
+                        dry_run=dry_run,
+                    )
             except Exception as exc:  # noqa: BLE001
                 log_progress(f"[CHAMADA] ERRO: {exc}")
                 st.error(f"Falha no lancamento da chamada: {exc}")
@@ -2403,8 +2977,44 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
             )
             if resultado.get("nao_encontrados"):
                 log_progress(f"[CHAMADA] Sem match na grade: {', '.join(resultado['nao_encontrados'])}")
-            if dry_run:
-                log_progress("[CHAMADA] Dry-run: nada foi enviado ao SGE. Confira o plano antes de desmarcar.")
+
+        elif st.session_state.tipo == "faltas":
+            portal_para_faltas = st.session_state.get("portal_resolvido", "SGE")
+            log_progress(f"[FALTAS] Portal: {portal_para_faltas} | Escola: {st.session_state.get('escola', '') or 'todas'} | Turma: {st.session_state.get('turma', '') or 'todas'}")
+            try:
+                if portal_para_faltas == "Professor Online":
+                    from lancar_professor_online import executar_faltas_mes
+                    resultado = executar_faltas_mes(
+                        filtro={
+                            "escola": st.session_state.get("escola", ""),
+                            "turno": st.session_state.get("turno", ""),
+                            "turma": st.session_state.get("turma", ""),
+                        },
+                        logger=log_progress,
+                        dry_run=dry_run,
+                        cpf=st.session_state.get("po_cpf", ""),
+                        senha=st.session_state.get("po_senha", ""),
+                        base_url=st.session_state.get("po_url", ""),
+                    )
+                else:
+                    log_progress("ERRO: Leitura de faltas do mes so esta disponivel no Professor Online por enquanto.")
+                    st.warning("Leitura de faltas do mês: selecione o portal **Professor Online** (ou use o portal **Auto** com a escola registrada).")
+                    resultado = {"success": False, "mensagem": "Faltas do mes: disponivel apenas no Professor Online.", "faltas": None, "resumo": {}}
+            except Exception as exc:  # noqa: BLE001
+                log_progress(f"[FALTAS] ERRO: {exc}")
+                st.error(f"Falha ao ler faltas do mes: {exc}")
+                resultado = {"success": False, "mensagem": str(exc), "faltas": None, "resumo": {}}
+
+            st.session_state.resultado = resultado
+            if resultado.get("success"):
+                resumo_f = resultado.get("resumo", {})
+                log_progress(
+                    f"[FALTAS] Concluido! {resumo_f.get('alunos', 0)} aluno(s), "
+                    f"{resumo_f.get('total_faltas', 0)} falta(s) no total "
+                    f"(periodo {resumo_f.get('periodo', '')})."
+                )
+            else:
+                log_progress(f"[FALTAS] {resultado.get('mensagem', '')}")
 
         elif st.session_state.tipo == "sequencia":
             from lancar_sequencia_didatica_sge import executar_lancamento_sequencia, SequenciaRegistro
@@ -2450,7 +3060,9 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
 
                 registros = []
                 for entry in links_preenchidos:
-                    ano = entry["ano"]
+                    ano = entry["ano"].strip()
+                    if not ano:
+                        continue
                     link = entry["link"].strip()
                     titulo_doc = f"{titulo_base} - {ano}"
                     registros.append(SequenciaRegistro(
@@ -2458,7 +3070,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                         ano=ano,
                         escola=st.session_state.get("escola", ""),
                         turno=st.session_state.get("turno", ""),
-                        turma="",
+                        turma=ano,
                         titulo_documento=titulo_doc,
                         arquivo_nome=f"{ano}.pdf",
                         arquivo_url=link,
@@ -2475,24 +3087,85 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
                 st.warning("Use Notion, Excel, CSV ou Google Drive para sequencia didatica.")
 
             if registros is not None or fonte == "notion":
-                log_progress("Executando sequencia didatica no SGE...")
-                resumo = executar_lancamento_sequencia(
-                    escola=st.session_state.escola,
-                    turno=st.session_state.turno,
-                    turma=st.session_state.turma,
-                    trimestre=st.session_state.trimestre or "2o Trimestre",
-                    dry_run=dry_run,
-                    registros=registros,
-                    logger=log_progress,
-                )
-                st.session_state.resultado = {
-                    "contextos": resumo.contextos_total,
-                    "planejamentos": resumo.planejamentos_criados,
-                    "anexos": resumo.anexos_enviados,
-                    "situacoes": resumo.situacoes_ativadas,
-                    "falhas": resumo.falhas,
-                }
-                log_progress(f"Concluido! Planejamentos: {resumo.planejamentos_criados}, Falhas: {resumo.falhas}")
+                portal_para_sequencia = st.session_state.get("portal_resolvido", "SGE")
+
+                if portal_para_sequencia == "Professor Online":
+                    if fonte == "notion":
+                        log_progress("ERRO: Portal Professor Online nao usa fonte Notion. Use Excel, CSV ou Google Drive.")
+                        st.error("Professor Online: use Excel, CSV ou Google Drive para sequencia didatica.")
+                        st.session_state.executando = False
+                        st.stop()
+                    if not registros:
+                        log_progress("ERRO: Nenhuma sequencia carregada para o Professor Online.")
+                        st.session_state.executando = False
+                        st.stop()
+
+                    from lancar_professor_online import executar_planejamento
+
+                    def _sequencia_para_po(reg):
+                        return {
+                            "escola": reg.escola,
+                            "turno": reg.turno,
+                            "turma": reg.turma,
+                            "trimestre": st.session_state.trimestre or "2o Trimestre",
+                            "titulo_documento": reg.titulo_documento,
+                            "arquivo_nome": reg.arquivo_nome,
+                            "arquivo_url": reg.arquivo_url,
+                            "periodo_inicio": reg.periodo_inicio,
+                            "periodo_fim": reg.periodo_fim,
+                            "n_aulas": reg.n_aulas,
+                        }
+
+                    registros_po = [_sequencia_para_po(r) for r in registros]
+                    log_progress("Executando sequencia didatica no Professor Online...")
+                    res_po = executar_planejamento(
+                        registros=registros_po,
+                        logger=log_progress,
+                        dry_run=dry_run,
+                        cpf=st.session_state.get("po_cpf", ""),
+                        senha=st.session_state.get("po_senha", ""),
+                        base_url=st.session_state.get("po_url", ""),
+                    )
+                    st.session_state.resultado = {
+                        "contextos": res_po.get("contextos", 0),
+                        "planejamentos": res_po.get("planejamentos_criados", 0),
+                        "anexos": res_po.get("anexos", 0),
+                        "situacoes": res_po.get("situacoes", 0),
+                        "falhas": res_po.get("falhas", 0),
+                        "nao_implementado": res_po.get("nao_implementado", 0),
+                    }
+                    pend = res_po.get("nao_implementado", 0)
+                    log_progress(f"Concluido! Planejamentos: {res_po.get('planejamentos_criados', 0)}, Falhas: {res_po.get('falhas', 0)}")
+                    if pend:
+                        log_progress(
+                            f"[PO] {pend} sequencia(s) dependem de fluxo ainda nao gravado. "
+                            "Para ensinar: selecione o portal Professor Online e marque 'Sim - Aprendizado' "
+                            "na Assistencia IA; a IA grava o fluxo de criacao/upload e inclui a funcionalidade."
+                        )
+                        st.warning(
+                            f"**Professor Online**: {pend} sequencia(s) ainda nao foram publicadas porque o "
+                            "fluxo de criacao/upload de planejamento nao foi gravado. Use **'Sim - Aprendizado'** "
+                            "na Assistencia IA para gravar o fluxo e adicionar a funcionalidade ao sistema."
+                        )
+                else:
+                    log_progress("Executando sequencia didatica no SGE...")
+                    resumo = executar_lancamento_sequencia(
+                        escola=st.session_state.escola,
+                        turno=st.session_state.turno,
+                        turma=st.session_state.turma,
+                        trimestre=st.session_state.trimestre or "2o Trimestre",
+                        dry_run=dry_run,
+                        registros=registros,
+                        logger=log_progress,
+                    )
+                    st.session_state.resultado = {
+                        "contextos": resumo.contextos_total,
+                        "planejamentos": resumo.planejamentos_criados,
+                        "anexos": resumo.anexos_enviados,
+                        "situacoes": resumo.situacoes_ativadas,
+                        "falhas": resumo.falhas,
+                    }
+                    log_progress(f"Concluido! Planejamentos: {resumo.planejamentos_criados}, Falhas: {resumo.falhas}")
 
     except RuntimeError as exc:
         if "Event loop is closed" in str(exc):
@@ -2505,6 +3178,7 @@ if executar_btn or st.session_state.pop("autofix_trigger", False) or _rev_aplica
     finally:
         st.session_state.executando = False
         st.session_state.revisao_forcar = False
+        _registrar_stats_resultado(st.session_state.get("resultado") or {})
         try:
             status.update(label="Finalizado", state="complete")
         except RuntimeError:
@@ -2781,8 +3455,18 @@ with tab_logs:
 
     log_container = st.container()
 
+    _TAGS_TECNICAS = ("[GRID-SCAN", "[COLUNA-DETECT", "[GRADE]", "[SUGESTAO]", "[CONTEXTO]")
+    _logs_visiveis = [
+        m for m in st.session_state.logs[-50:]
+        if not m.startswith(_TAGS_TECNICAS)
+    ]
+    _logs_tecnicos = [
+        m for m in st.session_state.logs[-50:]
+        if m.startswith(_TAGS_TECNICAS)
+    ]
+
     with log_container:
-        for msg in st.session_state.logs[-50:]:
+        for msg in _logs_visiveis:
             if "ERRO" in msg or "erro" in msg.lower():
                 st.markdown(f":red[{msg}]")
             elif "OK" in msg or "sucesso" in msg.lower() or "concluido" in msg.lower():
@@ -2792,10 +3476,24 @@ with tab_logs:
             else:
                 st.text(msg)
 
+        if _logs_tecnicos:
+            with st.expander("🔧 Detalhes tecnicos (para suporte)", expanded=False):
+                for msg in _logs_tecnicos:
+                    st.text(msg)
+
 # === RESULTADO ===
 if st.session_state.resultado:
     st.markdown("### Resultado")
     res = st.session_state.resultado
+
+    _descartes_img = st.session_state.get("imagem_descartes") or []
+    if _descartes_img:
+        st.warning(
+            f"**{len(_descartes_img)} leitura(s) da imagem foram ignoradas** por problema de qualidade. "
+            "Confira se estes alunos precisam de lancamento manual: "
+            + "; ".join(d.split(":")[0].strip(" ()") for d in _descartes_img[:10])
+            + ("..." if len(_descartes_img) > 10 else "")
+        )
 
     cols = st.columns(6)
     with cols[0]:
@@ -2816,7 +3514,7 @@ if st.session_state.resultado:
         st.metric("Divergencias", diverg_res, delta_color="off")
 
     if res.get("divergencias", 0) > 0:
-        st.warning(f"{res.get('divergencias')} divergencia(s) aguardando confirmacao na aba **Revisao IA**.")
+        st.warning(f"{res.get('divergencias')} divergencia(s) aguardando confirmacao na aba **Pendências**.")
     elif falhas > 0:
         st.warning(f"Houve {falhas} falha(s). Verifique os logs na aba **Logs**.")
     elif preenchidas > 0:
@@ -2836,58 +3534,57 @@ if st.session_state.resultado:
                     st.image(ep, caption=os.path.basename(ep))
 
 # === CHAT COM IA (comandos em linguagem natural) ===
-st.markdown("---")
-st.markdown("### Assistente (linguagem natural)")
-st.caption("Digite um comando (ex.: 'lanca a chamada de hoje do 7o ano da tarde'). O plano e aplicado nos filtros acima.")
-if "chat_msgs" not in st.session_state:
-    st.session_state.chat_msgs = []
-for _m in st.session_state.chat_msgs:
-    with st.chat_message(_m["role"]):
-        st.markdown(_m["text"])
+with st.expander("💬 Assistente (comandos em linguagem natural)", expanded=False):
+    st.caption("Digite um comando (ex.: 'lanca a chamada de hoje do 7o ano da tarde'). O plano e aplicado nos filtros acima.")
+    if "chat_msgs" not in st.session_state:
+        st.session_state.chat_msgs = []
+    for _m in st.session_state.chat_msgs:
+        with st.chat_message(_m["role"]):
+            st.markdown(_m["text"])
 
-_chat_input = st.chat_input("Ex.: lanca a chamada de hoje do 7o ano da tarde")
-if _chat_input:
-    st.session_state.chat_msgs.append({"role": "user", "text": _chat_input})
-    try:
-        from interpretar_pedido import interpretar_pedido as _interpretar_pedido
-        _plano = _interpretar_pedido(_chat_input, logger=log)
-        if _plano.get("error"):
-            _resp = f"⚠️ {_plano['error']}"
-        else:
-            _tipo = _plano.get("tipo", "")
-            _fonte = _plano.get("fonte", "")
-            _partes = [f"**Plano:** tipo=`{_tipo or '?'}` | fonte=`{_fonte or '?'}`"]
-            for _campo in ("escola", "turma", "turno", "trimestre", "atividade", "data_realizacao", "chamada_dia"):
-                if _plano.get(_campo):
-                    _partes.append(f"{_campo.replace('_', ' ')}={_plano[_campo]}")
-            if _plano.get("lote"):
-                _partes.append("lote=sim")
-            _resp = " | ".join(_partes)
-            if _plano.get("confianca"):
-                _resp += f"\n\nConfianca: {_plano['confianca']}"
-            if _plano.get("procedimentos"):
-                _resp += "\n\n**Procedimentos:**\n" + "\n".join(f"- {_p}" for _p in _plano["procedimentos"])
-            if _tipo in ("notas", "chamada", "sequencia"):
-                st.session_state["tipo_radio"] = _tipo
-            if _fonte in ("notion", "imagem", "planilha", "excel", "csv", "google_sheets", "google_drive"):
-                st.session_state["fonte_select"] = _fonte
-            for _campo, _chave in (
-                ("escola", "escola_input"), ("turma", "turma_input"),
-                ("turno", "turno_select"), ("trimestre", "trimestre_select"),
-            ):
-                if _plano.get(_campo) and _chave in st.session_state:
-                    st.session_state[_chave] = _plano[_campo]
-            st.session_state["chat_aplicar"] = True
-            log(f"[CHAT] Plano aplicado nos filtros: tipo={_tipo} fonte={_fonte}")
-    except Exception as _exc:  # noqa: BLE001
-        _resp = f"⚠️ Nao consegui interpretar: {_exc}"
-    st.session_state.chat_msgs.append({"role": "assistant", "text": _resp})
-    st.rerun()
+    _chat_input = st.chat_input("Ex.: lanca a chamada de hoje do 7o ano da tarde")
+    if _chat_input:
+        st.session_state.chat_msgs.append({"role": "user", "text": _chat_input})
+        try:
+            from interpretar_pedido import interpretar_pedido as _interpretar_pedido
+            _plano = _interpretar_pedido(_chat_input, logger=log)
+            if _plano.get("error"):
+                _resp = f"⚠️ {_plano['error']}"
+            else:
+                _tipo = _plano.get("tipo", "")
+                _fonte = _plano.get("fonte", "")
+                _partes = [f"**Plano:** tipo=`{_tipo or '?'}` | fonte=`{_fonte or '?'}`"]
+                for _campo in ("escola", "turma", "turno", "trimestre", "atividade", "data_realizacao", "chamada_dia"):
+                    if _plano.get(_campo):
+                        _partes.append(f"{_campo.replace('_', ' ')}={_plano[_campo]}")
+                if _plano.get("lote"):
+                    _partes.append("lote=sim")
+                _resp = " | ".join(_partes)
+                if _plano.get("confianca"):
+                    _resp += f"\n\nConfianca: {_plano['confianca']}"
+                if _plano.get("procedimentos"):
+                    _resp += "\n\n**Procedimentos:**\n" + "\n".join(f"- {_p}" for _p in _plano["procedimentos"])
+                if _tipo in ("notas", "chamada", "sequencia", "faltas"):
+                    st.session_state["tipo_radio"] = _tipo
+                if _fonte in ("notion", "imagem", "planilha", "excel", "csv", "google_sheets", "google_drive"):
+                    st.session_state["fonte_select"] = _fonte
+                for _campo, _chave in (
+                    ("escola", "escola_input"), ("turma", "turma_input"),
+                    ("turno", "turno_select"), ("trimestre", "trimestre_select"),
+                ):
+                    if _plano.get(_campo) and _chave in st.session_state:
+                        st.session_state[_chave] = _plano[_campo]
+                st.session_state["chat_aplicar"] = True
+                log(f"[CHAT] Plano aplicado nos filtros: tipo={_tipo} fonte={_fonte}")
+        except Exception as _exc:  # noqa: BLE001
+            _resp = f"⚠️ Nao consegui interpretar: {_exc}"
+        st.session_state.chat_msgs.append({"role": "assistant", "text": _resp})
+        st.rerun()
 
 # === RODAPE ===
 st.markdown("---")
 st.markdown(
-    "<small>Bot do Professor v1.0 - Automacao de lancamento de notas. "
+    "<small>Bot do Professor v1.4.43 - Automacao de lancamento de notas. "
     "Use com responsabilidade. Verifique os dados antes de lancar.</small>",
     unsafe_allow_html=True,
 )

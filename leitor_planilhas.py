@@ -255,6 +255,254 @@ def ler_notas_excel(caminho: str, logger: Optional[LogFn] = None) -> List[Regist
     return registros
 
 
+def _ts_chave(value: object) -> float:
+    if isinstance(value, _datetime):
+        return value.timestamp()
+    if isinstance(value, _date_cls):
+        return _datetime(value.year, value.month, value.day).timestamp()
+    return 0.0
+
+
+def _parse_acertos(value: object) -> Tuple[Optional[float], Optional[float]]:
+    """Interpreta a celula de acertos/pontuacao de um relatorio do Google Forms.
+
+    Aceita '2/20' (texto), 19 / 19.0 (numero bruto) ou '19'.
+    Retorna (acertos, total); total vem None quando nao ha o formato 'X/Y'.
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, (int, float)):
+        return float(value), None
+    text = str(value).strip()
+    if not text:
+        return None, None
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)", text)
+    if match:
+        return _to_float(match.group(1)), _to_float(match.group(2))
+    return _to_float(text), None
+
+
+def detectar_total_questoes_forms(caminho: str) -> Optional[int]:
+    """Tenta descobrir o total de questoes de um relatorio do Google Forms.
+
+    Prioriza os denominadores das celulas no formato 'X/Y'; se nao houver,
+    usa a maior pontuacao encontrada. Retorna None se nada for detectado.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        return None
+
+    try:
+        wb = openpyxl.load_workbook(caminho, data_only=True, read_only=True)
+    except Exception:
+        return None
+
+    denominadores: List[float] = []
+    brutas: List[float] = []
+    try:
+        for ws in wb.worksheets:
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                continue
+            headers = [str(h or "") for h in rows[0]]
+            col_score = _find_col_index(headers, ["score", "pontuacao", "acertos"])
+            if col_score is None:
+                continue
+            for row in rows[1:]:
+                acertos, total = _parse_acertos(
+                    row[col_score] if col_score < len(row) else None
+                )
+                if total:
+                    denominadores.append(total)
+                elif acertos is not None:
+                    brutas.append(acertos)
+    finally:
+        wb.close()
+
+    if denominadores:
+        from collections import Counter as _Counter
+        return int(_Counter(denominadores).most_common(1)[0][0])
+    if brutas:
+        return int(max(brutas))
+    return None
+
+
+def detectar_turmas_forms(caminho: str) -> List[str]:
+    """Turmas distintas no relatorio do Google Forms (coluna 'Turma').
+
+    Grafias diferentes da mesma turma ('6º1' x '6°1') sao unificadas,
+    mantendo a primeira grafia vista. Retorna lista ordenada.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        return []
+
+    try:
+        wb = openpyxl.load_workbook(caminho, data_only=True, read_only=True)
+    except Exception:
+        return []
+
+    turmas: Dict[str, str] = {}
+    try:
+        for ws in wb.worksheets:
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            if not header:
+                continue
+            headers = [str(h or "") for h in header]
+            col_turma = _find_col_index(headers, ["turma"])
+            if col_turma is None:
+                continue
+            for row in rows:
+                val = row[col_turma] if col_turma < len(row) else None
+                txt = str(val or "").strip()
+                if not txt:
+                    continue
+                chave = _normalize(txt)
+                if chave and chave not in turmas:
+                    turmas[chave] = txt
+    finally:
+        wb.close()
+    return [turmas[k] for k in sorted(turmas)]
+
+
+def ler_notas_google_forms(
+    caminho: str,
+    valor_questao: float = 0.5,
+    atividade: str = "",
+    n_questoes: Optional[int] = None,
+    logger: Optional[LogFn] = None,
+) -> List[RegistroNota]:
+    """Le relatorios de avaliacoes gerados pelo Google Forms.
+
+    Estrutura esperada (export .xlsx do Forms): Timestamp, Score/Pontuacao,
+    Nome, Escola, Turma e uma coluna por questao. A nota final de cada aluno e
+    calculada como acertos * valor_questao (ex.: 19 acertos x 0,5 = 9,5).
+    Aceita pontuacao bruta (19) ou fracao ('19/20'). Se o mesmo aluno responder
+    mais de uma vez, mantem apenas a resposta mais recente.
+    Nao altera a leitura das planilhas comuns nem do Notion.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("openpyxl nao instalado. Rode: pip install openpyxl")
+
+    wb = openpyxl.load_workbook(caminho, data_only=True)
+    registros: List[RegistroNota] = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            continue
+
+        headers = [str(h or "") for h in rows[0]]
+        col_nome = _find_col_index(headers, ["nome", "aluno", "estudante"])
+        col_score = _find_col_index(headers, ["score", "pontuacao", "acertos"])
+        col_escola = _find_col_index(headers, ["escola"])
+        col_turno = _find_col_index(headers, ["turno"])
+        col_turma = _find_col_index(headers, ["turma", "classe", "sala"])
+        col_trimestre = _find_col_index(headers, ["trimestre", "bimestre", "periodo"])
+        col_timestamp = next(
+            (i for i, h in enumerate(headers) if _normalize(h) == "timestamp"), None
+        )
+
+        if col_nome is None or col_score is None:
+            if logger:
+                logger(f"Aba '{sheet_name}': sem colunas Nome/Score do Google Forms. Pulando.")
+            continue
+
+        brutos_por_linha: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+        denominadores: List[float] = []
+        brutas: List[float] = []
+        for idx, row in enumerate(rows[1:], start=1):
+            acertos, total = _parse_acertos(
+                row[col_score] if col_score < len(row) else None
+            )
+            brutos_por_linha[idx] = (acertos, total)
+            if total:
+                denominadores.append(total)
+            elif acertos is not None:
+                brutas.append(acertos)
+
+        if n_questoes:
+            total_questoes = int(n_questoes)
+        elif denominadores:
+            from collections import Counter as _Counter
+            total_questoes = int(_Counter(denominadores).most_common(1)[0][0])
+        elif brutas:
+            total_questoes = int(max(brutas))
+        else:
+            total_questoes = 0
+
+        nome_atividade = (atividade or "").strip() or f"Avaliacao - {sheet_name}"
+
+        # Dedup: mantem apenas a resposta mais recente de cada aluno.
+        selecionadas: Dict[str, Tuple[int, float]] = {}
+        ordem: List[str] = []
+        duplicadas = 0
+        for idx, row in enumerate(rows[1:], start=1):
+            acertos, _total = brutos_por_linha.get(idx, (None, None))
+            if acertos is None:
+                continue
+            nome = str(row[col_nome] or "").strip()
+            if not nome:
+                continue
+            chave = _normalize(nome)
+            ts = row[col_timestamp] if col_timestamp is not None and col_timestamp < len(row) else None
+            ts_num = _ts_chave(ts)
+            if chave in selecionadas:
+                duplicadas += 1
+                if ts_num >= selecionadas[chave][1]:
+                    selecionadas[chave] = (idx, ts_num)
+            else:
+                ordem.append(chave)
+                selecionadas[chave] = (idx, ts_num)
+
+        registros_sheet: List[RegistroNota] = []
+        notas_altas = 0
+        for chave in ordem:
+            idx, _tsn = selecionadas[chave]
+            row = rows[idx]
+            acertos, _total = brutos_por_linha.get(idx, (None, None))
+            if acertos is None:
+                continue
+            nome = str(row[col_nome] or "").strip()
+            nota = round(float(acertos) * float(valor_questao), 2)
+            if nota > 10:
+                notas_altas += 1
+            registros_sheet.append(RegistroNota(
+                escola=str(row[col_escola] or "").strip() if col_escola is not None else "",
+                turno=str(row[col_turno] or "").strip() if col_turno is not None else "",
+                turma=str(row[col_turma] or "").strip() if col_turma is not None else "",
+                trimestre=str(row[col_trimestre] or "").strip() if col_trimestre is not None else "",
+                aluno=nome,
+                atividade=nome_atividade,
+                nota=nota,
+                data_realizacao="",
+            ))
+
+        registros.extend(registros_sheet)
+
+        if logger and registros_sheet:
+            msg = (
+                f"Google Forms '{sheet_name}': {len(registros_sheet)} aluno(s), "
+                f"{duplicadas} resposta(s) duplicada(s) ignorada(s), "
+                f"{total_questoes} questoes x {valor_questao} pts"
+            )
+            if notas_altas:
+                msg += (
+                    f" | ATENCAO: {notas_altas} nota(s) acima de 10 - "
+                    "confira o valor por questao"
+                )
+            logger(msg)
+
+    wb.close()
+    return registros
+
+
 def _csv_skip_comments(f):
     for line in f:
         stripped = line.lstrip()
@@ -970,6 +1218,58 @@ def linhas_para_registros(
             data_realizacao=str(ln.get("data_realizacao") or "").strip(),
         ))
     return registros
+
+
+def filtrar_linhas_por_filtros(
+    linhas: List[Dict[str, Any]],
+    filtros: Dict[str, str],
+    logger: Optional[LogFn] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Mantem apenas as linhas que casam com os filtros ATIVOS do painel.
+
+    Os filtros do painel tambem preenchem campos vazios em
+    linhas_para_registros; aqui eles passam a RESTRINGIR: se o professor
+    selecionar Escola/Turno/Turma/Trimestre, linhas de outras escolas/turmas
+    sao ignoradas no lancamento. Comparacao tolerante (minusculas, sem
+    acentos, '6º1' = '6°1'). Campo vazio na linha herda o proprio filtro e
+    portanto sempre casa. Retorna (linhas_mantidas, qtd_descartada).
+    """
+    ativos = {c: _normalize(v) for c, v in (filtros or {}).items() if _normalize(v)}
+    if not ativos:
+        return list(linhas), 0
+    mantidas: List[Dict[str, Any]] = []
+    descartadas = 0
+    for ln in linhas:
+        ok = True
+        for campo, alvo in ativos.items():
+            valor_linha = _normalize(str(ln.get(campo) or "")) or alvo
+            if valor_linha != alvo:
+                ok = False
+                break
+        if ok:
+            mantidas.append(ln)
+        else:
+            descartadas += 1
+    if descartadas and logger:
+        logger(f"[FILTRO] {descartadas} linha(s) fora dos filtros selecionados foram ignoradas.")
+    return mantidas, descartadas
+
+
+def valores_distintos(linhas: List[Dict[str, Any]], campo: str) -> List[str]:
+    """Valores distintos de uma coluna das linhas do painel, ordenados.
+
+    Grafias equivalentes ('6º1' x '6°1') sao unificadas mantendo a primeira
+    vista; usados para oferecer opcoes exatas nos filtros do painel.
+    """
+    vistos: Dict[str, str] = {}
+    for ln in linhas:
+        txt = str(ln.get(campo) or "").strip()
+        if not txt:
+            continue
+        chave = _normalize(txt)
+        if chave and chave not in vistos:
+            vistos[chave] = txt
+    return [vistos[k] for k in sorted(vistos)]
 
 
 def carregar_notas(

@@ -644,6 +644,14 @@ class LancamentoError(RuntimeError):
     pass
 
 
+class TurmaNaoEncontradaError(LancamentoError):
+    """A turma pedida no contexto nao existe no portal (divergencia de dados).
+
+    Levantada pelo _open_assessment_for_context para o chamador PULAR O BLOCO
+    imediatamente, sem tentar abrir a atividade em outra turma por engano.
+    """
+
+
 class EstruturaChangedError(LancamentoError):
     """Estrutura da grade do SGE mudou a ponto de nenhum seletor reconhecer os campos.
 
@@ -697,6 +705,27 @@ def _normalize_loose(s: str) -> str:
 def _name_tokens(s: str) -> List[str]:
     stopwords = {"da", "de", "do", "das", "dos", "e"}
     return [t for t in _normalize_loose(s).split() if t and t not in stopwords]
+
+
+def _match_tokens(s: str) -> List[str]:
+    """Tokens para casamento tolerante: separa colagens numero/letra (ex.:
+    '5-aula' vira '5'+'aula', pois _normalize_loose cola hifen) e remove o
+    plural ('aulas' -> 'aula')."""
+    text = _normalize_loose(s)
+    text = re.sub(r"(?<=\d)(?=[a-z])|(?<=[a-z])(?=\d)", " ", text)
+    out = []
+    for tok in text.split():
+        # Plurais portugueses: acoes->acao, avioes->aviao, maes->mao, resto -s.
+        if tok.endswith("coes"):
+            tok = tok[:-4] + "cao"
+        elif tok.endswith("oes"):
+            tok = tok[:-3] + "ao"
+        elif tok.endswith("aes"):
+            tok = tok[:-3] + "ao"
+        elif len(tok) > 3 and tok.endswith("s"):
+            tok = tok[:-1]
+        out.append(tok)
+    return out
 
 
 def _tok_ratio(a: str, b: str) -> float:
@@ -2027,40 +2056,28 @@ def carregar_notas_notion(
     return registros
 
 
-def listar_contextos_disponiveis(logger: Optional[LogFn] = None) -> List[Dict[str, str]]:
-    try:
-        registros = carregar_notas_notion(logger=logger)
-        contextos = {
-            (r.escola, r.turno, r.turma, r.trimestre)
-            for r in registros
-        }
-        result = [
-            {"escola": e, "turno": t, "turma": tu, "trimestre": tr}
-            for e, t, tu, tr in sorted(contextos)
-        ]
-        return result
-    except LancamentoError as exc:
-        if "Nenhuma nota valida" not in str(exc):
-            raise
-
+def _listar_contextos_pela_estrutura(logger: Optional[LogFn] = None) -> List[Dict[str, str]]:
+    """Lista contextos apenas pela estrutura (titulos) das databases, sem consultar linhas."""
     root_page_id = _normalize_notion_id(ROOT_PAGE_ID)
 
     if not NOTION_TOKEN or not root_page_id:
         raise LancamentoError("Defina NOTION_TOKEN e ROOT_PAGE_ID nas variaveis de ambiente.")
 
     notion = Client(auth=NOTION_TOKEN)
-    _log(logger, "Nenhuma nota valida encontrada. Listando contextos pela estrutura das databases...")
+    _log(logger, "Listando contextos pela estrutura das databases...")
     databases = _search_databases_by_name("Notas Escolas", set(), logger=logger)
     if not databases:
         databases = _discover_databases(notion, root_page_id, logger=logger)
 
     contextos = set()
     for db_id, breadcrumb, db_title in databases:
-        try:
-            db_obj = _safe_notion_call(lambda: notion.databases.retrieve(database_id=db_id))
-            title = _database_title(db_obj) or db_title
-        except Exception:  # noqa: BLE001
-            title = db_title
+        title = db_title
+        if not title:
+            try:
+                db_obj = _safe_notion_call(lambda: notion.databases.retrieve(database_id=db_id))
+                title = _database_title(db_obj) or db_title
+            except Exception:  # noqa: BLE001
+                title = db_title
 
         if not _is_notas_database(title):
             continue
@@ -2074,6 +2091,28 @@ def listar_contextos_disponiveis(logger: Optional[LogFn] = None) -> List[Dict[st
         {"escola": e, "turno": t, "turma": tu, "trimestre": tr}
         for e, t, tu, tr in sorted(contextos)
     ]
+
+
+def listar_contextos_disponiveis(logger: Optional[LogFn] = None) -> List[Dict[str, str]]:
+    contextos = _listar_contextos_pela_estrutura(logger=logger)
+    if contextos:
+        return contextos
+
+    # Fallback: deriva os contextos apenas dos registros de nota existentes.
+    try:
+        registros = carregar_notas_notion(logger=logger)
+        contextos = {
+            (r.escola, r.turno, r.turma, r.trimestre)
+            for r in registros
+        }
+        return [
+            {"escola": e, "turno": t, "turma": tu, "trimestre": tr}
+            for e, t, tu, tr in sorted(contextos)
+        ]
+    except LancamentoError as exc:
+        if "Nenhuma nota valida" not in str(exc):
+            raise
+        return []
 
 
 def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str, str]], logger: Optional[LogFn] = None) -> List[RegistroNota]:
@@ -2962,6 +3001,25 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
         _log(logger, "Login manual detectado. Iniciando lancamento...")
         return
 
+    # Reaproveitamento de sessao (navegador persistente do painel): se a pagina
+    # ja esta autenticada, apenas garante que estamos no portal e pula o login.
+    try:
+        ja_logado = (
+            _is_dashboard_page(page)
+            or _is_school_selection_page(page)
+            or _is_period_selection_page(page)
+        )
+    except Exception:  # noqa: BLE001
+        ja_logado = False
+    if ja_logado:
+        _log(logger, "Sessao do portal ainda ativa: reutilizando o navegador aberto (login ignorado).")
+        try:
+            page.goto(_resolve_sge_login_url(logger=logger), wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(500)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
     # Normaliza e valida credenciais em TODOS os fluxos (imagem, revisao,
     # chamada, sequencia). O portal 8147 espera CPF com 11 digitos e apenas
     # numeros; enviar CPF curto/quebrado faz o portal responder com a mensagem
@@ -3055,6 +3113,25 @@ def _extract_turma_number(text: str) -> str:
     match = re.search(r"ano\s*(\d+)\s*$", raw, flags=re.IGNORECASE)
     if match:
         return match.group(1)
+
+    # Formato compacto das planilhas/Forms: serie+turma ("7°2", "6º1", "8-3",
+    # "9.2", "7o2"). O numero apos a serie eh o numero da turma no SGE. Sem
+    # esse reconhecimento o filtro de turma ficava vazio e a rotina abria a
+    # PRIMEIRA turma do turno/trimestre (ex.: planilha "7°2" lancando na
+    # grade da Turma 1, onde o aluno nao existe).
+    match = re.match(
+        r"^\s*(\d{1,2})\s*(?:[°ºªo]|[-_/ .])\s*(\d{1,2})\s*$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(2)
+
+    # Compactado sem separador ("72" = serie 7, turma 2): so com 2 digitos,
+    # para nao inventar turma em codigos longos.
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 2 and re.fullmatch(r"\d{2}", raw.strip()):
+        return digits[1]
     return ""
 
 
@@ -3069,9 +3146,14 @@ def _turno_code(turno: str) -> str:
     return "0"
 
 
-def _set_filters_on_portal(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> None:
+def _set_filters_on_portal(
+    page,
+    contexto: ContextoTurma,
+    logger: Optional[LogFn],
+    turma_override: Optional[str] = None,
+) -> None:
     etapa = _extract_first_number(contexto.turma)
-    turma = _extract_turma_number(contexto.turma)
+    turma = turma_override if turma_override is not None else _extract_turma_number(contexto.turma)
     turno = _turno_code(contexto.turno)
 
     for scope in _iter_scopes(page):
@@ -3157,12 +3239,15 @@ def _voltar_apos_pagina_errada(page, logger: Optional[LogFn]) -> None:
 
 
 
-def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
-    _set_filters_on_portal(page, contexto, logger=logger)
-
-    turma_num = _extract_turma_number(contexto.turma)
-    trimestre_num = _extract_first_number(contexto.trimestre)
-    turno_norm = _normalize(contexto.turno).upper()
+def _attempt_open_assessment(
+    page,
+    turma_num: str,
+    trimestre_num: Optional[str],
+    turno_norm: str,
+    logger: Optional[LogFn],
+) -> bool:
+    """Varre a lista de atividades do portal e tenta abrir o icone de avaliacao
+    da linha que casa com turno/turma/trimestre. Retorna True se navegou."""
 
     # Padroes de ID do ASP.NET (podem variar entre versoes do SGE)
     _id_prefixes = ["W0019W0075", "W0019W0076", "W0019W0080", "W0019W0060"]
@@ -3365,7 +3450,75 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
             except Exception:  # noqa: BLE001
                 continue
 
-    _capture_stage_debug(page, stage="assessment_icon_not_found", logger=logger)
+    return False
+
+
+def _listar_turmas_no_grid(page) -> List[str]:
+    """Retorna os rotulos distintos de turma (inputs _TURNUMSTR_) visiveis no grid."""
+    rotulos: List[str] = []
+    for scope in _iter_scopes(page):
+        try:
+            hidden_rows = scope.locator("input[name*='_TURNUMSTR_']")
+            total = hidden_rows.count()
+            for idx in range(total):
+                try:
+                    label = (hidden_rows.nth(idx).input_value(timeout=300) or "").strip()
+                except Exception:  # noqa: BLE001
+                    continue
+                if label and label not in rotulos:
+                    rotulos.append(label)
+        except Exception:  # noqa: BLE001
+            continue
+    return rotulos
+
+
+def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional[LogFn]) -> bool:
+    _set_filters_on_portal(page, contexto, logger=logger)
+
+    turma_num = _extract_turma_number(contexto.turma)
+    trimestre_num = _extract_first_number(contexto.trimestre)
+    turno_norm = _normalize(contexto.turno).upper()
+
+    if not turma_num and re.search(r"\d", contexto.turma or ""):
+        _log(
+            logger,
+            f"[CONTEXTO] AVISO: numero da turma nao identificado em '{contexto.turma}'; "
+            "a primeira turma do turno/trimestre pode ser aberta.",
+        )
+
+    if _attempt_open_assessment(page, turma_num, trimestre_num, turno_norm, logger):
+        return True
+
+    # O filtro de numero de turma pode deixar a grade vazia quando o valor nao
+    # existe no portal (ex.: 'Turma 2' inexistente ou codigo diferente no SGE).
+    # Repete SEM o filtro de turma; o casamento estrito da linha (\bturma N\b)
+    # continua garantindo que apenas a turma pedida seja aberta.
+    if turma_num:
+        _voltar_apos_pagina_errada(page, logger)
+        _log(
+            logger,
+            f"Nenhuma linha encontrada com o filtro de turma '{turma_num}'. "
+            "Tentando novamente sem o filtro de turma...",
+        )
+        _set_filters_on_portal(page, contexto, logger=logger, turma_override="0")
+        if _attempt_open_assessment(page, turma_num, trimestre_num, turno_norm, logger):
+            return True
+        _turmas_no_portal = _listar_turmas_no_grid(page)
+        if _turmas_no_portal:
+            _log(
+                logger,
+                f"[TURMA?] '{contexto.turma}' ({contexto.turno} / {contexto.trimestre}) nao existe no portal. "
+                f"Turmas disponiveis: {'; '.join(_turmas_no_portal)}. "
+                "Corrija o nome da turma na planilha/formulario ou crie a turma no SGE.",
+            )
+        else:
+            _log(
+                logger,
+                f"[TURMA?] Atividades de '{contexto.turma}' ({contexto.turno} / {contexto.trimestre}) "
+                "nao foram encontradas no portal. Confira se essa turma existe no SGE "
+                "ou corrija o nome da turma na planilha.",
+            )
+
     # Salva screenshot + HTML mesmo sem DEBUG_LOGIN para diagnostico
     try:
         debug_dir = "artifacts/sge-login"
@@ -3378,8 +3531,18 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
             f.write(f"title={page.title()}\n")
     except Exception:  # noqa: BLE001
         pass
-    _log(logger, "Aviso: nao foi possivel abrir icone de avaliacao pela linha da turma.")
     _learning_store.registrar_falha("abrir_icone_avaliacao", {"motivo": "icone_nao_encontrado"})
+
+    if turma_num:
+        # Turma com numero inexistente no portal e condicao de dados (o log
+        # [TURMA?] acima ja mostrou as turmas disponiveis). Levanta erro
+        # dedicado para o chamador pular o bloco sem tentar abrir a atividade
+        # em outra turma por engano.
+        raise TurmaNaoEncontradaError(
+            f"Turma '{contexto.turma}' ({contexto.turno} / {contexto.trimestre}) nao existe no portal."
+        )
+
+    _log(logger, "Aviso: nao foi possivel abrir icone de avaliacao pela linha da turma.")
     return False
 
 
@@ -3496,20 +3659,32 @@ def _activity_match(target: str, link_text: str) -> bool:
     if tl in ll or ll in tl:
         return True
 
-    def _strip_trailing_num(s: str) -> str:
-        return re.sub(r"\s+\d+\s*$", "", s).strip()
+    def _split_trailing_num(s: str) -> Tuple[str, str]:
+        """Separa sufixo numerico: 'atividade 1' -> ('atividade', '1')."""
+        m = re.search(r"\s(\d+)\s*$", s)
+        if not m:
+            return s.strip(), ""
+        return s[:m.start()].strip(), m.group(1)
 
     def _collapse_hyphens(s: str) -> str:
         return re.sub(r"\s*[-–—]\s*", " - ", s)
 
-    t_stripped = _strip_trailing_num(_collapse_hyphens(t))
-    l_stripped = _strip_trailing_num(_collapse_hyphens(l))
-    if t_stripped and l_stripped and (t_stripped in l_stripped or l_stripped in t_stripped):
+    t_base, t_num = _split_trailing_num(_collapse_hyphens(t))
+    l_base, l_num = _split_trailing_num(_collapse_hyphens(l))
+    if (
+        t_base
+        and l_base
+        and (t_base in l_base or l_base in t_base)
+        and (not t_num or not l_num or t_num == l_num)
+    ):
         return True
-    t_stripped_loose = _strip_trailing_num(tl)
-    l_stripped_loose = _strip_trailing_num(ll)
-    if t_stripped_loose and l_stripped_loose and (
-        t_stripped_loose in l_stripped_loose or l_stripped_loose in t_stripped_loose
+    tl_base, tl_num = _split_trailing_num(tl)
+    ll_base, ll_num = _split_trailing_num(ll)
+    if (
+        tl_base
+        and ll_base
+        and (tl_base in ll_base or ll_base in tl_base)
+        and (not tl_num or not ll_num or tl_num == ll_num)
     ):
         return True
     t_parts = re.split(r"[\s]*[-–—]\s*", tl, maxsplit=1)
@@ -3528,6 +3703,28 @@ def _activity_match(target: str, link_text: str) -> bool:
         l_txt = ll[l_num_m.end():].strip()
         if t_txt and l_txt and (t_txt in l_txt or l_txt in t_txt):
             return True
+
+    # Tolerancia a singular/plural: 'Notas N-1' na planilha deve casar com
+    # 'Nota N-1' na GRIDAGENDA. Palavras precisam ser iguais (ordem livre);
+    # numeros so sao exigidos quando ambos os lados os tem ('Atividade 1'
+    # nao pode casar com 'Atividade 2'), pois a grade prefixa '5-Aula...'.
+    t_toks = sorted(_match_tokens(target))
+    l_toks = sorted(_match_tokens(link_text))
+    if t_toks and l_toks:
+        t_words = [x for x in t_toks if not x.isdigit()]
+        l_words = [x for x in l_toks if not x.isdigit()]
+        t_nums = [x for x in t_toks if x.isdigit()]
+        l_nums = [x for x in l_toks if x.isdigit()]
+        if (
+            t_words == l_words
+            and (not t_nums or not l_nums or t_nums == l_nums)
+        ):
+            return True
+
+    # Ultimo recurso: strings quase identicas (diferenca de poucos caracteres).
+    # Limiar alto o bastante para nao confundir 'Atividade 1' com 'Atividade 2'.
+    if difflib.SequenceMatcher(None, tl, ll).ratio() >= 0.93:
+        return True
     return False
 
 
@@ -4566,9 +4763,15 @@ def _grade_value_matches_target(raw_value: str, nota_texto: str) -> bool:
     atual_norm = atual.replace(",", ".")
     alvo_norm = alvo.replace(",", ".")
     try:
-        return abs(float(atual_norm) - float(alvo_norm)) < 1e-9
+        dif = abs(float(atual_norm) - float(alvo_norm))
     except Exception:  # noqa: BLE001
         return False
+    if dif < 1e-9:
+        return True
+    # O SGE exibe notas arredondadas para 1 casa decimal na tela (4,75 vira
+    # '4,8'). Tolerancia de meio centesimo cobre essa exibicao sem mascarar
+    # erros reais de digitacao (que diferem bem mais que 0,05).
+    return dif <= 0.0500001
 
 
 def _classificar_leitura(existing: Optional[str], nota_esperada_texto: str) -> str:
@@ -4917,6 +5120,39 @@ def _sample_students_from_current_grade_page(page, limit: int = 12) -> List[str]
     return sample
 
 
+def _all_students_on_current_grade_page(page) -> List[str]:
+    nomes: List[str] = []
+    seen: set = set()
+    for scope in _iter_scopes(page):
+        for slot in _collect_student_slots(scope):
+            nome = str(slot.get("aluno", "")).strip()
+            if nome and nome not in seen:
+                seen.add(nome)
+                nomes.append(nome)
+    return nomes
+
+
+def _suggest_similar_students(aluno: str, nomes: List[str], limit: int = 3) -> List[str]:
+    """Nomes da grade mais parecidos com o aluno alvo (diagnostico de revisao)."""
+    alvo = _normalize_loose(aluno)
+    if not alvo or not nomes:
+        return []
+    tok_a = _name_tokens(alvo)
+    scored: List[Tuple[float, str]] = []
+    for nome in nomes:
+        atual = _normalize_loose(nome)
+        if not atual:
+            continue
+        ratio = difflib.SequenceMatcher(None, alvo, atual).ratio()
+        tok_b = _name_tokens(atual)
+        if tok_a and tok_b:
+            first = difflib.SequenceMatcher(None, tok_a[0], tok_b[0]).ratio()
+            ratio = max(ratio, first * 0.95)
+        scored.append((ratio, nome))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [nome for ratio, nome in scored[:limit] if ratio >= 0.55]
+
+
 def _check_estrutura_sge(
     page,
     logger: Optional[LogFn],
@@ -5062,6 +5298,26 @@ def _fill_grade_for_student(page, aluno: str, nota: float, logger: Optional[LogF
     amostra = _sample_students_from_current_grade_page(page, limit=12)
     if amostra:
         _log(logger, f"Diagnostico: aluno alvo='{aluno}' nao casou via campos indexados. Amostra da pagina: {', '.join(amostra)}")
+
+    todos_nomes = _all_students_on_current_grade_page(page)
+    if todos_nomes:
+        _log(
+            logger,
+            f"[GRADE] Alunos na grade aberta ({len(todos_nomes)}): {', '.join(todos_nomes)}",
+        )
+        sugestoes = _suggest_similar_students(aluno, todos_nomes)
+        if sugestoes:
+            _log(logger, f"[SUGESTAO] Nomes mais parecidos com '{aluno}': {', '.join(sugestoes)}")
+        else:
+            alvo_tokens = set(_name_tokens(aluno))
+            if alvo_tokens and not any(
+                alvo_tokens.intersection(_name_tokens(n)) for n in todos_nomes
+            ):
+                _log(
+                    logger,
+                    f"[TURMA?] Nenhum nome parecido com '{aluno}' entre os {len(todos_nomes)} "
+                    "alunos desta grade. Confira se a turma/avaliacao aberta corresponde a da planilha.",
+                )
 
     # Debug: mostra nomes de input disponiveis na pagina
     try:
@@ -5808,6 +6064,7 @@ def _revisar_blocos_apos_lancamento(
     resumo: Dict[str, Any] = {"revisados": 0, "ok": 0, "corrigidos": 0, "falhas": 0, "ai_usada": 0}
     resumo["itens_nao_confirmados"] = []
     resumo["regs_corrigidos"] = []
+    resumo["regs_ok"] = []
     MAX_AI_PER_BLOCO = 3
 
     for idx, bloco in enumerate(blocos, start=1):
@@ -5884,6 +6141,7 @@ def _revisar_blocos_apos_lancamento(
             if existing is not None and _grade_value_matches_target(existing, nota_texto):
                 _log(logger, f"  [REVISAO-OK] {reg.aluno}: nota {nota_texto} confirmada (leitura ancorada na linha).")
                 resumo["ok"] += 1
+                resumo["regs_ok"].append(reg)
                 continue
 
             # Correcao automatica da nota errada: so quando o campo do aluno e
@@ -5922,6 +6180,7 @@ def _revisar_blocos_apos_lancamento(
                         confirmado_ia = True
                         _log(logger, f"  [REVISAO-IA] IA confirmou {reg.aluno} = {nota_texto} na tela ({ia.get('read_value', '')}).")
                         resumo["ok"] += 1
+                        resumo["regs_ok"].append(reg)
                         continue
                     _log(logger, f"  [REVISAO-IA] IA nao confirmou {reg.aluno}: {ia.get('notes', ia.get('error', ''))[:120]}")
                 except Exception as exc:  # noqa: BLE001
@@ -6107,15 +6366,31 @@ def executar_lancamento(
 
             # Fluxo hibrido assistido: abre o icone de avaliacao da linha da
             # turma/turno/trimestre antes de tentar localizar a atividade.
-            avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+            motivo_pulo = ""
+            try:
+                avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+            except TurmaNaoEncontradaError as exc:
+                motivo_pulo = str(exc)
 
             # Apos clicar no icone, pode aparecer tela de confirmacao de trimestre.
             # Se confirmou, volta pro dashboard e precisa clicar no icone de novo.
-            if _handle_assessment_period_page(page, contexto, logger=logger):
+            if not motivo_pulo and _handle_assessment_period_page(page, contexto, logger=logger):
                 _log(logger, "Re-tentando abrir avaliacao apos confirmar periodo...")
-                avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+                try:
+                    avaliacao_abriu = _open_assessment_for_context(page, contexto, logger=logger)
+                except TurmaNaoEncontradaError as exc:
+                    motivo_pulo = str(exc)
                 # Segunda tela de periodo eh improvavel, mas verifica por seguranca
                 _handle_assessment_period_page(page, contexto, logger=logger)
+
+            if motivo_pulo:
+                _log(logger, f"[PULO] Bloco ignorado: {motivo_pulo} Nenhuma nota gravada nesta turma.")
+                for reg in itens:
+                    falhas += 1
+                t = threading.Thread(target=_mark_failed_launch_status_for_notes, args=(itens,), kwargs={"logger": logger}, daemon=True)
+                t.start()
+                _notion_threads.append(t)
+                continue
 
             if not avaliacao_abriu:
                 _log(logger, f"Aviso: nao foi possivel abrir icone de avaliacao para {atividade}. Tentando navegacao direta...")

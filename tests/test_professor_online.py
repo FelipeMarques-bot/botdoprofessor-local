@@ -181,6 +181,14 @@ class TestAdapterUnit:
         assert a.DIARIO_SITUACOES["1"] == "Confirmada"
         assert a.DIARIO_SITUACOES["4"] == "Extra"
 
+    def test_login_failure_reason_nao_captcha_falso(self):
+        a = ProfessorOnlineAdapter()
+        html = _html("login.html")
+        assert p.is_login_page(html)
+        motivo = a._login_failure_reason(html)
+        assert "captcha" not in motivo.lower()
+        assert motivo.startswith("erro_apresentado=") or motivo == "nao_logado"
+
 
 class TestFactory:
     def test_get_adapter_professor_online(self):
@@ -287,3 +295,161 @@ class TestOrquestrador:
                 os.environ["PO_CPF"] = old_cpf
             if old_senha is not None:
                 os.environ["PO_SENHA"] = old_senha
+
+
+class TestPlanoChamadaPo:
+    def _plano(self):
+        from lancar_professor_online import _montar_plano_po
+
+        grade = [
+            {"nome": "AMABILE MAHARA ROSA", "matricula": "4549489757", "presenca": "."},
+            {"nome": "ANDREI NAGEL", "matricula": "4549539126", "presenca": "."},
+            {"nome": "MARIA JOSE SILVA", "matricula": "0001", "presenca": "."},
+        ]
+        foto = [
+            {"aluno": "AMABILE ROSA", "situacao": "presente", "faltas": "0"},
+            {"aluno": "ANDREI NAGEL", "situacao": "falta", "faltas": "1"},
+            {"aluno": "FULANO SEM REGISTRO", "situacao": "falta", "faltas": "2"},
+        ]
+        return _montar_plano_po(grade, foto)
+
+    def test_montar_plano(self):
+        plano, nao_encontrados = self._plano()
+        por_aluno = {item["aluno"]: item for item in plano}
+        assert por_aluno["AMABILE MAHARA ROSA"]["acao"] == "presenca"
+        assert por_aluno["ANDREI NAGEL"]["acao"] == "falta"
+        assert por_aluno["ANDREI NAGEL"]["faltas"] == 1
+        assert por_aluno["MARIA JOSE SILVA"]["acao"] == "pular"
+        assert nao_encontrados == ["FULANO SEM REGISTRO"]
+
+    def test_ja_lancado_pula(self):
+        from lancar_professor_online import _montar_plano_po
+
+        grade = [{"nome": "AMABILE MAHARA ROSA", "matricula": "1", "presenca": "1F"}]
+        plano, _ = _montar_plano_po(grade, [{"aluno": "AMABILE MAHARA ROSA", "situacao": "presente"}])
+        assert plano[0]["acao"] == "pular"
+        assert plano[0]["ja_lancado"] is True
+
+    def test_valor_presenca_po(self):
+        from lancar_professor_online import _valor_presenca_po
+
+        assert _valor_presenca_po({"acao": "presenca"}) == "C"
+        assert _valor_presenca_po({"acao": "falta", "motivo": "injustificada", "faltas": 1}) == "1F"
+        assert _valor_presenca_po({"acao": "falta", "motivo": "injustificada", "faltas": 5}) == "2F"
+        assert _valor_presenca_po({"acao": "falta", "motivo": "justificada", "faltas": 1}) == "1J"
+        assert _valor_presenca_po({"acao": "falta", "motivo": "justificada", "faltas": 2}) == "2J"
+
+    def test_resumo_plano(self):
+        from lancar_professor_online import _resumo_plano_po
+
+        plano = [
+            {"acao": "presenca"},
+            {"acao": "falta"},
+            {"acao": "pular", "ja_lancado": True},
+            {"acao": "pular", "ja_lancado": False},
+        ]
+        assert _resumo_plano_po(plano) == {"ja_lancados": 1, "presentes": 1, "faltas": 1, "pulados": 1}
+
+
+class TestExecutarFaltasMes:
+    def test_sem_credenciais_levanta_erro(self):
+        import os
+
+        from lancar_professor_online import LancamentoError, executar_faltas_mes
+
+        old_cpf, old_senha = os.environ.pop("PO_CPF", None), os.environ.pop("PO_SENHA", None)
+        try:
+            try:
+                executar_faltas_mes(filtro={"turma": "201"}, logger=None)
+            except LancamentoError as exc:
+                assert "PO_CPF" in str(exc)
+            else:
+                raise AssertionError("Deveria levantar LancamentoError sem credenciais")
+        finally:
+            if old_cpf is not None:
+                os.environ["PO_CPF"] = old_cpf
+            if old_senha is not None:
+                os.environ["PO_SENHA"] = old_senha
+
+
+class TestExecutarPlanejamento:
+    def test_dry_run(self):
+        from lancar_professor_online import executar_planejamento
+
+        r = executar_planejamento(
+            registros=[{"escola": "E1", "turma": "201", "titulo_documento": "Seq 1"}],
+            logger=None,
+            dry_run=True,
+            cpf="11122233344",
+            senha="x",
+        )
+        assert r["contextos"] == 1
+        assert r["success"] is True
+        assert r["nao_implementado"] == 0
+
+    def test_sem_registros_levanta_erro(self):
+        import os
+
+        from lancar_professor_online import LancamentoError, executar_planejamento
+
+        old_cpf, old_senha = os.environ.pop("PO_CPF", None), os.environ.pop("PO_SENHA", None)
+        try:
+            try:
+                executar_planejamento(registros=[], logger=None, dry_run=True)
+            except LancamentoError as exc:
+                assert "PO_CPF" in str(exc)
+            else:
+                raise AssertionError("Deveria levantar LancamentoError sem credenciais")
+        finally:
+            if old_cpf is not None:
+                os.environ["PO_CPF"] = old_cpf
+            if old_senha is not None:
+                os.environ["PO_SENHA"] = old_senha
+
+
+class TestParserFaltasMes:
+    def test_faltas_mes(self):
+        data = p.extract_faltas_mes(_html("faltas_por_mes.html"))
+        assert data["data_inicio"] == "28/05/2026"
+        assert data["data_fim"] == "06/09/2026"
+        assert len(data["alunos"]) == 18
+        a0 = data["alunos"][0]
+        assert a0["nome"] == "AMABILE MAHARA ROSA"
+        assert a0["total_faltas"] == "3"
+        assert a0["colunas"].get("vD7") == "1F"
+        assert a0["colunas"].get("vD1") == "C"
+
+
+class TestAdapterNovosMetodos:
+    def test_detectar_escolas(self):
+        adapter = ProfessorOnlineAdapter(base_url="https://exemplo.test")
+        adapter._turmas = [
+            {"escola": "EEB REGENTE FEIJO", "turma": "201"},
+            {"escola": "EEB REGENTE FEIJO", "turma": "301"},
+            {"escola": "EEB OUTRA ESCOLA", "turma": "101"},
+        ]
+        assert sorted(adapter.detectar_escolas()) == ["EEB OUTRA ESCOLA", "EEB REGENTE FEIJO"]
+
+    def test_constant_paths(self):
+        adapter = ProfessorOnlineAdapter()
+        assert adapter.FALTAS_MES_PATH == "cadfaltasmesnovo.aspx"
+        assert adapter.CHAMADA_PATH == "cadfaltaschamadaemsala.aspx"
+
+
+class TestEscolaRegistry:
+    def test_registro_e_consulta(self, monkeypatch, tmp_path):
+        import bot.core.escola_registry as er
+        monkeypatch.setattr(er, "REGISTRY_PATH", tmp_path / "escolas.json")
+
+        assert er.portal_da_escola("EEB REGENTE FEIJO") is None
+        assert er.registrar_escola("EEB REGENTE FEIJO", "professor_online") is True
+        assert er.portal_da_escola("eeb regente feijó") == "professor_online"
+        assert er.registrar_escola("EEB REGENTE FEIJO", "professor_online") is False
+        assert er.escolas_do_portal("professor_online") == ["EEB REGENTE FEIJO"]
+
+    def test_consulta_acentos(self, monkeypatch, tmp_path):
+        import bot.core.escola_registry as er
+        monkeypatch.setattr(er, "REGISTRY_PATH", tmp_path / "escolas.json")
+
+        er.registrar_escola("EEB JOÃO DA SILVA", "sge")
+        assert er.portal_da_escola("EEB Joao da Silva") == "sge"

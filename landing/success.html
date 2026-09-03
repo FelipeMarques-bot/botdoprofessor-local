@@ -64,7 +64,7 @@
         <div class="download-section">
             <h2>Baixe o programa</h2>
             <p>Clique no botão abaixo para baixar o BotDoProfessor.exe</p>
-            <a href="https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latést" class="download-btn">Baixar BotDoProfessor.exe</a>
+            <a id="download-btn" href="/api/download?key=__KEY__" class="download-btn">Baixar BotDoProfessor.exe</a>
             <p class="download-info">Arquivo de apróximadamente 140MB | Windows 10/11</p>
         </div>
 
@@ -144,6 +144,9 @@
         const key = params.get('key') || 'Chave nao encontrada';
         document.getElementById('license-key').textContent = key;
 
+        const dlBtn = document.getElementById('download-btn');
+        dlBtn.href = '/api/download?key=' + encodeURIComponent(key);
+
         if (key === 'Chave nao encontrada') {
             document.getElementById('icon').textContent = '⏳';
             document.getElementById('title').textContent = 'Pagamento em processamento';
@@ -151,6 +154,7 @@
             document.querySelector('.key-label').style.display = 'none';
             document.querySelector('.key').style.display = 'none';
             document.querySelector('.copy-btn').style.display = 'none';
+            dlBtn.style.display = 'none';
         }
 
         function copyKey() {

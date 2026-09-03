@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv(override=False)
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 from config.settings import SQLALCHEMY_DATABASE_URI, SECRET_KEY, DATA_DIR, LOGS_DIR
 from bot.models.database import db, init_db
 from bot.models.user import User
@@ -63,6 +63,15 @@ def create_app():
     @app.route("/success")
     def success():
         return send_from_directory(LANDING_DIR, "success.html")
+
+    @app.route("/api/download")
+    def download():
+        from bot.core.download_service import resolve_download
+        key = request.args.get("key", "")
+        url, error = resolve_download(key)
+        if error:
+            return jsonify({"error": error}), 403
+        return redirect(url, code=302)
 
     @app.route("/admin")
     def admin_portal():

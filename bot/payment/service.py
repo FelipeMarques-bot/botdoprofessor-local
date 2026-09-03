@@ -238,7 +238,8 @@ class PaymentService:
         plan_info = PLANOS.get(plan, self.PLANS.get(plan, {}))
         plan_label = plan_info.get("label", plan)
 
-        download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
+        app_url = os.environ.get("APP_URL", "")
+        download_url = f"{app_url}/api/download?key={license_key}"
 
         html = f"""
         <html>
@@ -292,7 +293,7 @@ class PaymentService:
                 <div class="step-text">
                     <strong>Baixe o programa</strong><br>
                     Clique no link abaixo para baixar o BotDoProfessor.exe (arquivo unico, sem necessidade de instalacao adicional):<br>
-                    <a href="https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest" class="btn">Baixar BotDoProfessor.exe</a>
+                    <a href="{download_url}" class="btn">Baixar BotDoProfessor.exe</a>
                 </div>
             </div>
 

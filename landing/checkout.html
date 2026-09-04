@@ -93,9 +93,12 @@
         const params = new URLSearchParams(window.location.search);
         const plan = params.get('plan') || '1ano';
         const plans = {
-            'mensal': { label: 'Mensal — R$ 59,90', amount: 59.90, desc: 'Acesso por 1 mês ao BotDoProfessor' },
-            '1ano': { label: '1 Ano — R$ 575,04', amount: 575.04, desc: 'Acesso por 12 meses ao BotDoProfessor. Economia de 20%.' },
-            '2anos': { label: '2 Anos — R$ 1006,32', amount: 1006.32, desc: 'Acesso por 24 meses. Economia de 30%.' },
+            'mensal': { label: 'Mensal 1 Portal — R$ 49,90', amount: 49.90, desc: 'Acesso por 1 mês ao SGE.' },
+            '1ano': { label: '1 Ano 1 Portal — R$ 479,04', amount: 479.04, desc: 'Acesso por 12 meses ao SGE. Economia de 20%.' },
+            '2anos': { label: '2 Anos 1 Portal — R$ 838,32', amount: 838.32, desc: 'Acesso por 24 meses ao SGE. Economia de 30%.' },
+            'mensal_todos': { label: 'Mensal Todos os Portais — R$ 79,90', amount: 79.90, desc: 'Acesso por 1 mês a todos os portais (SGE + novos com IA híbrida).' },
+            '1ano_todos': { label: '1 Ano Todos os Portais — R$ 767,04', amount: 767.04, desc: 'Acesso por 12 meses a todos os portais. Economia de 20%.' },
+            '2anos_todos': { label: '2 Anos Todos os Portais — R$ 1342,32', amount: 1342.32, desc: 'Acesso por 24 meses a todos os portais. Economia de 30%.' },
         };
         const planInfo = plans[plan] || plans['1ano'];
         document.getElementById('plan-label').textContent = planInfo.label;

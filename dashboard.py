@@ -107,7 +107,7 @@ def dashboard_page():
                 st.subheader("Ativar Licenca")
                 with st.form("activate"):
                     key = st.text_input("Chave da licenca")
-                    plan = st.selectbox("Plano", ["mensal", "1ano", "2anos"])
+                    plan = st.selectbox("Plano", ["mensal", "1ano", "2anos", "mensal_todos", "1ano_todos", "2anos_todos"])
                     if st.form_submit_button("Ativar"):
                         s, d = api("POST", "/api/license/activate", {"license_key": key, "plan": plan})
                         if s == 200:

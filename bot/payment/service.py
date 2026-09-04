@@ -19,9 +19,12 @@ class PaymentService:
     """Servico de pagamentos via Mercado Pago + fallback Pix manual."""
 
     PLANS = {
-        "mensal": {"dias": 30, "preco": 59.90, "label": "Mensal"},
-        "1ano": {"dias": 365, "preco": 575.04, "label": "1 Ano"},
-        "2anos": {"dias": 730, "preco": 1006.32, "label": "2 Anos"},
+        "mensal": {"dias": 30, "preco": 49.90, "label": "Mensal 1 Portal"},
+        "1ano": {"dias": 365, "preco": 479.04, "label": "1 Ano 1 Portal"},
+        "2anos": {"dias": 730, "preco": 838.32, "label": "2 Anos 1 Portal"},
+        "mensal_todos": {"dias": 30, "preco": 79.90, "label": "Mensal Todos os Portais"},
+        "1ano_todos": {"dias": 365, "preco": 767.04, "label": "1 Ano Todos os Portais"},
+        "2anos_todos": {"dias": 730, "preco": 1342.32, "label": "2 Anos Todos os Portais"},
     }
 
     PIX_KEY = os.environ.get("PIX_KEY", "")

@@ -12,9 +12,15 @@ class LicenseService:
     """Servico de validacao e gerenciamento de licencas."""
 
     PLANS = {
+        "mensal": {"dias": 30, "preco": 49.90, "portais": 1, "ai_assist": False, "multi_portal": False},
+        "1ano": {"dias": 365, "preco": 479.04, "portais": 1, "ai_assist": False, "multi_portal": False},
+        "2anos": {"dias": 730, "preco": 838.32, "portais": 1, "ai_assist": False, "multi_portal": False},
+        "mensal_todos": {"dias": 30, "preco": 79.90, "portais": -1, "ai_assist": True, "multi_portal": True},
+        "1ano_todos": {"dias": 365, "preco": 767.04, "portais": -1, "ai_assist": True, "multi_portal": True},
+        "2anos_todos": {"dias": 730, "preco": 1342.32, "portais": -1, "ai_assist": True, "multi_portal": True},
         "basico": {
             "dias": 30,
-            "preco": 59.90,
+            "preco": 49.90,
             "portais": 1,
             "ai_assist": False,
             "multi_portal": False,

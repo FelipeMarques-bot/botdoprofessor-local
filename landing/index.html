@@ -161,6 +161,10 @@
         .pricing h2 { text-align: center; font-size: 2em; font-weight: 800; margin-bottom: 12px; }
         .pricing .subtitle { text-align: center; color: #64748b; margin-bottom: 40px; font-size: 1.05em; }
         .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+        .pricing-row-title { font-size: 1.35em; font-weight: 800; color: #0c1b33; margin: 0 0 6px; text-align: center; }
+        .pricing-row-desc { text-align: center; color: #64748b; margin-bottom: 22px; font-size: 0.98em; }
+        .pricing-block { margin-bottom: 44px; }
+        .pricing-block .plans { grid-template-columns: repeat(3, minmax(240px, 1fr)); }
         .plan {
             background: white;
             border-radius: 14px;
@@ -357,41 +361,91 @@
     <div class="pricing" id="planos">
         <h2>Escolha seu plano</h2>
         <p class="subtitle">Pagamento único. Sem renovação automática.</p>
-        <div class="plans">
-            <div class="plan">
-                <h3>Mensal</h3>
-                <div class="price">R$ 59,90<span>/mês</span></div>
-                <p class="period">Acesso por 1 mês</p>
-                <ul>
-                    <li>Acesso a 1 portal (SGE)</li>
-                    <li>Atualizações incluídas</li>
-                    <li>Suporte por email</li>
-                </ul>
-                <a href="/checkout?plan=mensal" class="btn">Assinar agora</a>
+
+        <div class="pricing-block">
+            <h3 class="pricing-row-title">Acesso a 1 Portal</h3>
+            <p class="pricing-row-desc">Para quem usa apenas o SGE. O plano mais econômico.</p>
+            <div class="plans">
+                <div class="plan">
+                    <h3>Mensal</h3>
+                    <div class="price">R$ 49,90<span>/mês</span></div>
+                    <p class="period">Acesso por 1 mês</p>
+                    <ul>
+                        <li>1 portal (SGE)</li>
+                        <li>Atualizações incluídas</li>
+                        <li>Suporte por email</li>
+                    </ul>
+                    <a href="/checkout?plan=mensal" class="btn">Assinar agora</a>
+                </div>
+                <div class="plan popular">
+                    <h3>1 Ano</h3>
+                    <div class="price">R$ 479,04<span>/ano</span></div>
+                    <p class="period">Acesso por 12 meses</p>
+                    <ul>
+                        <li>1 portal (SGE)</li>
+                        <li>Economia de 20%</li>
+                        <li>Atualizações incluídas</li>
+                        <li>Suporte prioritário</li>
+                    </ul>
+                    <a href="/checkout?plan=1ano" class="btn">Assinar agora</a>
+                </div>
+                <div class="plan">
+                    <h3>2 Anos</h3>
+                    <div class="price">R$ 838,32<span>/2 anos</span></div>
+                    <p class="period">Acesso por 24 meses</p>
+                    <ul>
+                        <li>1 portal (SGE)</li>
+                        <li>Economia de 30%</li>
+                        <li>Atualizações incluídas</li>
+                        <li>Suporte prioritário</li>
+                    </ul>
+                    <a href="/checkout?plan=2anos" class="btn">Assinar agora</a>
+                </div>
             </div>
-            <div class="plan popular">
-                <h3>1 Ano</h3>
-                <div class="price">R$ 575,04<span>/ano</span></div>
-                <p class="period">Acesso por 12 meses</p>
-                <ul>
-                    <li>Acesso a 1 portal (SGE)</li>
-                    <li>Economia de 20%</li>
-                    <li>Atualizações incluídas</li>
-                    <li>Suporte prioritário</li>
-                </ul>
-                <a href="/checkout?plan=1ano" class="btn">Assinar agora</a>
-            </div>
-            <div class="plan">
-                <h3>2 Anos</h3>
-                <div class="price">R$ 1006,32<span>/2 anos</span></div>
-                <p class="period">Acesso por 24 meses</p>
-                <ul>
-                    <li>Acesso a 1 portal (SGE)</li>
-                    <li>Economia de 30%</li>
-                    <li>Atualizações incluídas</li>
-                    <li>Suporte prioritário</li>
-                </ul>
-                <a href="/checkout?plan=2anos" class="btn">Assinar agora</a>
+        </div>
+
+        <div class="pricing-block">
+            <h3 class="pricing-row-title">Acesso a Todos os Portais</h3>
+            <p class="pricing-row-desc">Acesse o SGE, o Professor Online e outros portais escolares. Para um portal novo, o sistema <strong>aprende</strong> a estrutura automaticamente (via IA local, modo híbrido).</p>
+            <div class="plans">
+                <div class="plan">
+                    <h3>Mensal</h3>
+                    <div class="price">R$ 79,90<span>/mês</span></div>
+                    <p class="period">Acesso por 1 mês</p>
+                    <ul>
+                        <li>Todos os portais (SGE + novos)</li>
+                        <li>IA híbrida que aprende portais novos</li>
+                        <li>Atualizações incluídas</li>
+                        <li>Suporte por email</li>
+                    </ul>
+                    <a href="/checkout?plan=mensal_todos" class="btn">Assinar agora</a>
+                </div>
+                <div class="plan popular">
+                    <h3>1 Ano</h3>
+                    <div class="price">R$ 767,04<span>/ano</span></div>
+                    <p class="period">Acesso por 12 meses</p>
+                    <ul>
+                        <li>Todos os portais (SGE + novos)</li>
+                        <li>IA híbrida que aprende portais novos</li>
+                        <li>Economia de 20%</li>
+                        <li>Atualizações incluídas</li>
+                        <li>Suporte prioritário</li>
+                    </ul>
+                    <a href="/checkout?plan=1ano_todos" class="btn">Assinar agora</a>
+                </div>
+                <div class="plan">
+                    <h3>2 Anos</h3>
+                    <div class="price">R$ 1342,32<span>/2 anos</span></div>
+                    <p class="period">Acesso por 24 meses</p>
+                    <ul>
+                        <li>Todos os portais (SGE + novos)</li>
+                        <li>IA híbrida que aprende portais novos</li>
+                        <li>Economia de 30%</li>
+                        <li>Atualizações incluídas</li>
+                        <li>Suporte prioritário</li>
+                    </ul>
+                    <a href="/checkout?plan=2anos_todos" class="btn">Assinar agora</a>
+                </div>
             </div>
         </div>
     </div>
@@ -403,8 +457,8 @@
             <p>Não. O BotDoProfessor é um software pronto para usar. Você baixa, instala e funciona como um assistente: preenche os dados e clica em "Lançar". Nenhuma configuração técnica necessária.</p>
         </div>
         <div class="faq-item">
-            <h4>Funciona no meu SGE?</h4>
-            <p>O BotDoProfessor foi desenvolvido para o SGE 8147 e suporta portais personalizados via configuração. Se você usa o SGE, provavelmente funciona. Em caso de dúvida, entre em contato antes de comprar.</p>
+            <h4>Funciona no meu portal escolar?</h4>
+            <p>O BotDoProfessor já suporta nativamente o <strong>SGE</strong> e o <strong>Professor Online</strong>. Para outros portais, basta selecionar <em>"Novo Portal"</em> no programa — a IA local aprende a estrutura do acesso e você pode usá-lo normalmente. Na dúvida, entre em contato antes de comprar.</p>
         </div>
         <div class="faq-item">
             <h4>Como preparo as notas para lançar?</h4>
@@ -416,7 +470,7 @@
         </div>
         <div class="faq-item">
             <h4>Como funciona o pagamento?</h4>
-            <p>Você escolhe o plano, preenche seus dados e paga via Pix ou cartão de crédito pelo Mercado Pago. Assim que o pagamento é confirmado (instantâneo no cartão, até 5 min no Pix), a chave de licença é enviada para seu email automaticamente.</p>
+            <p>Você escolhe o plano (1 Portal ou Todos os Portais) e a duração, preenche seus dados e paga via Pix ou cartão de crédito pelo Mercado Pago. Assim que o pagamento é confirmado (instantâneo no cartão, até 5 min no Pix), a chave de licença e o link de download são enviados para seu email automaticamente.</p>
         </div>
         <div class="faq-item">
             <h4>E se eu não gostar?</h4>

@@ -143,5 +143,7 @@ def _seed_initial_admin(app):
 if __name__ == "__main__":
     app = create_app()
     _seed_initial_admin(app)
+    from bot.tasks.reminder import start_reminder_scheduler
+    start_reminder_scheduler(app)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

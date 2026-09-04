@@ -13,6 +13,7 @@ class License(db.Model):
     activated_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=False)
     active = db.Column(db.Boolean, default=True)
+    reminder_sent = db.Column(db.Boolean, default=False)
     machine_fingerprint = db.Column(db.String(256))
 
     user = db.relationship("User", backref="licenses")
@@ -55,6 +56,7 @@ class License(db.Model):
             "activated_at": self.activated_at.isoformat() if self.activated_at else None,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "active": self.active,
+            "reminder_sent": self.reminder_sent,
             "is_valid": self.is_valid,
             "days_remaining": self.days_remaining,
         }

@@ -46,11 +46,14 @@ def payment_stats():
     contacted = PaymentRequest.query.filter_by(status="contacted").count()
     approved = PaymentRequest.query.filter_by(status="approved").count()
     rejected = PaymentRequest.query.filter_by(status="rejected").count()
+    refunded = PaymentRequest.query.filter_by(status="refunded").count()
 
     pending_amount = db.session.query(db.func.sum(PaymentRequest.amount))\
         .filter_by(status="pending").scalar() or 0
     approved_amount = db.session.query(db.func.sum(PaymentRequest.amount))\
         .filter_by(status="approved").scalar() or 0
+    refunded_amount = db.session.query(db.func.sum(PaymentRequest.amount))\
+        .filter_by(status="refunded").scalar() or 0
 
     return jsonify({
         "total": total,
@@ -58,8 +61,10 @@ def payment_stats():
         "contacted": contacted,
         "approved": approved,
         "rejected": rejected,
+        "refunded": refunded,
         "pending_amount": round(pending_amount, 2),
         "approved_amount": round(approved_amount, 2),
+        "refunded_amount": round(refunded_amount, 2),
     })
 
 
@@ -371,6 +376,98 @@ def _send_revocation_email(email, name, reason, plan="basico"):
     """
 
     subject = "BotDoProfessor — Assinatura finalizada/cancelada"
+
+    from bot.utils.email_sender import send_email
+    return send_email(email, subject, html)
+
+
+@admin_payments_bp.route("/<int:payment_id>/refund", methods=["POST"])
+@require_auth
+@require_permission("admin")
+def refund_subscription(payment_id):
+    """Registra reembolso (direito de arrependimento CDC art. 49). Bloqueia a licenca associada."""
+    payment = PaymentRequest.query.get_or_404(payment_id)
+    data = request.get_json() or {}
+    reason = data.get("reason", "Reembolso solicitado pelo cliente (CDC art. 49)")
+
+    if payment.status in ("refunded", "rejected"):
+        return jsonify({"error": "Assinatura ja esta reembolsada ou revogada"}), 400
+
+    payment.status = "refunded"
+    payment.admin_notes = f"{payment.admin_notes or ''}\n[REEMBOLSO] {reason}".strip()
+    db.session.commit()
+
+    if payment.license_key:
+        lic = License.query.filter_by(license_key=payment.license_key).first()
+        if lic:
+            lic.active = False
+            db.session.commit()
+
+    AuditLog.log(g.current_user.id, "refund_subscription",
+                  target=f"Payment #{payment_id} ({payment.name})",
+                  details=f"Reembolso: {reason}", status="success",
+                  ip=request.remote_addr)
+
+    email_sent = False
+    if payment.email:
+        email_sent = _send_refund_email(payment.email, payment.name, payment.amount, reason)
+
+    return jsonify({
+        "message": "Reembolso registrado e acesso bloqueado",
+        "email_sent": email_sent,
+        "payment": payment.to_dict(),
+    })
+
+
+def _send_refund_email(email, name, amount, reason="Reembolso solicitado pelo cliente (CDC art. 49)"):
+    """Envia email confirmando o reembolso e informando que o acesso sera/bloqueado."""
+    html = f"""
+    <html>
+    <head>
+    <style>
+        body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.7; padding: 20px; max-width: 640px; margin: 0 auto; }}
+        .header {{ background: #0f3460; color: white; padding: 28px; border-radius: 10px 10px 0 0; text-align: center; }}
+        .header h1 {{ margin: 0; font-size: 1.5em; }}
+        .header p {{ margin: 6px 0 0; font-size: 0.9em; opacity: 0.85; }}
+        .content {{ padding: 28px; background: #ffffff; border: 1px solid #e2e8f0; }}
+        .info {{ background: #f0f9ff; border-left: 4px solid #3b82f6; padding: 14px 18px; border-radius: 0 8px 8px 0; margin: 18px 0; font-size: 0.95em; color: #1e40af; }}
+        .info strong {{ display: block; margin-bottom: 4px; color: #1e40af; }}
+        .footer {{ padding: 18px 24px; background: #f8fafc; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 10px 10px; text-align: center; font-size: 0.85em; color: #94a3b8; }}
+        .footer a {{ color: #e94560; text-decoration: none; }}
+    </style>
+    </head>
+    <body>
+    <div class="header">
+        <h1>BotDoProfessor</h1>
+        <p>Reembolso confirmado</p>
+    </div>
+    <div class="content">
+        <p>Ola <strong>{name}</strong>,</p>
+        <p>Confirmamos o processamento do seu reembolso no valor de <strong>R$ {amount:.2f}</strong>.</p>
+
+        <div class="info">
+            <strong>Motivo:</strong>
+            {reason}
+        </div>
+
+        <p style="color:#475569;font-size:0.92em">
+            O reembolso sera efetuado pelo mesmo meio de pagamento utilizado na compra em ate 7 dias uteis, conforme o
+            Código de Defesa do Consumidor (art. 49). O acesso ao programa foi bloqueado.
+        </p>
+        <p style="color:#475569;font-size:0.92em">
+            Se desejar, voce pode realizar uma nova assinatura quando quiser em:
+            <a href="https://botdoprofessor.onrender.com/checkout">botdoprofessor.onrender.com/checkout</a>
+        </p>
+    </div>
+    <div class="footer">
+        Duvidas? Envie para <a href="mailto:labintelligenceappoiments@gmail.com">labintelligenceappoiments@gmail.com</a><br>
+        BotDoProfessor — Automatize suas notas
+    </div>
+    </body>
+    </html>
+    """
+
+    subject = "BotDoProfessor — Reembolso confirmado"
 
     from bot.utils.email_sender import send_email
     return send_email(email, subject, html)

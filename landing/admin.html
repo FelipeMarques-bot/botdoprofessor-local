@@ -43,6 +43,7 @@
         .stat-card.contacted .value{color:#3b82f6}
         .stat-card.approved .value{color:#10b981}
         .stat-card.rejected .value{color:#e94560}
+        .stat-card.refunded .value{color:#3730a3}
         .stat-card.total .value{color:#0c1b33}
         .stat-card.amount .value{color:#0c1b33}
 
@@ -66,6 +67,7 @@
         .badge-contacted{background:#dbeafe;color:#1e40af}
         .badge-approved{background:#d1fae5;color:#065f46}
         .badge-rejected{background:#fee2e2;color:#991b1b}
+        .badge-refunded{background:#e0e7ff;color:#3730a3}
 
         .plan-tag{display:inline-block;padding:3px 10px;border-radius:6px;font-size:.78em;font-weight:600;background:#f1f5f9;color:#475569}
 
@@ -77,6 +79,8 @@
         .btn-approve:hover{background:#a7f3d0}
         .btn-reject{background:#fee2e2;color:#991b1b}
         .btn-reject:hover{background:#fecaca}
+        .btn-refund{background:#e0e7ff;color:#3730a3}
+        .btn-refund:hover{background:#c7d2fe}
         .btn-view{background:#f1f5f9;color:#475569}
         .btn-view:hover{background:#e2e8f0}
 
@@ -181,6 +185,7 @@
                     <option value="contacted">Contatado</option>
                     <option value="approved">Aprovado</option>
                     <option value="rejected">Rejeitado</option>
+                    <option value="refunded">Reembolsado</option>
                 </select>
                 <select id="filterPlan" onchange="loadPayments()">
                     <option value="">Todos os planos</option>
@@ -427,7 +432,7 @@ function methodLabel(m) {
 }
 
 function statusBadge(s) {
-    const m = { pending:'Pendente', contacted:'Contatado', approved:'Aprovado', rejected:'Rejeitado' };
+    const m = { pending:'Pendente', contacted:'Contatado', approved:'Aprovado', rejected:'Rejeitado', refunded:'Reembolsado' };
     return `<span class="badge badge-${s}">${m[s]||s}</span>`;
 }
 
@@ -539,6 +544,7 @@ async function loadStats() {
             <div class="stat-card contacted"><div class="label">Contatados</div><div class="value">${d.contacted}</div><div class="sub">aguardando pgto</div></div>
             <div class="stat-card approved"><div class="label">Aprovados</div><div class="value">${d.approved}</div><div class="sub">R$ ${d.approved_amount.toFixed(2)}</div></div>
             <div class="stat-card rejected"><div class="label">Rejeitados</div><div class="value">${d.rejected}</div><div class="sub"></div></div>
+            <div class="stat-card refunded"><div class="label">Reembolsados</div><div class="value">${d.refunded || 0}</div><div class="sub">R$ ${(d.refunded_amount || 0).toFixed(2)}</div></div>
         `;
     } catch(e) {}
 }
@@ -624,6 +630,7 @@ async function viewDetail(id) {
         document.getElementById('detailFooter').innerHTML = `
             <button class="btn btn-cancel" onclick="closeModal('detailModal')">Fechar</button>
             ${p.status === 'approved' ? `<button class="btn btn-danger" onclick="revokeSub(${p.id}, '${esc(p.name)}')">Revogar Assinatura</button>` : ''}
+            ${p.status === 'approved' ? `<button class="btn btn-refund" onclick="refundSub(${p.id}, '${esc(p.name)}')">Reembolsar</button>` : ''}
         `;
         openModal('detailModal');
     } catch(e) { toast('Erro ao carregar detalhes', 'error'); }
@@ -804,6 +811,25 @@ async function revokeSub(id, name) {
         closeModal('detailModal');
         loadAll();
     } catch(e) { toast('Erro ao revogar', 'error'); }
+}
+
+async function refundSub(id, name) {
+    if (!confirm(`Registrar reembolso para ${name}? O acesso sera bloqueado imediatamente.`)) return;
+    const reason = prompt('Motivo do reembolso (opcional):');
+    if (reason === null) return;
+    try {
+        const d = await api('POST', `/api/admin/payments/${id}/refund`, { reason: reason || 'Reembolso solicitado pelo cliente (CDC art. 49)' });
+        if (d.error) { toast(d.error, 'error'); return; }
+        if (d.email_sent === false) {
+            toast('Reembolso registrado e acesso bloqueado, mas o email NAO foi enviado (verifique SMTP).', 'error');
+        } else if (d.email_sent) {
+            toast('Reembolso registrado, acesso bloqueado e email enviado ao usuario.', 'success');
+        } else {
+            toast('Reembolso registrado e acesso bloqueado', 'success');
+        }
+        closeModal('detailModal');
+        loadAll();
+    } catch(e) { toast('Erro ao registrar reembolso', 'error'); }
 }
 
 // INIT

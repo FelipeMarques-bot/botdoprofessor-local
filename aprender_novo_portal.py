@@ -3,8 +3,7 @@
 Uso (a partir do painel):
     1. Escolha "Novo Portal" no seletor de portal.
     2. Informe URL, CPF e senha.
-    3. Marque "Sim - Aprendizado" (Modo aprendizado) na Assistencia IA.
-    4. Clique em EXECUTAR.
+    3. Clique em EXECUTAR. (O modo aprendizado e ativado automaticamente.)
 
 O navegador abre (visivel) na URL informada. O usuario faz o acesso
 manualmente (login, navegacao ate a grade, etc.). O bot grava cada passo

@@ -1111,9 +1111,8 @@ with st.sidebar:
             st.session_state.portal_nome_value = portal_nome
             st.warning(
                 "Portal novo: o bot ainda nao conhece este acesso. "
-                "Marque **'Sim - Aprendizado'** na opcao **Assistencia IA** (abaixo, no painel principal) "
-                "antes de clicar em EXECUTAR. O navegador abrira visivel e voce fara o acesso "
-                "manualmente enquanto a IA local grava e aprende."
+                "Ao clicar em EXECUTAR, o **modo aprendizado sera ativado automaticamente**. "
+                "O navegador abrira visivel e voce fara o acesso manualmente enquanto a IA local grava e aprende."
             )
 
         # Mantem compativeis com o fluxo existente (chaves SGE)
@@ -1838,9 +1837,9 @@ with st.sidebar:
 
     if st.session_state.get("portal_selecionado", "SGE") in ("Novo Portal", "Professor Online") and ia_opcao != "aprendizado":
         if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
-            st.error(
-                "Portal **Novo Portal**: e **obrigatorio** marcar **'Sim - Aprendizado'** aqui. "
-                "Assim a IA local grava seu acesso manual e ensina o bot a usar o novo portal."
+            st.info(
+                "Portal **Novo Portal**: o modo aprendizado sera ativado automaticamente ao executar. "
+                "Nao e necessario marcar nada aqui."
             )
         else:
             st.warning(
@@ -2122,7 +2121,7 @@ if ajuda_btn:
     st.markdown("### Como usar")
     st.markdown("""
     1. **Portal**: Escolha SGE, Professor Online ou Novo Portal
-    2. **Novo Portal**: informe URL, CPF e senha e marque **'Sim - Aprendizado'** na Assistencia IA. O navegador abre visivel, voce faz o acesso manualmente e a IA local aprende.
+    2. **Novo Portal**: informe URL, CPF e senha. Ao executar, o modo aprendizado e ativado automaticamente — o navegador abre visivel, voce faz o acesso manualmente e a IA local aprende.
     3. **API Keys**: Cole o token do Notion e o ID da pagina raiz (veja as instrucoes na propria secao)
     4. **Origem**: Escolha de onde ler os dados (Notion, Excel, CSV, Google)
     5. **Filtros**: Opcionais - para filtrar por escola/turma
@@ -2310,10 +2309,10 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
         # ===== NOVO PORTAL: sessao de aprendizado do acesso =====
         if st.session_state.get("portal_resolvido", "SGE") == "Novo Portal":
             if ia_opcao != "aprendizado":
-                log_progress("ERRO: Para ensinar um portal novo, marque a opcao 'Sim - Aprendizado' (Modo aprendizado) na Assistencia IA.")
-                st.error("Para o portal **Novo Portal**, marque **'Sim - Aprendizado'** na **Assistencia IA** antes de executar.")
-                st.session_state.resultado = {"ok": False, "steps": 0, "portal": "", "outdir": ""}
-                st.stop()
+                ia_opcao = "aprendizado"
+                os.environ["AI_LEARN_MODE"] = "1"
+                log_progress("[HIBRIDO] Modo aprendizado ativado automaticamente para portal novo.")
+                st.info("Portal novo detectado: **modo aprendizado ativado automaticamente**. O navegador abrirá visível e você fará o acesso manualmente enquanto a IA local grava e aprende.")
 
             log_progress("Iniciando aprendizado do novo portal...")
             log_progress("Navegador visivel: faca o acesso manualmente (login, turma, grade, salvar).")

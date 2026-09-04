@@ -1030,7 +1030,10 @@ with st.sidebar:
     st.markdown("### Configuracoes")
 
     with st.expander("Portal do Professor", expanded=True):
-        portal_options = ["SGE", "Professor Online", "Novo Portal", "Auto (detecta pela escola)"]
+        from bot.core.portal_factory import list_portals
+        portais_conhecidos = list_portals()
+        portais_aprendidos = [p for p in portais_conhecidos if p not in ("sge", "professor_online")]
+        portal_options = ["SGE", "Professor Online"] + portais_aprendidos + ["Novo Portal", "Auto (detecta pela escola)"]
         portal_index = 0
         saved_portal = st.session_state.get("portal_selecionado", "SGE")
         if saved_portal in portal_options:
@@ -1040,7 +1043,7 @@ with st.sidebar:
             options=portal_options,
             index=portal_index,
             key="portal_selecionar",
-            help="SGE ou Professor Online: bot ja conhece o acesso. Novo Portal: a IA local aprende o acesso. Auto: detecta o portal pela escola filtrada."
+            help="SGE ou Professor Online: bot ja conhece o acesso. Portais aprendidos: a IA local ja aprendeu o acesso. Novo Portal: a IA local aprende o acesso na primeira vez. Auto: detecta o portal pela escola filtrada."
         )
         st.session_state.portal_selecionado = portal_selecionado
 
@@ -2305,6 +2308,22 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 key_available = True
             if not key_available:
                 log_progress(f"Aviso: API key para {ai_provider.upper()} nao fornecida. IA sera desabilitada.")
+
+        # ===== PORTAL APRENDIDO: usa adaptador hibrido com memoria =====
+        if st.session_state.get("portal_resolvido", "SGE") not in ("SGE", "Professor Online", "Novo Portal"):
+            portal_nome = st.session_state.get("portal_resolvido", "")
+            log_progress(f"[HIBRIDO] Portal aprendido: '{portal_nome}'. Verificando memoria...")
+            try:
+                from bot.core.portal_factory import list_portals
+                portais_memoria = list_portals()
+                if portal_nome.lower().replace(" ", "_") not in [p.lower().replace(" ", "_") for p in portais_memoria]:
+                    log_progress(f"[HIBRIDO] Portal '{portal_nome}' nao encontrado na memoria. Ativando aprendizado...")
+                    ia_opcao = "aprendizado"
+                    os.environ["AI_LEARN_MODE"] = "1"
+                else:
+                    log_progress(f"[HIBRIDO] Portal '{portal_nome}' encontrado na memoria. Executando com adaptador hibrido.")
+            except Exception as exc:
+                log_progress(f"[HIBRIDO] Aviso: falha ao verificar memoria do portal: {exc}")
 
         # ===== NOVO PORTAL: sessao de aprendizado do acesso =====
         if st.session_state.get("portal_resolvido", "SGE") == "Novo Portal":

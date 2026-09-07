@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; color: #1a1a2e; background: #f5f7fa; }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; color: #1a1a2e; background: #f5f7fa; overflow-x: hidden; }
 
         .hero {
             background: linear-gradient(135deg, #0c1b33 0%, #1b2a4a 40%, #243b6a 100%);
@@ -84,7 +84,7 @@
 
         .features {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
             gap: 28px;
             max-width: 1000px;
             margin: -50px auto 60px;
@@ -164,7 +164,7 @@
         .pricing-row-title { font-size: 1.35em; font-weight: 800; color: #0c1b33; margin: 0 0 6px; text-align: center; }
         .pricing-row-desc { text-align: center; color: #64748b; margin-bottom: 22px; font-size: 0.98em; }
         .pricing-block { margin-bottom: 44px; }
-        .pricing-block .plans { grid-template-columns: repeat(3, minmax(240px, 1fr)); }
+        .pricing-block .plans { grid-template-columns: repeat(3, minmax(min(240px, 100%), 1fr)); }
         .plan {
             background: white;
             border-radius: 14px;
@@ -243,6 +243,10 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
+        @media (max-width: 768px) {
+            .pricing-block .plans { grid-template-columns: 1fr; }
+        }
+
         @media (max-width: 600px) {
             .hero h1 { font-size: 2em; }
             .hero p { font-size: 1em; }
@@ -254,7 +258,7 @@
 <body>
     <div class="hero">
         <div class="hero-content">
-            <div class="hero-badge">Para professores e gestores escolares</div>
+            <div class="hero-badge">Para professores</div>
             <h1>Automatize notas, planos e <span>sequências didáticas</span></h1>
             <p>Software completo para Windows que lança tudo automaticamente no SGE. Baixe, instale e use em minutos.</p>
             <a href="#como-funciona" class="cta">Ver como funciona</a>

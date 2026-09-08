@@ -3,16 +3,30 @@
 Uso:
   python upload_binario.py [caminho_do_exe]
 
+Alem do .exe, publica um version.json com a versao de VERSION.txt. O launcher
+(ver launcher.py) consulta /api/check-update, que ler esse arquivo para saber
+se existe versao mais nova.
+
 Pre-requisito: variaveis de ambiente STORAGE_* configuradas no .env
 (ver .env.example). Depois que o .exe estiver no bucket, o download so
 e liberado via /api/download com chave de licenca valida.
 """
+import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv(override=False)
+
+
+def _local_version() -> str:
+    ver_file = Path("VERSION.txt")
+    if ver_file.exists():
+        return ver_file.read_text(encoding="utf-8").strip()
+    return "0.0.0"
 
 
 def main():
@@ -29,6 +43,8 @@ def main():
         sys.exit(1)
 
     obj = os.environ.get("STORAGE_OBJECT", "BotDoProfessor.exe")
+    version_obj = os.environ.get("STORAGE_VERSION_OBJECT", "version.json")
+    version = _local_version()
 
     import boto3
 
@@ -44,6 +60,18 @@ def main():
     client.upload_file(path, os.environ["STORAGE_BUCKET"], obj, ExtraArgs={"ContentType": "application/x-msdownload"})
     size = os.path.getsize(path)
     print(f"Upload concluido: {size} bytes")
+
+    version_body = json.dumps({
+        "version": version,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    client.put_object(
+        Bucket=os.environ["STORAGE_BUCKET"],
+        Key=version_obj,
+        Body=version_body.encode("utf-8"),
+        ContentType="application/json",
+    )
+    print(f"Versao publicada: {version_obj} -> v{version}")
 
 
 if __name__ == "__main__":

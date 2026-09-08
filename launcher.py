@@ -17,6 +17,7 @@ import threading
 import zipfile
 import urllib.request
 import urllib.error
+import urllib.parse
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,10 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 LICENSE_SERVER_URL = "https://botdoprofessor.onrender.com"
 LICENSE_CACHE_DAYS = 7
+
+UPDATE_URL = f"{LICENSE_SERVER_URL}/api/check-update"
+VERSION_FILE_NAME = "VERSION.txt"
+NEW_EXE_FILE = APP_DIR / "BotDoProfessor_new.exe"
 
 if os.name == "nt":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
@@ -699,6 +704,166 @@ def _hide_console():
             pass
 
 
+def get_local_version():
+    """Versao do build embutida no bundle (VERSION.txt). '0' se nao houver."""
+    try:
+        bundled = get_bundled_dir()
+        ver_file = bundled / VERSION_FILE_NAME
+        if ver_file.exists():
+            return ver_file.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        log(f"Falha ao ler versao local: {e}")
+    return "0"
+
+
+def _check_server_update(license_key, local_version):
+    """Consulta o servidor e retorna (sa, baixar_url, nova_versao). Falha de
+    rede ou servidor retorna (False, ...) para seguir com a versao atual."""
+    try:
+        url = f"{UPDATE_URL}?key={urllib.parse.quote(license_key)}&current={urllib.parse.quote(local_version)}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+        resp = urllib.request.urlopen(req, timeout=20)
+        data = json.loads(resp.read().decode("utf-8"))
+        if data.get("update"):
+            return True, data.get("download_url", ""), data.get("version", "")
+        return False, None, data.get("version", "")
+    except Exception as e:
+        log(f"Falha ao verificar atualizacao: {e}")
+        return False, None, None
+
+
+def _download_update(splash, url, version):
+    """Baixa o novo exe para NEW_EXE_FILE mostrando 'Atualizando, aguarde um momento!'."""
+    splash.update("Atualizando, aguarde um momento!", f"Baixando nova versao v{version}...")
+    splash.set_progress(0.02)
+    tmp = NEW_EXE_FILE.with_suffix(".part")
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            with open(tmp, "wb") as f:
+                downloaded = 0
+                while True:
+                    chunk = resp.read(262144)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        splash.set_progress(0.02 + 0.88 * (downloaded / total))
+                    splash.update("Atualizando, aguarde um momento!", f"Baixando nova versao v{version}...")
+        if not tmp.exists() or tmp.stat().st_size == 0:
+            raise ValueError("Download vazio")
+        if NEW_EXE_FILE.exists():
+            NEW_EXE_FILE.unlink()
+        os.replace(tmp, NEW_EXE_FILE)
+        size = NEW_EXE_FILE.stat().st_size
+        log(f"Atualizacao baixada: {size} bytes")
+        return True
+    except Exception as e:
+        log(f"Falha no download da atualizacao: {e}")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+
+def _launch_updater(splash):
+    """Gera e dispara updater.bat: espera este processo terminar, substitui o
+    exe na pasta de origem e reabre com a nova versao."""
+    if os.name != "nt":
+        return False
+    if not getattr(sys, "frozen", False):
+        log("Auto-update disponivel apenas para o .exe empacotado")
+        return False
+
+    current_exe = sys.executable
+    pid = os.getpid()
+    updater_bat = APP_DIR / "updater.bat"
+    updater_log = LOG_DIR / "updater.log"
+
+    content = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f"set \"OLDPID={pid}\"\r\n"
+        f"set \"NEWEXE={NEW_EXE_FILE}\"\r\n"
+        f"set \"OLDEXE={current_exe}\"\r\n"
+        f"set \"BAT=%~f0\"\r\n"
+        f"set \"LOG={updater_log}\"\r\n"
+        "echo [%date% %time%] Iniciando updater PID=%OLDPID% >>\"%LOG%\"\r\n"
+        ":wait\r\n"
+        "tasklist /FI \"PID eq %OLDPID%\" | find \"%OLDPID%\" >nul\r\n"
+        "if not errorlevel 1 (\r\n"
+        "    ping -n 3 127.0.0.1 >nul\r\n"
+        "    if exist \"%BAT%\" goto wait\r\n"
+        ")\r\n"
+        "if not exist \"%NEWEXE%\" (\r\n"
+        "    echo [%date% %time%] Novo exe ausente, abortando >>\"%LOG%\"\r\n"
+        "    del \"%BAT%\" >nul 2>nul\r\n"
+        "    endlocal\r\n"
+        "    exit /b 1\r\n"
+        ")\r\n"
+        "echo [%date% %time%] Substituindo %OLDEXE% >>\"%LOG%\"\r\n"
+        "move /y \"%NEWEXE%\" \"%OLDEXE%\" >>\"%LOG%\" 2>&1\r\n"
+        "echo [%date% %time%] Iniciando nova versao >>\"%LOG%\"\r\n"
+        "start \"\" \"%OLDEXE%\" --updated\r\n"
+        "del \"%BAT%\" >nul 2>nul\r\n"
+        "endlocal\r\n"
+        "exit /b 0\r\n"
+    )
+    try:
+        updater_bat.write_text(content, encoding="ascii", errors="replace")
+        log(f"Updater criado: {updater_bat}")
+        cmd = ["cmd", "/c", str(updater_bat)]
+        subprocess.Popen(
+            cmd,
+            creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
+            close_fds=True,
+        )
+        return True
+    except Exception as e:
+        log(f"Falha ao disparar updater: {e}")
+        return False
+
+
+def maybe_apply_update(splash, license_key):
+    """Verifica e aplica atualizacao quando ha versao nova. Encerra o processo
+    durante o auto-update; em qualquer falha, segue com a versao atual."""
+    if not license_key or "--updated" in sys.argv:
+        log("Check de atualizacao ignorado")
+        return True
+
+    local_version = get_local_version()
+    log(f"Versao local: {local_version}")
+
+    has_update, download_url, new_version = _check_server_update(license_key, local_version)
+    if not has_update or not download_url:
+        log("Sem atualizacao disponivel")
+        return True
+
+    log(f"Nova versao disponivel: {new_version}")
+    ok = _download_update(splash, download_url, new_version)
+    if not ok:
+        log("Falha na atualizacao — usando versao atual")
+        return True
+
+    splash.update("Atualizando, aguarde um momento!", "Finalizando instalacao...")
+    splash.set_progress(0.95)
+    if _launch_updater(splash):
+        log("Atualizador disparado — encerrando versao atual")
+        splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
+        time.sleep(1.0)
+        try:
+            splash.close()
+        except Exception:
+            pass
+        sys.exit(0)
+    log("Nao foi possivel disparar o updater — usando versao atual")
+    return True
+
+
 def main():
     _set_utf8()
     _hide_console()
@@ -708,6 +873,7 @@ def main():
     log("BotDoProfessor — Iniciando...")
 
     cached_key, cached_plan, _ = _get_license_cache()
+    license_key = cached_key
     if cached_key:
         log(f"Licenca validada em cache: {cached_plan}")
         valid, data = _validate_license_online(cached_key)
@@ -723,16 +889,20 @@ def main():
             if not key:
                 log("Usuario fechou o dialogo de licenca")
                 sys.exit(0)
+            license_key = key
     else:
         log("Nenhuma licenca em cache — exibindo dialogo de ativacao")
         key = _show_license_dialog()
         if not key:
             log("Usuario fechou o dialogo de licenca")
             sys.exit(0)
+        license_key = key
 
     splash = SplashScreen()
 
     try:
+        maybe_apply_update(splash, license_key)
+
         splash.update("Verificando Python...", "Procurando Python no sistema")
         python = get_python(splash)
         if not python:

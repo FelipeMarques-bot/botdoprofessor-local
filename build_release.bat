@@ -49,6 +49,7 @@ python -m PyInstaller ^
     --add-data "bot;bot" ^
     --add-data "docs;docs" ^
     --add-data ".env.example;." ^
+    --add-data "VERSION.txt;." ^
     --hidden-import "streamlit" ^
     --hidden-import "playwright" ^
     --hidden-import "playwright.sync_api" ^

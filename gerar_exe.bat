@@ -30,6 +30,7 @@ python -m PyInstaller ^
     --add-data "leitor_planilhas.py;." ^
     --add-data "ai_assist.py;." ^
     --add-data "status_store.py;." ^
+    --add-data "VERSION.txt;." ^
     --hidden-import "streamlit" ^
     --hidden-import "playwright" ^
     --hidden-import "playwright.sync_api" ^

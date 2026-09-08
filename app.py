@@ -73,6 +73,16 @@ def create_app():
             return jsonify({"error": error}), 403
         return redirect(url, code=302)
 
+    @app.route("/api/check-update")
+    def check_update():
+        from bot.core.update_service import check_update
+        key = request.args.get("key", "")
+        current = request.args.get("current", "")
+        result, error = check_update(key, current)
+        if error:
+            return jsonify({"error": error}), 403
+        return jsonify(result)
+
     @app.route("/admin")
     def admin_portal():
         return send_from_directory(LANDING_DIR, "admin.html")

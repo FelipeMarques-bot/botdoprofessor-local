@@ -1,0 +1,158 @@
+name: Publicar BotDoProfessor (Build + R2 + Release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versao manual (ex: 1.4.42). Deixe vazio para auto-incrementar patch."
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "bot/**"
+      - "lancar_*.py"
+      - "autofix.py"
+      - "ai_assist.py"
+      - "status_store.py"
+      - "interpretar_pedido.py"
+      - "leitor_planilhas.py"
+      - "painel.py"
+      - "launcher.py"
+      - "app.py"
+      - "requirements*.txt"
+      - "VERSION.txt"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller boto3
+
+      - name: Calcular nova versao
+        id: version
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+
+          current = Path("VERSION.txt").read_text(encoding="utf-8").strip()
+          manual = "${{ github.event.inputs.version }}".strip()
+
+          if manual:
+              new_ver = manual
+          else:
+              parts = current.split(".")
+              if len(parts) == 3:
+                  parts[2] = str(int(parts[2]) + 1)
+              new_ver = ".".join(parts)
+
+          Path("VERSION.txt").write_text(new_ver, encoding="utf-8")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"old={current}\n")
+              f.write(f"new={new_ver}\n")
+
+          print(f"Versao: {current} -> {new_ver}")
+
+      - name: Gerar .exe (PyInstaller)
+        run: |
+          python -m PyInstaller `
+            --onefile `
+            --name "BotDoProfessor" `
+            --noconfirm `
+            --clean `
+            --add-data "painel.py;." `
+            --add-data "autofix.py;." `
+            --add-data "lancar_notas_sge.py;." `
+            --add-data "lancar_professor_online.py;." `
+            --add-data "aprender_novo_portal.py;." `
+            --add-data "lancar_sequencia_didatica_sge.py;." `
+            --add-data "leitor_planilhas.py;." `
+            --add-data "ai_assist.py;." `
+            --add-data "status_store.py;." `
+            --add-data "lancar_chamada_sge.py;." `
+            --add-data "interpretar_pedido.py;." `
+            --add-data "bot;bot" `
+            --add-data "docs;docs" `
+            --add-data ".env.example;." `
+            --add-data "VERSION.txt;." `
+            --hidden-import "streamlit" `
+            --hidden-import "playwright" `
+            --hidden-import "playwright.sync_api" `
+            --hidden-import "openpyxl" `
+            --hidden-import "pandas" `
+            --hidden-import "google.genai" `
+            --hidden-import "openai" `
+            --hidden-import "anthropic" `
+            --hidden-import "requests" `
+            --hidden-import "dotenv" `
+            launcher.py
+
+      - name: Verificar .exe
+        shell: bash
+        run: |
+          if [ ! -f dist/BotDoProfessor.exe ]; then
+            echo "ERRO: .exe nao gerado"
+            exit 1
+          fi
+          echo "Tamanho: $(wc -c < dist/BotDoProfessor.exe) bytes"
+
+      - name: Enviar ao Cloudflare R2
+        env:
+          STORAGE_ENDPOINT: ${{ secrets.STORAGE_ENDPOINT }}
+          STORAGE_ACCESS_KEY: ${{ secrets.STORAGE_ACCESS_KEY }}
+          STORAGE_SECRET_KEY: ${{ secrets.STORAGE_SECRET_KEY }}
+          STORAGE_BUCKET: ${{ secrets.STORAGE_BUCKET }}
+          STORAGE_OBJECT: ${{ secrets.STORAGE_OBJECT || 'BotDoProfessor.exe' }}
+          STORAGE_VERSION_OBJECT: ${{ secrets.STORAGE_VERSION_OBJECT || 'version.json' }}
+          STORAGE_REGION: ${{ secrets.STORAGE_REGION || 'auto' }}
+        run: python upload_binario.py
+
+      - name: Commit versao no repositorio
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: bump version to ${{ steps.version.outputs.new }} [skip ci]"
+            git push
+            echo "Version bumped and pushed."
+          else
+            echo "Nenhuma alteracao no VERSION.txt."
+          fi
+
+      - name: Criar GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.new }}
+          name: BotDoProfessor v${{ steps.version.outputs.new }}
+          body: |
+            ## v${{ steps.version.outputs.new }}
+
+            **Download:** O `.exe` é baixado automaticamente pelo launcher na próxima abertura.
+
+            ### Como atualizar
+            - Clientes com v1.4.41+: atualização automática (launcher baixa na próxima abertura)
+            - Clientes anteriores: baixe o `.exe` manualmente via `/api/download`
+          files: dist/BotDoProfessor.exe
+          draft: false
+          prerelease: false

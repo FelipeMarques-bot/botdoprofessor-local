@@ -115,6 +115,40 @@ jobs:
           fi
           echo "Tamanho: $(wc -c < dist/BotDoProfessor.exe) bytes"
 
+      - name: Validar secrets de storage
+        shell: bash
+        env:
+          STORAGE_ENDPOINT: ${{ secrets.STORAGE_ENDPOINT }}
+          STORAGE_ACCESS_KEY: ${{ secrets.STORAGE_ACCESS_KEY }}
+          STORAGE_SECRET_KEY: ${{ secrets.STORAGE_SECRET_KEY }}
+          STORAGE_BUCKET: ${{ secrets.STORAGE_BUCKET }}
+        run: |
+          errors=0
+          if [ -z "$STORAGE_ENDPOINT" ] || [[ "$STORAGE_ENDPOINT" == *"<account>"* ]]; then
+            echo "ERRO: STORAGE_ENDPOINT invalido ou placeholder"
+            echo "  Valor atual: '${STORAGE_ENDPOINT:0:20}...'"
+            echo "  Formato esperado: https://<ID>.r2.cloudflarestorage.com"
+            errors=1
+          fi
+          if [ -z "$STORAGE_ACCESS_KEY" ]; then
+            echo "ERRO: STORAGE_ACCESS_KEY vazio"
+            errors=1
+          fi
+          if [ -z "$STORAGE_SECRET_KEY" ]; then
+            echo "ERRO: STORAGE_SECRET_KEY vazio"
+            errors=1
+          fi
+          if [ -z "$STORAGE_BUCKET" ]; then
+            echo "ERRO: STORAGE_BUCKET vazio"
+            errors=1
+          fi
+          if [ $errors -ne 0 ]; then
+            echo ""
+            echo "Configure os secrets em: GitHub > Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          echo "Secrets de storage OK (${STORAGE_ENDPOINT:0:30}...)"
+
       - name: Enviar ao Cloudflare R2
         env:
           STORAGE_ENDPOINT: ${{ secrets.STORAGE_ENDPOINT }}

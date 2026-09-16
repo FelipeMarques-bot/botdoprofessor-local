@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 
 from lancar_notas_sge import (
     ContextoTurma,

@@ -1,5 +1,6 @@
 import os
 import json
+import hmac
 import hashlib
 from datetime import datetime
 from pathlib import Path
@@ -53,11 +54,11 @@ class PaymentService:
         ext_ref = self._generate_external_ref(plan, email, cpf)
 
         if payment_method == "pix":
-            return self._create_pix_payment(plan_info, name, email, cpf_clean, ext_ref)
+            return self._create_pix_payment(plan, plan_info, name, email, cpf_clean, ext_ref)
 
         return self._create_checkout_preference(plan, plan_info, name, email, cpf_clean, ext_ref)
 
-    def _create_pix_payment(self, plan_info, name, email, cpf, ext_ref):
+    def _create_pix_payment(self, plan, plan_info, name, email, cpf, ext_ref):
         """Cria pagamento Pix direto via API (sem checkout redirect)."""
         try:
             payment_data = {
@@ -87,9 +88,10 @@ class PaymentService:
             if not qr_code_base64 and not qr_code:
                 return {"error": "Nao foi possivel gerar QR Code Pix"}
 
-            self._save_payment_by_id(plan_info, name, email, cpf, ext_ref, "mercadopago_pix", payment_id)
+            self._save_payment(plan, email, cpf, name, "mercadopago_pix", ext_ref,
+                               status="pending", mp_payment_id=payment_id)
 
-            self._create_db_payment_request(ext_ref, name, email, cpf, plan_info["preco"], "pix")
+            self._create_db_payment_request(plan, name, email, cpf, plan_info["preco"], "pix", ext_ref)
 
             return {
                 "qr_code_base64": qr_code_base64,
@@ -126,11 +128,11 @@ class PaymentService:
                     ],
                 },
                 "external_reference": ext_ref,
-                "notification_url": f"{os.environ.get('APP_URL', 'http://localhost:5000')}/api/webhook/mercadopago",
+                "notification_url": f"{self._public_url()}/api/webhook/mercadopago",
                 "back_urls": {
-                    "success": f"{os.environ.get('APP_URL', 'http://localhost:5000')}/success",
-                    "pending": f"{os.environ.get('APP_URL', 'http://localhost:5000')}/success",
-                    "failure": f"{os.environ.get('APP_URL', 'http://localhost:5000')}/",
+                    "success": f"{self._public_url()}/success",
+                    "pending": f"{self._public_url()}/success",
+                    "failure": f"{self._public_url()}/",
                 },
                 "auto_return": "approved",
             }
@@ -143,7 +145,8 @@ class PaymentService:
             else:
                 init_point = response.get("init_point", "")
 
-            self._save_payment(plan, email, cpf, name, "mercadopago", init_point)
+            self._save_payment(plan, email, cpf, name, "mercadopago", ext_ref, status="pending")
+            self._create_db_payment_request(plan, name, email, cpf, plan_info["preco"], "card", ext_ref)
 
             return {"checkout_url": init_point}
 
@@ -160,7 +163,7 @@ class PaymentService:
         ref = self._generate_external_ref(plan, email, cpf)
         self._save_payment(plan, email, cpf, name, "manual_pix", ref, status="pending")
 
-        self._create_db_payment_request(plan, name, email, cpf, plan_info["preco"], "pix")
+        self._create_db_payment_request(plan, name, email, cpf, plan_info["preco"], "pix", ref)
 
         return {
             "qr_code": pix_payload,
@@ -169,6 +172,35 @@ class PaymentService:
             "reference": ref,
             "message": f"Pague R$ {plan_info['preco']:.2f} via Pix e envie o comprovante para {os.environ.get('CONTACT_EMAIL', 'contato@botdoprofessor.com.br')}",
         }
+
+    def _public_url(self) -> str:
+        """URL publica do backend (usa APP_URL ou o servidor de licencas)."""
+        url = (os.environ.get("APP_URL", "") or "").rstrip("/")
+        if url.startswith("http"):
+            return url
+        fallback = os.environ.get("LICENSE_SERVER_URL", "") or "https://botdoprofessor.onrender.com"
+        return fallback.rstrip("/")
+
+    def verify_webhook(self, request) -> bool:
+        """Valida a assinatura do Mercado Pago (libera se o segredo nao estiver configurado)."""
+        secret = os.environ.get("MP_WEBHOOK_SECRET", "")
+        if not secret:
+            return True
+        try:
+            signature = request.headers.get("x-signature", "")
+            request_id = request.headers.get("x-request-id", "")
+            body = request.get_json(silent=True) or {}
+            data_id = str(request.args.get("data.id") or request.args.get("id") or body.get("data", {}).get("id") or "")
+            parts = dict(p.split("=", 1) for p in signature.split(",") if "=" in p)
+            ts = parts.get("ts", "")
+            v1 = parts.get("v1", "")
+            if not ts or not v1:
+                return False
+            manifest = f"id:{data_id};request-id:{request_id};ts:{ts};"
+            expected = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+            return hmac.compare_digest(expected, v1)
+        except Exception:
+            return False
 
     def handle_webhook(self, data: Dict) -> Dict:
         """Processa notificacao do Mercado Pago."""
@@ -216,9 +248,13 @@ class PaymentService:
         from bot.models.database import db
         plan = payment_info.get("plan", "")
         if plan:
-            lic = License.create(user_id=None, plan=plan, key=license_key)
-            db.session.add(lic)
-            db.session.commit()
+            try:
+                lic = License.create(user_id=None, plan=plan, key=license_key)
+                db.session.add(lic)
+                db.session.commit()
+            except ValueError as e:
+                print(f"[PAYMENT WARN] Plano invalido ao aprovar pagamento: {plan} ({e})", flush=True)
+                return
 
         payment_info["license_key"] = license_key
         payment_info["status"] = "approved"
@@ -227,6 +263,17 @@ class PaymentService:
 
         with open(payment_file, "w", encoding="utf-8") as f:
             json.dump(payment_info, f, indent=2, ensure_ascii=False)
+
+        try:
+            from bot.models.payment_request import PaymentRequest
+            pr = PaymentRequest.query.filter_by(reference=external_ref).first()
+            if pr:
+                pr.status = "approved"
+                pr.license_key = license_key
+                pr.approved_at = datetime.utcnow()
+                db.session.commit()
+        except Exception as e:
+            print(f"[DB WARN] Falha ao atualizar PaymentRequest: {e}")
 
         self._send_license_email(
             email=payment_info["email"],
@@ -241,8 +288,11 @@ class PaymentService:
         plan_info = PLANOS.get(plan, self.PLANS.get(plan, {}))
         plan_label = plan_info.get("label", plan)
 
-        app_url = os.environ.get("APP_URL", "")
-        download_url = f"{app_url}/api/download?key={license_key}"
+        app_url = (os.environ.get("APP_URL", "") or "").rstrip("/")
+        if app_url.startswith("http"):
+            download_url = f"{app_url}/api/download?key={license_key}"
+        else:
+            download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
 
         html = f"""
         <html>
@@ -529,7 +579,7 @@ class PaymentService:
     def _generate_pix_payload(amount: float) -> str:
         return f"Chave Pix: {os.environ.get('PIX_KEY', 'informar PIX_KEY no .env')}\nValor: R$ {amount:.2f}\nNome: {os.environ.get('PIX_NAME', 'BotDoProfessor')}"
 
-    def _save_payment(self, plan, email, cpf, name, method, reference, status="created"):
+    def _save_payment(self, plan, email, cpf, name, method, reference, status="created", mp_payment_id=None):
         info = {
             "plan": plan,
             "email": email,
@@ -537,39 +587,24 @@ class PaymentService:
             "name": name,
             "method": method,
             "reference": reference,
+            "mp_payment_id": mp_payment_id,
             "status": status,
             "created_at": datetime.utcnow().isoformat(),
         }
-        ref = hashlib.sha256(f"{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
-        with open(DATA_DIR / f"{ref}.json", "w", encoding="utf-8") as f:
+        with open(DATA_DIR / f"{reference}.json", "w", encoding="utf-8") as f:
             json.dump(info, f, indent=2, ensure_ascii=False)
-
-    def _save_payment_by_id(self, plan_info, name, email, cpf, ext_ref, method, mp_payment_id):
-        info = {
-            "plan": plan_info.get("label", ""),
-            "email": email,
-            "cpf": cpf,
-            "name": name,
-            "method": method,
-            "reference": ext_ref,
-            "mp_payment_id": mp_payment_id,
-            "status": "pending",
-            "created_at": datetime.utcnow().isoformat(),
-        }
-        with open(DATA_DIR / f"{ext_ref}.json", "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=2, ensure_ascii=False)
+        return reference
 
     @staticmethod
-    def _create_db_payment_request(plan, name, email, cpf, amount, payment_method):
+    def _create_db_payment_request(plan, name, email, cpf, amount, payment_method, reference):
         try:
             from flask import current_app
             from bot.models.database import db
             from bot.models.payment_request import PaymentRequest
             if not current_app:
                 return
-            reference = hashlib.sha256(
-                f"{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()
-            ).hexdigest()[:16]
+            if PaymentRequest.query.filter_by(reference=reference).first():
+                return
             pr = PaymentRequest(
                 name=name, email=email, cpf=cpf, plan=plan,
                 amount=float(amount), payment_method=payment_method,

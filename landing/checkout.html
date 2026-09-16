@@ -181,16 +181,31 @@
                 const data = await resp.json();
                 if (data.checkout_url) {
                     window.location.href = data.checkout_url;
-                } else if (data.qr_code_base64) {
+                } else if (data.qr_code_base64 || data.qr_code) {
+                    const email = document.getElementById('email').value.trim();
+                    const qrImage = data.qr_code_base64
+                        ? `<img src="data:image/png;base64,${data.qr_code_base64}" style="width:200px;display:block;margin:0 auto 16px">`
+                        : '';
+                    const pixCode = data.qr_code || '';
+                    const refBlock = data.reference
+                        ? `<p style="margin-top:8px;color:#94a3b8;font-size:0.8em;word-break:break-all">Referencia: ${data.reference}</p>`
+                        : '';
+                    const msgBlock = data.message
+                        ? `<p style="margin-top:8px;color:#475569;font-size:0.9em;line-height:1.6">${data.message}</p>`
+                        : '';
                     document.getElementById('checkout-form').innerHTML = `
                         <h1>Pagamento via Pix</h1>
                         <p style="margin:16px 0;color:#64748b">Escaneie o QR Code abaixo ou copie a chave Pix:</p>
-                        <img src="data:image/png;base64,${data.qr_code_base64}" style="width:200px;display:block;margin:0 auto 16px">
-                        <textarea readonly style="width:100%;height:60px;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:0.85em">${data.qr_code || ''}</textarea>
-                        <button onclick="navigator.clipboard.writeText('${data.qr_code || ''}')" style="width:100%;padding:10px;margin-top:8px;background:#32BCAD;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600">Copiar chave Pix</button>
-                        <p style="margin-top:16px;color:#64748b;font-size:0.9em;line-height:1.6">Apos o pagamento, a chave de licenca e o link de download serao enviados para <b>${document.getElementById('email').value}</b>. O email pode levar alguns minutos para chegar.</p>
+                        ${qrImage}
+                        <textarea readonly style="width:100%;height:60px;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:0.85em">${pixCode}</textarea>
+                        <button id="copy-pix" style="width:100%;padding:10px;margin-top:8px;background:#32BCAD;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600">Copiar chave Pix</button>
+                        ${refBlock}
+                        ${msgBlock}
+                        <p style="margin-top:16px;color:#64748b;font-size:0.9em;line-height:1.6">Apos o pagamento, a chave de licenca e o link de download serao enviados para <b>${email}</b>. O email pode levar alguns minutos para chegar.</p>
                         <a href="/" style="display:block;text-align:center;margin-top:16px;color:#666;text-decoration:none">Voltar ao inicio</a>
                     `;
+                    const copyBtn = document.getElementById('copy-pix');
+                    if (copyBtn) copyBtn.addEventListener('click', () => navigator.clipboard.writeText(pixCode));
                 } else if (data.error) {
                     showError(data.error);
                     document.getElementById('pay-pix').disabled = false;

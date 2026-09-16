@@ -31,8 +31,14 @@ def verify_payment(reference):
     return jsonify(result)
 
 
-@webhook_bp.route("/mercadopago", methods=["POST"])
+@webhook_bp.route("/mercadopago", methods=["GET", "POST"])
 def mercadopago_webhook():
-    data = request.get_json() or {}
+    if not _service.verify_webhook(request):
+        return jsonify({"status": "ignored", "reason": "invalid_signature"}), 401
+    data = request.get_json(silent=True) or {}
+    if not data.get("data", {}).get("id"):
+        query_id = request.args.get("data.id") or request.args.get("id")
+        if query_id:
+            data = {"data": {"id": query_id}}
     result = _service.handle_webhook(data)
     return jsonify(result)

@@ -3705,9 +3705,26 @@ with st.expander("💬 Assistente (comandos em linguagem natural)", expanded=Fal
         st.rerun()
 
 # === RODAPE ===
+def _versao_app() -> str:
+    from pathlib import Path
+    candidatos = [Path(__file__).resolve().parent / "VERSION.txt"]
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidatos.append(Path(base) / "VERSION.txt")
+    for c in candidatos:
+        try:
+            if c.exists():
+                v = c.read_text(encoding="utf-8").strip()
+                if v:
+                    return v
+        except Exception:
+            pass
+    return "dev"
+
+
 st.markdown("---")
 st.markdown(
-    "<small>Bot do Professor v1.4.43 - Automação de lançamento de notas. "
+    f"<small>Bot do Professor v{_versao_app()} - Automação de lançamento de notas. "
     "Use com responsabilidade. Verifique os dados antes de lançar.</small>",
     unsafe_allow_html=True,
 )

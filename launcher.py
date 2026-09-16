@@ -319,7 +319,7 @@ APP_FILES = [
     "lancar_sequencia_didatica_sge.py", "leitor_planilhas.py",
     "ai_assist.py", "status_store.py", "lancar_chamada_sge.py",
     "interpretar_pedido.py", "bot", "docs",
-    ".env.example",
+    ".env.example", "VERSION.txt",
 ]
 
 

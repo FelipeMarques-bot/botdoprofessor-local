@@ -997,7 +997,7 @@ if not st.session_state.license_valid:
                         st.session_state.license_plan = data.get("plan", "")
                         st.rerun()
                     else:
-                        st.error(data.get("error", "Chave invalida ou expirada"))
+                        st.error(data.get("error", "Chave inválida ou expirada"))
                         url = data.get("resubscribe_url")
                         if url:
                             st.markdown(
@@ -1012,7 +1012,7 @@ if not st.session_state.license_valid:
         resub = st.session_state.get("license_resubscribe_url") or "https://botdoprofessor.onrender.com/checkout"
         st.markdown(
             f'<a href="{resub}" target="_blank">'
-            'Nao tem chave? Compre ou reassine aqui</a>',
+            'Não tem chave? Compre ou reassine aqui</a>',
             unsafe_allow_html=True,
         )
     st.stop()
@@ -1024,7 +1024,7 @@ with st.sidebar:
     if plan_label:
         st.markdown(
             f"<div style='background:#1a2a1a;border:1px solid #2a5a2a;border-radius:8px;padding:6px 12px;margin-bottom:12px;font-size:0.85rem;color:#5ae05a;text-align:center;'>"
-            f"Licenca {plan_label}</div>",
+            f"Licença {plan_label}</div>",
             unsafe_allow_html=True,
         )
     st.markdown("### Configurações")
@@ -1095,8 +1095,8 @@ with st.sidebar:
 
         if st.button("Fechar navegador do portal", help="Encerra a sessão que fica aberta entre execuções. Use se o portal travar ou para entrar com outro usuário."):
             _fechar_navegador_persistente()
-            st.toast("Navegador fechado. A proxima execução fara novo login.")
-        st.caption("Entre execuções o bot reaproveita o portal já aberto, sem repetir login. Trocou de portal ou de senha? A sessão e renovada automaticamente.")
+            st.toast("Navegador fechado. A próxima execução fará novo login.")
+        st.caption("Entre execuções o bot reaproveita o portal já aberto, sem repetir login. Trocou de portal ou de senha? A sessão é renovada automaticamente.")
 
         if (senha or "").strip().lower() in {"123456", "12345678", "12345", "123", "senha", "sua_senha", "teste", "test", "password"}:
             st.warning(
@@ -1115,7 +1115,7 @@ with st.sidebar:
             st.warning(
                 "Portal novo: o bot ainda não conhece este acesso. "
                 "Ao clicar em EXECUTAR, o **modo aprendizado será ativado automaticamente**. "
-                "O navegador abrira visivel e voce fara o acesso manualmente enquanto a IA local grava e aprende."
+                "O navegador abrirá visível e você fará o acesso manualmente enquanto a IA local grava e aprende."
             )
 
         # Mantem compativeis com o fluxo existente (chaves SGE)
@@ -1129,20 +1129,20 @@ with st.sidebar:
         st.session_state.np_cpf = cpf
         st.session_state.np_senha = senha
 
-    with st.expander("Chaves de conexao (Notion)", expanded=True):
+    with st.expander("Chaves de conexão (Notion)", expanded=True):
         st.caption(
-            "**O que e isso?** O Notion guarda suas planilhas de notas. Para o bot ler as notas "
-            "de la, ele precisa de duas 'chaves' (codigos de acesso). **So preencha se voce usa Notion** — "
-            "quem usa Google Forms ou Excel pode pular esta secao."
+            "**O que é isso?** O Notion guarda suas planilhas de notas. Para o bot ler as notas "
+            "de lá, ele precisa de duas 'chaves' (códigos de acesso). **Só preencha se você usa Notion** — "
+            "quem usa Google Forms ou Excel pode pular esta seção."
         )
         st.caption(
             "**Como obter:** 1) No navegador, acesse notion.so/profile/sessions (logado) e clique em "
-            "'Criar integracao' em notion.so/my-integrations; 2) Copie a chave que comeca com **secret_** e cole abaixo; "
-            "3) Abra a pagina do seu boletim no Notion, clique nos '...' > 'Conexoes' > adicione sua integracao; "
-            "4) O **ID da pagina** são os 32 caracteres no final da URL da pagina."
+            "'Criar integração' em notion.so/my-integrations; 2) Copie a chave que começa com **secret_** e cole abaixo; "
+            "3) Abra a página do seu boletim no Notion, clique nos '...' > 'Conexões' > adicione sua integração; "
+            "4) O **ID da página** são os 32 caracteres no final da URL da página."
         )
         notion_token = st.text_input(
-            "Chave do Notion (comeca com secret_)",
+            "Chave do Notion (começa com secret_)",
             value=st.session_state.get("notion_token", ""),
             key="notion_token_input",
             type="password",
@@ -1150,7 +1150,7 @@ with st.sidebar:
         st.session_state.notion_token = notion_token
 
         root_page_id = st.text_input(
-            "ID da pagina raiz (32 caracteres)",
+            "ID da página raiz (32 caracteres)",
             value=st.session_state.get("root_page_id", ""),
             key="root_page_id_input",
         )
@@ -1328,13 +1328,13 @@ with st.sidebar:
             with st.expander("Importar relatório do Google Forms"):
                 st.markdown(
                     "Para avaliações aplicadas via **Google Forms**: baixe o relatório "
-                    "(.xlsx) e importe aqui. O bot converte a pontuacao bruta em nota "
-                    "(acertos x valor por questao, ex.: 19 x 0,5 = 9,5), mantendo apenas "
+                    "(.xlsx) e importe aqui. O bot converte a pontuação bruta em nota "
+                    "(acertos x valor por questão, ex.: 19 x 0,5 = 9,5), mantendo apenas "
                     "a última resposta de cada aluno. Não afeta a leitura das outras "
                     "planilhas nem do Notion."
                 )
                 gf_arquivo = st.file_uploader(
-                    "Relatorio .xlsx do Google Forms",
+                    "Relatório .xlsx do Google Forms",
                     type=["xlsx"],
                     key="gf_upload",
                 )
@@ -1355,16 +1355,16 @@ with st.sidebar:
                         gf_total_auto = None
                         gf_turmas = []
                     if gf_total_auto:
-                        st.caption(f"Total de questoes detectado: **{gf_total_auto}**")
+                        st.caption(f"Total de questões detectado: **{gf_total_auto}**")
                 gf_n_q = st.number_input(
-                    "Total de questoes",
+                    "Total de questões",
                     min_value=1,
                     step=1,
                     value=int(gf_total_auto or 20),
                     key="gf_n_questoes",
                 )
                 gf_valor = st.number_input(
-                    "Valor de cada questao (pontos)",
+                    "Valor de cada questão (pontos)",
                     min_value=0.05,
                     max_value=10.0,
                     step=0.05,
@@ -1384,8 +1384,8 @@ with st.sidebar:
                     index=_tri_opcoes.index(_tri_atual) if _tri_atual in _tri_opcoes else 0,
                     key="gf_trimestre",
                     help="Gravado em cada linha importada e usado para abrir o "
-                         "periodo certo no portal. A data não e necessaria: a "
-                         "avaliacao e localizada pelo nome.",
+                         "período certo no portal. A data não é necessária: a "
+                         "avaliação é localizada pelo nome.",
                 )
                 gf_mapa_turno: Dict[str, str] = {}
                 if gf_turmas:
@@ -1402,7 +1402,7 @@ with st.sidebar:
                     if len(gf_mapa_turno) < len(gf_turmas):
                         st.caption(
                             "Deixe o filtro de Turno (aba Filtros) **vazio** para "
-                            "lancar em todos os turnos; cada turma usara o turno "
+                            "lançar em todos os turnos; cada turma usará o turno "
                             "marcado acima."
                         )
                 if st.button("Importar para a tabela", key="gf_importar", use_container_width=True):
@@ -1441,21 +1441,21 @@ with st.sidebar:
                             ) if gf_mapa_turno else 0
                             msg = f"{len(gf_regs)} aluno(s) importado(s)."
                             if sem_turno:
-                                msg += f" Atencao: {sem_turno} linha(s) sem turno definido."
+                                msg += f" Atenção: {sem_turno} linha(s) sem turno definido."
                             st.success(msg + " Confira na aba **Planilha** e execute.")
                             st.rerun()
                         else:
                             st.warning(
                                 "Nenhuma resposta válida encontrada. Verifique se o "
-                                "arquivo tem as colunas de nome e Score/Pontuacao."
+                                "arquivo tem as colunas de nome e Score/Pontuação."
                             )
         elif fonte == "google_sheets":
             st.info(
-                "Cole o link compartilhavel do **Google Sheets** abaixo.\n\n"
+                "Cole o link compartilhável do **Google Sheets** abaixo.\n\n"
                 "Ex: `https://docs.google.com/spreadsheets/d/...`"
             )
             link = st.text_input(
-                "URL compartilhavel do Google Sheets:",
+                "URL compartilhável do Google Sheets:",
                 key="link_input",
                 placeholder="https://docs.google.com/spreadsheets/d/...",
             )
@@ -1530,7 +1530,7 @@ with st.sidebar:
                     "Escola",
                     options=[""] + _escolas_disp,
                     key="escola_opcoes",
-                    help="Opcoes vindas da tabela do painel.",
+                    help="Opções vindas da tabela do painel.",
                 )
                 st.session_state["escola_input"] = escola
             else:
@@ -1546,7 +1546,7 @@ with st.sidebar:
                     "Turma",
                     options=[""] + _turmas_disp,
                     key="turma_opcoes",
-                    help="Opcoes vindas da tabela do painel.",
+                    help="Opções vindas da tabela do painel.",
                 )
                 st.session_state["turma_input"] = turma
             else:
@@ -1620,7 +1620,7 @@ with st.sidebar:
         if tipo == "sequencia":
             filtros_ativos = [k for k in ["escola", "turno", "turma"] if st.session_state.get(k, "")]
             if not filtros_ativos:
-                st.info("Publicara em **todas as escolas, turnos e turmas** disponiveis.")
+                st.info("Publicará em **todas as escolas, turnos e turmas** disponíveis.")
             else:
                 st.caption(f"Filtros ativos: {', '.join(filtros_ativos)}")
 
@@ -1728,7 +1728,7 @@ with st.sidebar:
                 chamada_disciplina = st.text_input(
                     "Disciplina (opcional, ex: ENSINO RELIGIOSO)",
                     key="chamada_disciplina_input",
-                    help="Se deixar vazio, o bot usa a disciplina da pagina aberta no SGE.",
+                    help="Se deixar vazio, o bot usa a disciplina da página aberta no SGE.",
                 )
                 st.session_state.chamada_disciplina = chamada_disciplina
 
@@ -1840,7 +1840,7 @@ with st.sidebar:
     ia_opcao = st.radio(
         "Assistencia IA:",
         options=["nenhuma", "assistida", "aprendizado"],
-        format_func=lambda x: {"nenhuma": "Nao usar", "assistida": "Sim - Assistida", "aprendizado": "Sim - Aprendizado"}.get(x, x),
+        format_func=lambda x: {"nenhuma": "Não usar", "assistida": "Sim - Assistida", "aprendizado": "Sim - Aprendizado"}.get(x, x),
         horizontal=True,
         key="ia_radio",
     )
@@ -1849,11 +1849,11 @@ with st.sidebar:
         if st.session_state.get("portal_selecionado", "SGE") == "Novo Portal":
             st.info(
                 "Portal **Novo Portal**: o modo aprendizado será ativado automaticamente ao executar. "
-                "Nao e necessario marcar nada aqui."
+                "Não é necessário marcar nada aqui."
             )
         else:
             st.warning(
-                "Portal **Professor Online**: acoes ainda não suportadas (ex.: criacao/upload de "
+                "Portal **Professor Online**: ações ainda não suportadas (ex.: criação/upload de "
                 "planejamento) usam o **Modo Aprendizado** para a IA gravar o fluxo e incluir a "
                 "nova funcionalidade ao sistema. Marque **'Sim - Aprendizado'** quando for ensinar "
                 "um fluxo novo."
@@ -1866,8 +1866,8 @@ with st.sidebar:
         st.markdown(
             "Quando ativado, o navegador roda em **segundo plano** sem mostrar nada na tela. "
             "Deixe marcado para uso normal.\n\n"
-            "**Desmarque** quando o portal pedir **captcha** no login: o navegador abre visivel, "
-            "voce completa o captcha manualmente e o bot continua sozinho. Tambem use para "
+            "**Desmarque** quando o portal pedir **captcha** no login: o navegador abre visível, "
+            "você completa o captcha manualmente e o bot continua sozinho. Também use para "
             "**ver** o navegador sendo controlado passo a passo."
         )
         headless_mode = st.checkbox("Rodar em segundo plano (recomendado)", value=st.session_state.headless_mode, key="headless_check")
@@ -1891,17 +1891,17 @@ with st.sidebar:
 
     with st.expander("Correção automática de erros (IA)"):
         st.markdown(
-            "Quando ativado, se acontecer algum erro (ex: data no formato errado, link invalido, "
-            "demora para carregar), o programa **tenta corrigir sozinho** usando inteligencia "
+            "Quando ativado, se acontecer algum erro (ex: data no formato errado, link inválido, "
+            "demora para carregar), o programa **tenta corrigir sozinho** usando inteligência "
             "artificial local.\n\n"
-            "Se conseguir corrigir, uma mensagem explica o que foi ajustado e voce pode clicar "
+            "Se conseguir corrigir, uma mensagem explica o que foi ajustado e você pode clicar "
             "em **Tentar novamente**.\n\n"
             "Requer o Ollama instalado (já configurado neste computador)."
         )
         autofix_enabled = st.checkbox("Corrigir erros automaticamente", value=st.session_state.get("autofix_enabled", False), key="autofix_check")
         st.session_state.autofix_enabled = autofix_enabled
 
-    with st.expander("Revisao final IA (conferir após salvar)"):
+    with st.expander("Revisão final IA (conferir após salvar)"):
         st.markdown(
             "Quando ativado, após lançar as notas o programa **reabre cada avaliação e confere** "
             "se a nota gravou corretamente (re-leitura deterministica).\n\n"
@@ -1921,7 +1921,7 @@ with st.sidebar:
 
     if salvar:
         path = salvar_config()
-        st.success(f"Configuracao salva em {path}")
+        st.success(f"Configuração salva em {path}")
 
     limpar = st.button("Limpar Logs")
     if limpar:
@@ -1934,7 +1934,7 @@ if st.session_state.get("dark_mode", False):
     st.markdown(_DARK_THEME_CSS, unsafe_allow_html=True)
 
 # === ÁREA PRINCIPAL ===
-st.markdown('<div class="main-header">Bot do Professor - Automacao de Notas</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">Bot do Professor - Automação de Notas</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub-header">Lance notas do Notion/planilhas no portal do professor sem precisar de terminal</div>',
     unsafe_allow_html=True,
@@ -1944,16 +1944,16 @@ st.markdown(
 _acerto_pct, _acerto_total = _taxa_acerto_global()
 if _acerto_pct is not None:
     st.warning(
-        f"**Importante:** revise sempre as notas lancadas ao final — o bot pode errar! "
-        f"Taxa de acerto dos seus ultimos lançamentos: **{_acerto_pct}%** "
+        f"**Importante:** revise sempre as notas lançadas ao final — o bot pode errar! "
+        f"Taxa de acerto dos seus últimos lançamentos: **{_acerto_pct}%** "
         f"({_acerto_total} nota(s) processada(s)). "
-        f"Confira no portal e na aba **Pendencias**.",
+        f"Confira no portal e na aba **Pendências**.",
         icon="\U0001F440",
     )
 else:
     st.warning(
-        "**Importante:** revise sempre as notas lancadas ao final — o bot pode errar. "
-        "Confira cada nota no portal depois do envio e use a aba **Pendencias**.",
+        "**Importante:** revise sempre as notas lançadas ao final — o bot pode errar. "
+        "Confira cada nota no portal depois do envio e use a aba **Pendências**.",
         icon="\U0001F440",
     )
 
@@ -1990,7 +1990,7 @@ with tab_plan:
                 if registros_arq:
                     st.success(f"{len(registros_arq)} nota(s) carregada(s). Edite se precisar e execute.")
                 else:
-                    st.warning("Nenhuma nota encontrada no arquivo. Confira o cabecalho (Nome/Aluno + colunas de nota).")
+                    st.warning("Nenhuma nota encontrada no arquivo. Confira o cabeçalho (Nome/Aluno + colunas de nota).")
         else:
             if st.session_state.get("planilha_ultimo_arquivo"):
                 st.session_state.planilha_ultimo_arquivo = ""
@@ -2012,7 +2012,7 @@ with tab_plan:
                 "aluno": st.column_config.TextColumn("Aluno"),
                 "atividade": st.column_config.TextColumn("Atividade"),
                 "nota": st.column_config.NumberColumn("Nota", min_value=0.0, max_value=10.0, format="%.2f"),
-                "data_realizacao": st.column_config.TextColumn("Data realizacao"),
+                "data_realizacao": st.column_config.TextColumn("Data realização"),
                 "status": st.column_config.SelectboxColumn("Status", options=["", "Lancada", "Falha"]),
             },
         )
@@ -2040,12 +2040,12 @@ with tab_plan:
 # === DIALOGO DE CONFIRMACAO DE ENVIO ===
 @st.dialog("Confirmar envio ao portal")
 def _confirmar_envio_dialog(resumo: tuple) -> None:
-    st.markdown("Voce esta enviando **de verdade** para o portal. Confira o resumo:")
+    st.markdown("Você está enviando **de verdade** para o portal. Confira o resumo:")
     for _linha in resumo:
         if _linha.endswith(": ``") or _linha.endswith(": ''"):
             continue
         st.markdown(f"- {_linha}")
-    st.caption("Depois do envio, revise as notas gravadas no portal (aba Pendencias e o proprio portal).")
+    st.caption("Depois do envio, revise as notas gravadas no portal (aba Pendências e o próprio portal).")
     _c1, _c2 = st.columns(2)
     if _c1.button("Sim, enviar agora", type="primary", use_container_width=True):
         st.session_state.confirmar_envio = True
@@ -2059,7 +2059,7 @@ st.markdown('<div class="main-header">Execução</div>', unsafe_allow_html=True)
 
 dry_run = False
 
-stepper_fases = ["Carregar", "Validar", "Lancar", "Revisar"]
+stepper_fases = ["Carregar", "Validar", "Lançar", "Revisar"]
 if st.session_state.get("executando"):
     stepper_idx = 2
 elif st.session_state.get("resultado"):
@@ -2131,13 +2131,13 @@ if ajuda_btn:
     st.markdown("### Como usar")
     st.markdown("""
     1. **Portal**: Escolha SGE, Professor Online ou Novo Portal
-    2. **Novo Portal**: informe URL, CPF e senha. Ao executar, o modo aprendizado e ativado automaticamente — o navegador abre visivel, voce faz o acesso manualmente e a IA local aprende.
-    3. **API Keys**: Cole o token do Notion e o ID da pagina raiz (veja as instrucoes na propria secao)
+    2. **Novo Portal**: informe URL, CPF e senha. Ao executar, o modo aprendizado é ativado automaticamente — o navegador abre visível, você faz o acesso manualmente e a IA local aprende.
+    3. **API Keys**: Cole o token do Notion e o ID da página raiz (veja as instruções na própria seção)
     4. **Origem**: Escolha de onde ler os dados (Notion, Excel, CSV, Google)
     5. **Filtros**: Opcionais - para filtrar por escola/turma
     6. **Modo Lote**: Marque para processar todas as escolas, turmas e trimestres automaticamente
-    7. **Executar**: Clique no botao, confira o resumo e confirme. Depois acompanhe os logs
-    8. **Importante**: Sempre revise as notas lancadas no portal ao final
+    7. **Executar**: Clique no botão, confira o resumo e confirme. Depois acompanhe os logs
+    8. **Importante**: Sempre revise as notas lançadas no portal ao final
     """)
 
 # === EXECUÇÃO ===
@@ -2187,7 +2187,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 status.update(label=f"Processando bloco {cur}/{tot}")
             elif "Concluido" in msg or "concluido" in msg.lower():
                 progress_bar.progress(1.0, text="Concluido!")
-                status.update(label="Concluido!", state="complete")
+                status.update(label="Concluído!", state="complete")
             elif "ESTRUTURA-CHANGED" in msg:
                 status.update(label="Estrutura do SGE mudou — nada gravado", state="error")
             elif "ERRO" in msg or "erro" in msg.lower():
@@ -2301,7 +2301,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
             try:
                 from ai_assist import ensure_ollama
                 if not ensure_ollama(logger=log_progress):
-                    log_progress("Aviso: Ollama não disponivel. IA assistida será limitada.")
+                    log_progress("Aviso: Ollama não disponível. IA assistida será limitada.")
             except Exception as exc:
                 log_progress(f"Aviso: falha ao configurar Ollama: {exc}")
         elif ai_provider in ("gemini", "openai", "anthropic") and ia_opcao not in ("nenhuma", ""):
@@ -2341,7 +2341,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 st.info("Portal novo detectado: **modo aprendizado ativado automaticamente**. O navegador abrirá visível e você fará o acesso manualmente enquanto a IA local grava e aprende.")
 
             log_progress("Iniciando aprendizado do novo portal...")
-            log_progress("Navegador visivel: faca o acesso manualmente (login, turma, grade, salvar).")
+            log_progress("Navegador visível: faça o acesso manualmente (login, turma, grade, salvar).")
             log_progress("Cada tela será gravada. Feche o navegador quando terminar.")
             from aprender_novo_portal import executar_aprendizado
 
@@ -2359,7 +2359,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 log_progress(f"[APRENDIZADO-OK] Portal '{resultado['portal']}' aprendido com {resultado.get('steps', 0)} passo(s).")
                 log_progress(f"Plano salvo em: {resultado.get('plan_path', '')}")
             else:
-                log_progress(f"[APRENDIZADO] Concluido com {resultado.get('steps', 0)} passo(s) gravados, mas o plano não foi gerado.")
+                log_progress(f"[APRENDIZADO] Concluído com {resultado.get('steps', 0)} passo(s) gravados, mas o plano não foi gerado.")
             st.stop()
 
         # Determina tipo de execucao
@@ -2412,7 +2412,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 if resultado.get("estrutura_changed"):
                     st.session_state.estrutura_changed = resultado.get("estrutura_evidencia") or {}
                     st.session_state.revisao_fase = "estrutura_changed"
-                log_progress(f"Concluido! Notas: {resultado['notas']}, Preenchidas: {resultado['notas_preenchidas']}, Ausentes: {resultado.get('ausentes', 0)}, Falhas: {resultado['falhas']}")
+                log_progress(f"Concluído! Notas: {resultado['notas']}, Preenchidas: {resultado['notas_preenchidas']}, Ausentes: {resultado.get('ausentes', 0)}, Falhas: {resultado['falhas']}")
 
             else:
                 registros = []
@@ -2454,7 +2454,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         log_progress(f"[CONFERENCIA] {len(registros)} nota(s) confirmadas na planilha da foto.")
 
                     if not conferida:
-                        log_progress("Extraindo notas da imagem com IA (reforcada)...")
+                        log_progress("Extraindo notas da imagem com IA (reforçada)...")
                         try:
                             from ai_assist import extrair_notas_imagem
                             with open(fonte_path, "rb") as f:
@@ -2470,7 +2470,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                                 st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
                                 st.stop()
 
-                            log_progress(f"Extraidas {len(extraidas)} notas da imagem.")
+                            log_progress(f"Extraídas {len(extraidas)} notas da imagem.")
                             escola = st.session_state.get("escola", "")
                             turno = st.session_state.get("turno", "")
                             turma = st.session_state.get("turma", "")
@@ -2482,7 +2482,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                                 st.error("Informe o **nome da atividade** abaixo da imagem antes de executar.")
                                 st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
                                 st.stop()
-                            log_progress(f"[IMAGEM] Atividade: '{atividade}' | Data: {data_realizacao or 'nao informada'}")
+                            log_progress(f"[IMAGEM] Atividade: '{atividade}' | Data: {data_realizacao or 'não informada'}")
 
                             from leitor_planilhas import RegistroNota
 
@@ -2775,11 +2775,11 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                                     falhas += len(itens)
                                     continue
                                 elif diff_dias is not None and diff_dias < -90:
-                                    log_progress(f"[DATA] Atencao: atividade com data antiga ({data_mais_comum}). Prosseguindo...")
+                                    log_progress(f"[DATA] Atenção: atividade com data antiga ({data_mais_comum}). Prosseguindo...")
                                 elif diff_dias is not None:
                                     log_progress(f"[DATA] Data da atividade: {data_mais_comum} ({abs(diff_dias)} dia(s) atras)")
                             else:
-                                log_progress("[DATA] Nenhuma data de realizacao definida na planilha para esta atividade.")
+                                log_progress("[DATA] Nenhuma data de realização definida na planilha para esta atividade.")
 
                             contexto = ContextoTurma(escola=escola, turno=turno, turma=turma, trimestre=trimestre)
                             _select_context(page, contexto, logger=log_progress)
@@ -2816,7 +2816,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                             if data_sge and data_mais_comum:
                                 log_progress(f"  [DATA] Datas conferem: SGE {data_sge} = planilha {data_mais_comum}")
                             elif not data_sge and data_mais_comum:
-                                log_progress("  [DATA] Data da atividade não encontrada no SGE. Prosseguindo sem validacao de data.")
+                                log_progress("  [DATA] Data da atividade não encontrada no SGE. Prosseguindo sem validação de data.")
 
                             from lancar_notas_sge import _detect_coluna_from_page
                             coluna_sge = _detect_coluna_from_page(page, posicao_grid, logger=log_progress, atividade=atividade)
@@ -2824,7 +2824,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                             from lancar_notas_sge import _check_estrutura_sge, ESTRUTURA_DIR
                             check_estrutura = _check_estrutura_sge(page, log_progress, contexto=contexto, atividade=atividade)
                             if not check_estrutura["ok"]:
-                                log_progress(f"[ESTRUTURA-CHANGED] Layout da grade do SGE mudou. NÃO gravando nada. Evidencia em {ESTRUTURA_DIR}.")
+                                log_progress(f"[ESTRUTURA-CHANGED] Layout da grade do SGE mudou. NÃO gravando nada. Evidência em {ESTRUTURA_DIR}.")
                                 st.session_state.estrutura_changed = check_estrutura
                                 st.session_state.revisao_fase = "estrutura_changed"
                                 st.session_state.resultado = {
@@ -2885,7 +2885,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                                         )
                                         divergencias += 1
                                 else:
-                                    log_progress(f"  [AUSENTE] Aluno '{reg.aluno}' não localizado na grade. Enviado para revisão (nome ou imagem ilegivel).")
+                                    log_progress(f"  [AUSENTE] Aluno '{reg.aluno}' não localizado na grade. Enviado para revisão (nome ou imagem ilegível).")
                                     _coletar_ausente(
                                         page, contexto, atividade, data_mais_comum,
                                         reg.aluno, reg.nota, coluna_sge,
@@ -2943,7 +2943,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
                         # Navegador persistente permanece aberto (reutilizado na proxima execução).
 
-                    log_progress(f"Status local: {ja_lancadas} já lancadas, {ja_no_sge} já no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas, {divergencias} divergências, {falhas_revisao_qtd} falhas de revisão")
+                    log_progress(f"Status local: {ja_lancadas} já lançadas, {ja_no_sge} já no SGE, {notas_ok} preenchidas, {ausentes_count} ausentes, {falhas} falhas, {divergencias} divergências, {falhas_revisao_qtd} falhas de revisão")
 
                     if fonte == "planilha":
                         _sincronizar_status_painel(status_store)
@@ -2962,7 +2962,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         "falhas_revisao": falhas_revisao_qtd,
                         "divergencias": divergencias,
                     }
-                    log_progress(f"Concluido! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas + falhas_revisao_qtd} (sendo {falhas_revisao_qtd} da revisão), Divergências para revisão: {divergencias}")
+                    log_progress(f"Concluído! Preenchidas: {notas_ok}, Ausentes: {ausentes_count}, Falhas: {falhas + falhas_revisao_qtd} (sendo {falhas_revisao_qtd} da revisão), Divergências para revisão: {divergencias}")
 
                     if fonte == "planilha":
                         # A tabela do painel foi renderizada antes do lancamento
@@ -2974,7 +2974,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
             foto_path = st.session_state.get("chamada_foto_path", "")
             if not foto_path:
-                log_progress("ERRO: Nenhuma foto do diario selecionada.")
+                log_progress("ERRO: Nenhuma foto do diário selecionada.")
                 st.error("Envie a foto da chamada do dia na seção 'Filtros' antes de executar.")
                 st.session_state.resultado = {"success": False, "mensagem": "Sem foto", "plano": [], "resumo": {}, "nao_encontrados": []}
                 st.stop()
@@ -2988,9 +2988,9 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
             m_data = re.search(r"(\d{2})[/\-](\d{2})[/\-](\d{4})", dia_input)
             if not m_data:
-                log_progress(f"ERRO: Dia '{dia_input}' em formato invalido. Use dd/mm/aaaa.")
-                st.error(f"Dia '{dia_input}' em formato invalido. Use dd/mm/aaaa (ex.: 05/08/2026).")
-                st.session_state.resultado = {"success": False, "mensagem": "Data invalida", "plano": [], "resumo": {}, "nao_encontrados": []}
+                log_progress(f"ERRO: Dia '{dia_input}' em formato inválido. Use dd/mm/aaaa.")
+                st.error(f"Dia '{dia_input}' em formato inválido. Use dd/mm/aaaa (ex.: 05/08/2026).")
+                st.session_state.resultado = {"success": False, "mensagem": "Data inválida", "plano": [], "resumo": {}, "nao_encontrados": []}
                 st.stop()
             dia_sge = f"{m_data.group(3)}/{m_data.group(2)}/{m_data.group(1)}"
 
@@ -3062,7 +3062,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         base_url=st.session_state.get("po_url", ""),
                     )
                 else:
-                    log_progress("ERRO: Leitura de faltas do mês so esta disponivel no Professor Online por enquanto.")
+                    log_progress("ERRO: Leitura de faltas do mês só está disponível no Professor Online por enquanto.")
                     st.warning("Leitura de faltas do mês: selecione o portal **Professor Online** (ou use o portal **Auto** com a escola registrada).")
                     resultado = {"success": False, "mensagem": "Faltas do mês: disponivel apenas no Professor Online.", "faltas": None, "resumo": {}}
             except Exception as exc:  # noqa: BLE001
@@ -3200,7 +3200,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         "nao_implementado": res_po.get("nao_implementado", 0),
                     }
                     pend = res_po.get("nao_implementado", 0)
-                    log_progress(f"Concluido! Planejamentos: {res_po.get('planejamentos_criados', 0)}, Falhas: {res_po.get('falhas', 0)}")
+                    log_progress(f"Concluído! Planejamentos: {res_po.get('planejamentos_criados', 0)}, Falhas: {res_po.get('falhas', 0)}")
                     if pend:
                         log_progress(
                             f"[PO] {pend} sequência(s) dependem de fluxo ainda não gravado. "
@@ -3230,11 +3230,11 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         "situacoes": resumo.situacoes_ativadas,
                         "falhas": resumo.falhas,
                     }
-                    log_progress(f"Concluido! Planejamentos: {resumo.planejamentos_criados}, Falhas: {resumo.falhas}")
+                    log_progress(f"Concluído! Planejamentos: {resumo.planejamentos_criados}, Falhas: {resumo.falhas}")
 
     except RuntimeError as exc:
         if "Event loop is closed" in str(exc):
-            log_progress("Execucao finalizada (limpeza async concluida).")
+            log_progress("Execução finalizada (limpeza async concluída).")
         else:
             _handle_exec_error(exc, log_progress)
     except Exception as exc:
@@ -3319,14 +3319,14 @@ with tab_rev:
         st.caption(
             f"Slots de aluno reconhecidos: **{_ev.get('slots')}** | "
             f"Colunas de nota: **{_ev.get('colunas') or 'nenhuma'}** | "
-            f"Inputs na pagina: **{_ev.get('inputs')}**"
+            f"Inputs na página: **{_ev.get('inputs')}**"
         )
         _shot = (_ev.get("evidencia") or {}).get("screenshot", "")
         if _shot and os.path.exists(_shot):
             try:
-                st.image(_shot, caption="Screenshot da tela que mudou (evidencia)", use_container_width=True)
+                st.image(_shot, caption="Screenshot da tela que mudou (evidência)", use_container_width=True)
             except Exception:  # noqa: BLE001
-                st.caption(f"Evidencia disponivel em `{_shot}` (imagem não pôde ser renderizada).")
+                st.caption(f"Evidência disponível em `{_shot}` (imagem não pôde ser renderizada).")
         with st.expander("Detalhes técnicos (HTML, info e sugestão da IA)"):
             st.code(_ler_arquivo_texto((_ev.get("evidencia") or {}).get("info", "")) or "sem info")
             if _ev.get("sugestao_ia"):
@@ -3354,7 +3354,7 @@ with tab_rev:
                         )
                         st.session_state.pop("estrutura_sugestao", None)
                     else:
-                        st.error("Nao foi possível extrair seletores da sugestão. Salve manualmente ou tente de novo.")
+                        st.error("Não foi possível extrair seletores da sugestão. Salve manualmente ou tente de novo.")
             with c_desc:
                 if st.button("Descartar sugestão", key="estrutura_descartar", use_container_width=True):
                     st.session_state.pop("estrutura_sugestao", None)
@@ -3413,9 +3413,9 @@ with tab_rev:
                 col_shot, col_dec = st.columns([1, 2])
                 with col_shot:
                     if os.path.exists(item.get("screenshot", "")):
-                        st.image(item["screenshot"], caption="Evidencia (linha do aluno no SGE)")
+                        st.image(item["screenshot"], caption="Evidência (linha do aluno no SGE)")
                     else:
-                        st.caption("Evidencia indisponivel")
+                        st.caption("Evidência indisponível")
                     st.caption(
                         f"Escola: {item.get('escola')} | Turno: {item.get('turno')} | "
                         f"Turma: {item.get('turma')} | {item.get('trimestre')}"
@@ -3541,7 +3541,7 @@ with tab_rev:
                             else:
                                 st.error("Não foi possível salvar a imagem enviada.")
     else:
-        st.info("Nenhuma divergência pendente de confirmacao. Ela aparece aqui quando o bot encontrar uma nota que difere do esperado.")
+        st.info("Nenhuma divergência pendente de confirmação. Ela aparece aqui quando o bot encontrar uma nota que difere do esperado.")
 
 # === MENSAGEM DE AUTOFIX ===
 autofix_msg = st.session_state.pop("autofix_message", None)
@@ -3634,14 +3634,14 @@ if st.session_state.resultado:
         st.metric("Falhas", falhas, delta_color="inverse")
     with cols[5]:
         diverg_res = res.get("divergencias", 0)
-        st.metric("Divergencias", diverg_res, delta_color="off")
+        st.metric("Divergências", diverg_res, delta_color="off")
 
     if res.get("divergencias", 0) > 0:
-        st.warning(f"{res.get('divergencias')} divergência(s) aguardando confirmacao na aba **Pendências**.")
+        st.warning(f"{res.get('divergencias')} divergência(s) aguardando confirmação na aba **Pendências**.")
     elif falhas > 0:
         st.warning(f"Houve {falhas} falha(s). Verifique os logs na aba **Logs**.")
     elif preenchidas > 0:
-        st.success("Tudo concluido com sucesso!")
+        st.success("Tudo concluído com sucesso!")
 
     evid_dir = _revisao_dir()
     evidencias = sorted(
@@ -3650,7 +3650,7 @@ if st.session_state.resultado:
         reverse=True,
     )
     if evidencias:
-        with st.expander(f"Ver evidencias ({len(evidencias)} screenshot(s) da revisão)"):
+        with st.expander(f"Ver evidências ({len(evidencias)} screenshot(s) da revisão)"):
             ecols = st.columns(3)
             for ei, ep in enumerate(evidencias):
                 with ecols[ei % 3]:
@@ -3658,14 +3658,14 @@ if st.session_state.resultado:
 
 # === CHAT COM IA (comandos em linguagem natural) ===
 with st.expander("💬 Assistente (comandos em linguagem natural)", expanded=False):
-    st.caption("Digite um comando (ex.: 'lanca a chamada de hoje do 7o ano da tarde'). O plano e aplicado nos filtros acima.")
+    st.caption("Digite um comando (ex.: 'lance a chamada de hoje do 7o ano da tarde'). O plano é aplicado nos filtros acima.")
     if "chat_msgs" not in st.session_state:
         st.session_state.chat_msgs = []
     for _m in st.session_state.chat_msgs:
         with st.chat_message(_m["role"]):
             st.markdown(_m["text"])
 
-    _chat_input = st.chat_input("Ex.: lanca a chamada de hoje do 7o ano da tarde")
+    _chat_input = st.chat_input("Ex.: lance a chamada de hoje do 7o ano da tarde")
     if _chat_input:
         st.session_state.chat_msgs.append({"role": "user", "text": _chat_input})
         try:
@@ -3707,7 +3707,7 @@ with st.expander("💬 Assistente (comandos em linguagem natural)", expanded=Fal
 # === RODAPE ===
 st.markdown("---")
 st.markdown(
-    "<small>Bot do Professor v1.4.43 - Automacao de lançamento de notas. "
+    "<small>Bot do Professor v1.4.43 - Automação de lançamento de notas. "
     "Use com responsabilidade. Verifique os dados antes de lançar.</small>",
     unsafe_allow_html=True,
 )

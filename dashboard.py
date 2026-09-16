@@ -40,7 +40,7 @@ def api(method, path, data=None, auth=True):
             st.rerun()
         return status, body
     except requests.ConnectionError:
-        return 0, {"error": "API nao esta rodando. Execute: python cli.py serve"}
+        return 0, {"error": "API não esta rodando. Execute: python cli.py serve"}
     except Exception as e:
         return 0, {"error": str(e)}
 
@@ -101,12 +101,12 @@ def dashboard_page():
         status, data = api("GET", "/api/license/validate")
         if status == 200:
             if data.get("valid"):
-                st.success(f"Licenca valida — plano: {data.get('plan')} — {data.get('days_remaining')} dias restantes")
+                st.success(f"Licenca válida — plano: {data.get('plan')} — {data.get('days_remaining')} dias restantes")
             else:
                 st.warning(f"Licenca invalida: {data.get('error')}")
-                st.subheader("Ativar Licenca")
+                st.subheader("Ativar Licença")
                 with st.form("activate"):
-                    key = st.text_input("Chave da licenca")
+                    key = st.text_input("Chave da licença")
                     plan = st.selectbox("Plano", ["mensal", "1ano", "2anos", "mensal_todos", "1ano_todos", "2anos_todos"])
                     if st.form_submit_button("Ativar"):
                         s, d = api("POST", "/api/license/activate", {"license_key": key, "plan": plan})
@@ -158,12 +158,12 @@ def dashboard_page():
 
     with tab5:
         st.subheader("Guia de Uso — BotDoProfessor")
-        st.caption("Guia completo para o usuario final. Leia com calma!")
+        st.caption("Guia completo para o usuário final. Leia com calma!")
 
         st.markdown("---")
         st.markdown("### O que e o BotDoProfessor?")
         st.markdown("""
-        E um programa que **automatiza o lancamento de notas e planos de aula** no sistema SGE da sua escola.
+        E um programa que **automatiza o lançamento de notas e planos de aula** no sistema SGE da sua escola.
 
         Ele funciona assim:
         1. Voce prepara uma planilha com os nomes dos alunos e as notas
@@ -172,7 +172,7 @@ def dashboard_page():
         4. Lanca as notas em cada aluno automaticamente
         5. Voce so precisa acompanhar!
 
-        **O programa roda no seu computador** — nao precisa instalar nada no SGE.
+        **O programa roda no seu computador** — não precisa instalar nada no SGE.
         """)
 
         st.markdown("---")
@@ -182,7 +182,7 @@ def dashboard_page():
         st.markdown("""
         - Acesse: **https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest**
         - Clique em **"Baixar"** no arquivo **BotDoProfessor.exe**
-        - O arquivo (cerca de 140MB) sera salvo na pasta **Downloads** do seu computador
+        - O arquivo (cerca de 140MB) será salvo na pasta **Downloads** do seu computador
         """)
 
         st.markdown("#### Passo 2: Encontrar o arquivo")
@@ -193,7 +193,7 @@ def dashboard_page():
 
         st.markdown("#### Passo 3: Executar o programa")
         st.markdown("""
-        - **Duplo-clique** (clique duas vezes rapido) no arquivo BotDoProfessor.exe
+        - **Duplo-clique** (clique duas vezes rápido) no arquivo BotDoProfessor.exe
         """)
 
         with st.expander("⚠️ Aviso de seguranca do Windows (clique para ver)", expanded=False):
@@ -202,42 +202,42 @@ def dashboard_page():
 
             Isso e **normal** para programas baixados da internet. Para continuar:
 
-            1. Clique em **"Mais informacoes"** (embaixo)
+            1. Clique em **"Mais informações"** (embaixo)
             2. Clique em **"Executar mesmo assim"**
 
-            O programa e seguro — nao contem virus.
+            O programa e seguro — não contem virus.
             """)
 
-        st.markdown("#### Passo 4: Primeira configuracao")
+        st.markdown("#### Passo 4: Primeira configuração")
         st.markdown("""
         Na primeira vez, o programa instala automaticamente o **navegador Chromium** (cerca de 180MB).
 
         - Isso demora **aproximadamente 2 minutos**
         - So acontece **uma unica vez**
         - **Nao feche a janela** enquanto estiver baixando
-        - Aguarde ate ver a mensagem **"[OK] Navegador instalado com sucesso!"**
+        - Aguarde até ver a mensagem **"[OK] Navegador instalado com sucesso!"**
         """)
 
-        st.markdown("#### Passo 5: Colar a chave de licenca")
+        st.markdown("#### Passo 5: Colar a chave de licença")
         st.markdown("""
-        O programa vai pedir sua chave de licenca.
+        O programa vai pedir sua chave de licença.
 
         1. **Volte para o email** que voce recebeu quando assinou
         2. **Selecione a chave** (clique e arraste o mouse sobre ela)
         3. **Copie** — pressione `Ctrl+C` ou clique com o botao direito e escolha "Copiar"
         4. **Cole no programa** — pressione `Ctrl+V` ou clique com o botao direito e escolha "Colar"
 
-        A chave e salva automaticamente — **nas proximas vezes nao precisa colar de novo**.
+        A chave e salva automaticamente — **nas proximas vezes não precisa colar de novo**.
         """)
 
-        st.info("Dica: Se o programa nao aceitar a chave, verifique se nao copiou espacos extras antes ou depois.")
+        st.info("Dica: Se o programa não aceitar a chave, verifique se não copiou espacos extras antes ou depois.")
 
         st.markdown("#### Passo 6: Informar o CPF")
         st.markdown("""
         Digite o CPF que voce usa para acessar o SGE.
 
-        - Digite **so numeros** — sem pontos, sem traco, sem espacos
-        - Exemplo: `12345678901` (11 numeros)
+        - Digite **so números** — sem pontos, sem traco, sem espacos
+        - Exemplo: `12345678901` (11 números)
         - O CPF tambem e salvo automaticamente
         """)
 
@@ -252,11 +252,11 @@ def dashboard_page():
         | Turma | Serie e turma | 5o Ano A |
         | Trimestre | Qual trimestre | 1o Trimestre |
 
-        Se nao souber, pressione **Enter** para usar o valor padrao.
-        Essas configuracoes sao salvas — na proxima vez nao precisa digitar tudo de novo.
+        Se não souber, pressione **Enter** para usar o valor padrao.
+        Essas configurações são salvas — na proxima vez não precisa digitar tudo de novo.
         """)
 
-        st.markdown("#### Passo 8: Escolher o tipo de lancamento")
+        st.markdown("#### Passo 8: Escolher o tipo de lançamento")
         st.markdown("""
         - Digite **`1`** para **Lancar Notas**
         - Digite **`2`** para **Lancar Plano de Aula**
@@ -265,7 +265,7 @@ def dashboard_page():
         st.markdown("---")
         st.markdown("### Como preparar suas notas")
 
-        st.markdown("#### Opcao 1: Planilha Excel (.xlsx)")
+        st.markdown("#### Opção 1: Planilha Excel (.xlsx)")
         st.markdown("""
         1. Abra o **Excel** (ou o WPS Office, LibreOffice, Google Sheets)
         2. Crie uma planilha com **duas colunas**:
@@ -281,7 +281,7 @@ def dashboard_page():
         4. Coloque o arquivo na pasta **Documents** ou na **Area de Trabalho** para encontrar facilmente
         """)
 
-        st.markdown("#### Opcao 2: Google Sheets (online)")
+        st.markdown("#### Opção 2: Google Sheets (online)")
         st.markdown("""
         1. Acesse **sheets.google.com**
         2. Crie uma nova planilha
@@ -293,13 +293,13 @@ def dashboard_page():
         8. Cole o link quando o programa pedir o caminho do arquivo
         """)
 
-        st.markdown("#### Opcao 3: Imagem / Foto")
+        st.markdown("#### Opção 3: Imagem / Foto")
         st.markdown("""
         Se voce tiver uma **foto ou print das notas** (por exemplo, uma foto de um caderno ou tela), o programa pode ler a imagem automaticamente e extrair as notas.
 
         Basta informar o caminho da imagem quando o programa pedir.
 
-        *Nota: esta funcionalidade requer configuracao de IA (Gemini, GPT-4o ou Ollama).*
+        *Nota: esta funcionalidade requer configuração de IA (Gemini, GPT-4o ou Ollama).*
         """)
 
         st.markdown("---")
@@ -307,12 +307,12 @@ def dashboard_page():
 
         with st.expander("O programa e seguro?", expanded=False):
             st.markdown("""
-            Sim. O BotDoProfessor roda apenas no seu computador, nao envia seus dados para terceiros, e o codigo e aberto (pode ser verificado).
+            Sim. O BotDoProfessor roda apenas no seu computador, não envia seus dados para terceiros, e o codigo e aberto (pode ser verificado).
             """)
 
         with st.expander("Preciso de internet?", expanded=False):
             st.markdown("""
-            Sim. O programa precisa de internet para conectar no SGE e lancar as notas.
+            Sim. O programa precisa de internet para conectar no SGE e lançar as notas.
             """)
 
         with st.expander("Funciona em qualquer escola?", expanded=False):
@@ -322,23 +322,23 @@ def dashboard_page():
 
         with st.expander("Posso usar em mais de um computador?", expanded=False):
             st.markdown("""
-            Sim, mas a chave de licenca esta vinculada a um numero limitado de maquinas. Se precisar trocar de computador, entre em contato.
+            Sim, mas a chave de licença esta vinculada a um número limitado de maquinas. Se precisar trocar de computador, entre em contato.
             """)
 
-        with st.expander("O programa lembra minhas configuracoes?", expanded=False):
+        with st.expander("O programa lembra minhas configurações?", expanded=False):
             st.markdown("""
-            Sim! Na segunda vez que voce usar, basta digitar `1` ou `2` e ele ja sabe a escola, turma, trimestre e CPF.
+            Sim! Na segunda vez que voce usar, basta digitar `1` ou `2` e ele já sabe a escola, turma, trimestre e CPF.
             """)
 
         with st.expander("Deu erro! O que faco?", expanded=False):
             st.markdown("""
             Verifique se:
             - A chave foi colada corretamente (sem espacos extras)
-            - O CPF esta correto (11 numeros, sem pontos)
+            - O CPF esta correto (11 números, sem pontos)
             - A planilha tem as colunas "Aluno" e "Nota"
-            - Os nomes dos alunos estao iguais aos do SGE
+            - Os nomes dos alunos estão iguais aos do SGE
 
-            Se nao resolver, envie um email para **labintelligenceappoiments@gmail.com**
+            Se não resolver, envie um email para **labintelligenceappoiments@gmail.com**
             """)
 
         with st.expander("Como alterar minha senha?", expanded=False):
@@ -350,7 +350,7 @@ def dashboard_page():
         st.markdown("### Precisa de ajuda?")
         st.markdown("""
         - **Email:** labintelligenceappoiments@gmail.com
-        - **Responda o email** que voce recebeu com a chave de licenca
+        - **Responda o email** que voce recebeu com a chave de licença
         - **Guarde este email** — ele contem sua chave e todas as instrucoes
         """)
 

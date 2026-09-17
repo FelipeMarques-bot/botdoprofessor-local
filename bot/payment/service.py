@@ -78,7 +78,13 @@ class PaymentService:
             }
 
             result = self._sdk.payment().create(payment_data)
+            status_code = result.get("status")
             response = result.get("response", {})
+            try:
+                if status_code and int(status_code) >= 400:
+                    return {"error": self._mp_error_message(response) or "Nao foi possivel gerar o Pix"}
+            except (TypeError, ValueError):
+                pass
             point_of_interaction = response.get("point_of_interaction", {})
             transaction_data = point_of_interaction.get("transaction_data", {})
             qr_code_base64 = transaction_data.get("qr_code_base64", "")
@@ -86,7 +92,7 @@ class PaymentService:
             payment_id = response.get("id")
 
             if not qr_code_base64 and not qr_code:
-                return {"error": "Nao foi possivel gerar QR Code Pix"}
+                return {"error": self._mp_error_message(response) or "Nao foi possivel gerar QR Code Pix"}
 
             self._save_payment(plan, email, cpf, name, "mercadopago_pix", ext_ref,
                                status="pending", mp_payment_id=payment_id)
@@ -138,7 +144,13 @@ class PaymentService:
             }
 
             result = self._sdk.preference().create(preference_data)
+            status_code = result.get("status")
             response = result.get("response", {})
+            try:
+                if status_code and int(status_code) >= 400:
+                    return {"error": self._mp_error_message(response) or "Nao foi possivel criar o pagamento"}
+            except (TypeError, ValueError):
+                pass
             is_test = self._access_token.startswith("TEST-")
             if is_test:
                 init_point = response.get("sandbox_init_point") or response.get("init_point", "")
@@ -172,6 +184,21 @@ class PaymentService:
             "reference": ref,
             "message": f"Pague R$ {plan_info['preco']:.2f} via Pix e envie o comprovante para {os.environ.get('CONTACT_EMAIL', 'contato@botdoprofessor.com.br')}",
         }
+
+    @staticmethod
+    def _mp_error_message(response: Dict) -> str:
+        """Extrai a causa do erro retornada pelo Mercado Pago."""
+        if not isinstance(response, dict):
+            return ""
+        causas = response.get("cause") or []
+        if isinstance(causas, list):
+            for c in causas:
+                if isinstance(c, dict) and c.get("description"):
+                    return str(c["description"])
+        for campo in ("message", "error", "description"):
+            if response.get(campo):
+                return str(response[campo])
+        return ""
 
     def _public_url(self) -> str:
         """URL publica do backend (usa APP_URL ou o servidor de licencas)."""

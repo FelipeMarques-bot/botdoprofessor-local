@@ -141,24 +141,53 @@
 
     <script>
         const params = new URLSearchParams(window.location.search);
-        const key = params.get('key') || 'Chave nao encontrada';
-        document.getElementById('license-key').textContent = key;
+        const keyParam = params.get('key');
+        const reference = params.get('external_reference');
+        const FALLBACK = 'Chave nao encontrada';
 
-        const dlBtn = document.getElementById('download-btn');
-        dlBtn.href = '/api/download?key=' + encodeURIComponent(key);
+        function mostrarChave(key) {
+            document.getElementById('license-key').textContent = key;
+            document.getElementById('download-btn').href = '/api/download?key=' + encodeURIComponent(key);
+        }
 
-        if (key === 'Chave nao encontrada') {
+        function mostrarPendente() {
             document.getElementById('icon').textContent = '⏳';
             document.getElementById('title').textContent = 'Pagamento em processamento';
             document.getElementById('msg').textContent = 'Assim que o pagamento for confirmado, sua chave sera enviada por email.';
             document.querySelector('.key-label').style.display = 'none';
             document.querySelector('.key').style.display = 'none';
             document.querySelector('.copy-btn').style.display = 'none';
-            dlBtn.style.display = 'none';
+            document.getElementById('download-btn').style.display = 'none';
         }
 
+        async function buscarChave() {
+            for (let i = 0; i < 10; i++) {
+                try {
+                    const resp = await fetch('/api/payment/verify/' + encodeURIComponent(reference));
+                    const data = await resp.json();
+                    if (data.license_key) {
+                        mostrarChave(data.license_key);
+                        return true;
+                    }
+                    if (data.status === 'not_found') break;
+                } catch (e) {}
+                await new Promise(r => setTimeout(r, 3000));
+            }
+            return false;
+        }
+
+        (async function () {
+            if (keyParam) {
+                mostrarChave(keyParam);
+                return;
+            }
+            mostrarChave(FALLBACK);
+            if (reference && await buscarChave()) return;
+            mostrarPendente();
+        })();
+
         function copyKey() {
-            navigator.clipboard.writeText(key);
+            navigator.clipboard.writeText(document.getElementById('license-key').textContent);
             const fb = document.getElementById('copy-feedback');
             fb.style.display = 'block';
             setTimeout(() => fb.style.display = 'none', 2000);

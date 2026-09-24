@@ -231,8 +231,16 @@ def _get_client() -> Any:
     return genai.Client(api_key=GEMINI_API_KEY)
 
 
-def _call_gemini(prompt: str, image_bytes: Optional[bytes] = None, images: Optional[List[bytes]] = None) -> str:
+def _call_gemini(prompt: str, image_bytes: Optional[bytes] = None, images: Optional[List[bytes]] = None, deadline: Optional[float] = None) -> str:
     client = _get_client()
+
+    timeout = int(os.environ.get("GEMINI_TIMEOUT", "90"))
+    if deadline is not None:
+        remaining = int(deadline - time.time())
+        if remaining <= 15:
+            raise AIAssistError("[Gemini] Orcamento de tempo esgotado.")
+        timeout = min(timeout, remaining)
+
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=AI_TEMPERATURE,
@@ -240,19 +248,33 @@ def _call_gemini(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
 
     all_images = images or ([image_bytes] if image_bytes else [])
     if all_images:
-        contents = [prompt] + [
-            types.Part(inline_data=types.Blob(mime_type="image/png", data=img))
-            for img in all_images
-        ]
+        parts = [types.Part.from_text(text=prompt)]
+        for img in all_images:
+            opt = _optimize_image_bytes(
+                img,
+                max_dim=int(os.environ.get("GEMINI_IMAGE_MAX_DIM", "1024")),
+                quality=85,
+            )
+            parts.append(
+                types.Part.from_bytes(
+                    data=opt,
+                    mime_type="image/jpeg",
+                )
+            )
+        contents = parts
     else:
-        contents = prompt
+        contents = types.Part.from_text(text=prompt)
 
-    response = client.models.generate_content(
-        model=AI_MODEL,
-        contents=contents,
-        config=config,
-    )
-    text = response.text.strip()
+    try:
+        response = client.models.generate_content(
+            model=AI_MODEL,
+            contents=contents,
+            config=config,
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise AIAssistError(f"[Gemini] Falha na chamada: {exc}") from exc
+    text = (response.text or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return text
@@ -1020,7 +1042,7 @@ def _call_provider(provider: str, prompt: str, image_bytes: bytes, deadline: Opt
     if p in ("local", "ollama"):
         return _call_ollama(prompt, image_bytes, deadline=deadline)
     if p == "gemini":
-        return _call_gemini(prompt, image_bytes)
+        return _call_gemini(prompt, image_bytes, deadline=deadline)
     if p == "openai":
         return _call_openai(prompt, image_bytes)
     if p == "anthropic":
@@ -1045,6 +1067,12 @@ def _call_ai_with_fallback(prompt: str, image_bytes: bytes, logger: Optional[Log
             erros.append("orcamento de extracao esgotado")
             break
         if not _provider_configured(provider):
+            if provider == "gemini" and (preferred or "").strip().lower() == "gemini":
+                _log(
+                    logger,
+                    "[AI-Extracao] Gemini selecionado mas indisponivel: chave GEMINI_API_KEY "
+                    "ausente ou pacote 'google-genai' nao instalado no venv do app.",
+                )
             continue
         tentados.append(provider)
         try:

@@ -39,7 +39,7 @@ REQUIREMENTS = [
     "httpx>=0.27",
     "python-dotenv>=1.0",
     "notion-client>=2.2",
-    "google-generativeai>=0.5",
+    "google-genai>=2.0",
     "openai>=1.30",
     "anthropic>=0.25",
     "gdown>=5.2",
@@ -852,6 +852,79 @@ def _launch_updater(splash):
         return False
 
 
+def _try_supervised_swap(splash):
+    """Swap sem fechar: o exe em execucao se renomeia, a nova versao entra no
+    lugar e o processo atual relanca a nova versao por conta propria. Retorna
+    True somente quando a nova versao confirmou que iniciou. Em qualquer falha,
+    tenta reverter e retorna False (o updater.bat assume como fallback)."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return False
+    current_exe = sys.executable
+    if not current_exe or not Path(current_exe).is_file():
+        log("Swap supervisorado: exe atual nao encontrado")
+        return False
+
+    old_path = current_exe + ".old"
+    updater_log = LOG_DIR / "updater.log"
+    try:
+        updater_log.write_text(f"[{time.strftime('%H:%M:%S')}] Swap supervisorado — exe corrente renomeado\n", encoding="utf-8")
+    except Exception:
+        pass
+
+    try:
+        for _ in range(2):
+            try:
+                Path(old_path).unlink()
+                break
+            except OSError:
+                pass
+
+        os.rename(current_exe, old_path)               # renomeia a si mesmo (liberado em execucao)
+        log(f"Swap: corrente renomeado para {Path(old_path).name}")
+
+        if not NEW_EXE_FILE.exists():
+            log("Swap: novo exe ausente — revertendo")
+            os.rename(old_path, current_exe)
+            return False
+
+        os.replace(NEW_EXE_FILE, current_exe)          # novo exe entra no caminho original
+        log("Swap: nova versao posicionada no caminho original")
+
+        log_size = LOG_FILE.stat().st_size if LOG_FILE.exists() else 0
+        flags = subprocess.DETACHED_PROCESS | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen(
+            [current_exe, "--updated"],
+            creationflags=flags | NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        log("Swap: relancando nova versao")
+
+        splash.update("Atualizando, aguarde um momento!", "Reabrindo com a nova versao...")
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                if LOG_FILE.exists() and LOG_FILE.stat().st_size > log_size:
+                    log("Swap: nova versao confirmou inicio (log cresceu)")
+                    return True
+            except OSError:
+                pass
+
+        log("Swap: a nova versao nao confirmou inicio — revertendo")
+        try:
+            Path(current_exe).unlink()
+            os.rename(old_path, current_exe)
+            log("Swap: versao anterior restaurada")
+        except OSError as e:
+            log(f"Swap: falha ao reverter: {e}")
+        return False
+    except Exception as e:
+        log(f"Swap supervisorado falhou: {e}")
+        return False
+
+
 def maybe_apply_update(splash, license_key):
     """Verifica e aplica atualizacao quando ha versao nova. Encerra o processo
     durante o auto-update; em qualquer falha, segue com a versao atual."""
@@ -875,6 +948,15 @@ def maybe_apply_update(splash, license_key):
 
     splash.update("Atualizando, aguarde um momento!", "Finalizando instalacao...")
     splash.set_progress(0.95)
+    if _try_supervised_swap(splash):
+        log("Swap supervisorado concluido — encerrando versao atual")
+        splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
+        time.sleep(1.0)
+        try:
+            splash.close()
+        except Exception:
+            pass
+        sys.exit(0)
     if _launch_updater(splash):
         log("Atualizador disparado — encerrando versao atual")
         splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
@@ -888,6 +970,24 @@ def maybe_apply_update(splash, license_key):
     return True
 
 
+def _clean_update_legacy():
+    legacy = Path(sys.executable + ".old")
+    try:
+        if legacy.exists():
+            legacy.unlink()
+            log(f"Residuo de atualizacao removido: {legacy.name}")
+    except OSError:
+        pass
+
+
+def _clean_update_legacy_later():
+    time.sleep(30)
+    try:
+        _clean_update_legacy()
+    except Exception:
+        pass
+
+
 def main():
     _set_utf8()
     _hide_console()
@@ -895,6 +995,10 @@ def main():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log("=" * 40)
     log("BotDoProfessor — Iniciando...")
+
+    if getattr(sys, "frozen", False):
+        _clean_update_legacy()
+        threading.Thread(target=_clean_update_legacy_later, daemon=True).start()
 
     cached_key, cached_plan, _ = _get_license_cache()
     license_key = cached_key

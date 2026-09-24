@@ -1875,7 +1875,7 @@ with st.sidebar:
                         os.environ["OLLAMA_MODEL"] = st.session_state.get("ollama_model", "llama3.2-vision")
 
                     from ai_assist import extrair_notas_imagem as _extrair_img
-                    with st.spinner("Lendo a imagem com IA (pode levar um tempo)..."):
+                    with st.spinner("Lendo a imagem com IA (no seu PC isso leva ~1-2 min, aguarde - ou troque para Gemini e leia em segundos)..."):
                         try:
                             with open(_novo_img_path, "rb") as _f:
                                 _img_bytes = _f.read()

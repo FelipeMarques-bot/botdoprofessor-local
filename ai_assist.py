@@ -404,8 +404,8 @@ def _pick_ollama_model(logger: Optional[LogFn] = None) -> str:
     avail_ram = _get_available_ram_gb()
     _log(logger, f"[Ollama] RAM disponivel: {avail_ram:.1f} GB")
 
-    if avail_ram < 2.0:
-        _log(logger, f"[Ollama] RAM insuficiente para modelo de visao ({avail_ram:.1f}GB < 2GB). Desabilitando IA.")
+    if avail_ram < 1.0:
+        _log(logger, f"[Ollama] RAM insuficiente para modelo de visao ({avail_ram:.1f}GB < 1GB). Desabilitando IA.")
         return ""
 
     primary_model = _ollama_primary_model()
@@ -516,9 +516,9 @@ def _call_ollama(prompt: str, image_bytes: Optional[bytes] = None, images: Optio
     if all_images:
         img_b64s = []
         for img in all_images:
-            opt = _optimize_image_bytes(img)
+            opt = _optimize_image_bytes(img, max_dim=int(os.environ.get("OLLAMA_IMAGE_MAX_DIM", "768")))
             img_b64s.append(base64.b64encode(opt).decode("utf-8"))
-        _log(logger, "[Ollama] Imagem otimizada para leitura (max 1024px).")
+        _log(logger, "[Ollama] Imagem otimizada para leitura (max 768px).")
         payload = {
             "model": model,
             "messages": [

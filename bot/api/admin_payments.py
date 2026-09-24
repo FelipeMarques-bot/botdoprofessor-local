@@ -6,6 +6,7 @@ from bot.models.payment_request import PaymentRequest
 from bot.models.license import License
 from bot.models.audit import AuditLog
 from bot.security.auth import require_auth, require_permission
+from bot.utils.time_utils import now_local
 
 admin_payments_bp = Blueprint("admin_payments", __name__, url_prefix="/api/admin/payments")
 
@@ -84,7 +85,7 @@ def mark_contacted(payment_id):
     data = request.get_json() or {}
 
     payment.status = "contacted"
-    payment.contacted_at = datetime.utcnow()
+    payment.contacted_at = now_local()
     payment.admin_notes = data.get("notes", payment.admin_notes)
     db.session.commit()
 
@@ -113,7 +114,7 @@ def approve_payment(payment_id):
 
     payment.status = "approved"
     payment.license_key = license_key
-    payment.approved_at = datetime.utcnow()
+    payment.approved_at = now_local()
     payment.admin_notes = data.get("notes", payment.admin_notes)
     db.session.commit()
 
@@ -224,33 +225,45 @@ def create_manual_subscription():
 
     import hashlib
     from bot.core.license_service import LicenseService
-    reference = hashlib.sha256(f"manual_{email}_{cpf}_{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
+    reference = hashlib.sha256(f"manual_{email}_{cpf}_{now_local().isoformat()}".encode()).hexdigest()[:16]
     license_key = LicenseService.generate_key()
+    now = now_local()
 
-    lic = License.create(
-        user_id=g.current_user.id,
-        plan=plan,
-        key=license_key,
-    )
-    db.session.add(lic)
+    try:
+        lic = License.create(
+            user_id=g.current_user.id,
+            plan=plan,
+            key=license_key,
+        )
+        db.session.add(lic)
 
-    plan_amount = PLANOS[plan].get("preco", 0)
+        plan_amount = PLANOS[plan].get("preco", 0)
 
-    payment = PaymentRequest(
-        name=name,
-        email=email,
-        cpf=cpf,
-        plan=plan,
-        amount=float(plan_amount),
-        payment_method="manual",
-        status="approved",
-        license_key=license_key,
-        reference=reference,
-        admin_notes=notes,
-        approved_at=datetime.utcnow(),
-    )
-    db.session.add(payment)
-    db.session.commit()
+        payment = PaymentRequest(
+            name=name,
+            email=email,
+            cpf=cpf,
+            plan=plan,
+            amount=float(plan_amount),
+            payment_method="manual",
+            status="approved",
+            license_key=license_key,
+            reference=reference,
+            admin_notes=notes,
+            created_at=now,
+            approved_at=now,
+        )
+        db.session.add(payment)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "error": f"Falha ao criar assinatura: {exc}",
+            "hint": "Verifique o log do servidor. Se for erro de coluna inexistente, "
+                    "reinicie o servidor para rodar a migracao automatica do banco.",
+        }), 500
 
     AuditLog.log(g.current_user.id, "create_manual_subscription",
                   target=f"{name} ({email})", details=f"Plano: {plan}",
@@ -478,7 +491,11 @@ def _send_license_email(email, name, license_key, plan):
     plan_info = PLANOS.get(plan, {})
     plan_label = plan_info.get("label", plan)
 
-    download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
+    app_url = (os.environ.get("APP_URL", "") or "").rstrip("/")
+    if app_url.startswith("http"):
+        download_url = f"{app_url}/api/download?key={license_key}"
+    else:
+        download_url = "https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest"
 
     html = f"""
     <html>
@@ -532,7 +549,7 @@ def _send_license_email(email, name, license_key, plan):
             <div class="step-text">
                 <strong>Baixe o programa</strong><br>
                 Clique no link abaixo para baixar o BotDoProfessor.exe (arquivo unico, sem necessidade de instalacao adicional):<br>
-                <a href="https://github.com/FelipeMarques-bot/botdoprofessor-local/releases/latest" class="btn">Baixar BotDoProfessor.exe</a>
+                <a href="{download_url}" class="btn">Baixar BotDoProfessor.exe</a>
             </div>
         </div>
 

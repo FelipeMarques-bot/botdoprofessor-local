@@ -26,6 +26,36 @@ import streamlit as st
 from autofix import attempt_autofix, apply_fix
 
 LICENSE_SERVER_URL = "https://botdoprofessor.onrender.com"
+BOT_VERSION_FALLBACK = "1.4.43"
+
+
+def _ler_versao() -> str:
+    """Le a versao do VERSION.txt (fonte unica), com fallback fixo."""
+    try:
+        caminho = Path(__file__).resolve().parent / "VERSION.txt"
+        if caminho.exists():
+            v = caminho.read_text(encoding="utf-8").strip()
+            if v:
+                return v
+    except OSError:
+        pass
+    return BOT_VERSION_FALLBACK
+
+
+def _fmt_resumo_portais(resumo: Dict[str, List[str]]) -> str:
+    """Formata o resumo {portal: [escolas]} para captions do painel."""
+    partes = []
+    for portal in ("professor_online", "sge"):
+        nomes = resumo.get(portal)
+        if nomes:
+            rotulo = "Professor Online" if portal == "professor_online" else "SGE"
+            partes.append(f"{rotulo}: {len(nomes)} escola(s)")
+    outros = [p for p in resumo if p not in ("professor_online", "sge")]
+    for portal in sorted(outros):
+        partes.append(f"{portal}: {len(resumo[portal])} escola(s)")
+    return "Registro: " + " | ".join(partes)
+
+
 from leitor_planilhas import (
     gerar_template_notas_xlsx, gerar_template_notas_csv,
     gerar_template_sequencias_xlsx, gerar_template_sequencias_csv,
@@ -210,8 +240,8 @@ def _stats_globais_path() -> str:
     return os.path.join(stats_dir, "stats_globais.json")
 
 
-def _registrar_stats_resultado(resultado: dict) -> None:
-    """Acumula sucessos/falhas globais para calcular a taxa de acerto do bot."""
+def _registrar_stats_resultado(resultado: dict, portal: str = "") -> None:
+    """Acumula sucessos/falhas globais (e por portal) p/ a taxa de acerto."""
     if not isinstance(resultado, dict):
         return
     sucesso = int(
@@ -229,22 +259,38 @@ def _registrar_stats_resultado(resultado: dict) -> None:
             with open(path, encoding="utf-8") as f:
                 dados = json.load(f)
         except Exception:  # noqa: BLE001
-            dados = {"sucesso": 0, "falha": 0}
+            dados = {"sucesso": 0, "falha": 0, "por_portal": {}}
+        dados.setdefault("sucesso", 0)
+        dados.setdefault("falha", 0)
+        dados.setdefault("por_portal", {})
         dados["sucesso"] = int(dados.get("sucesso", 0)) + sucesso
         dados["falha"] = int(dados.get("falha", 0)) + falhas
+        if portal:
+            pp = dados["por_portal"].setdefault(str(portal), {"sucesso": 0, "falha": 0})
+            pp["sucesso"] = int(pp.get("sucesso", 0)) + sucesso
+            pp["falha"] = int(pp.get("falha", 0)) + falhas
         with open(path, "w", encoding="utf-8") as f:
             json.dump(dados, f, ensure_ascii=False)
     except Exception:  # noqa: BLE001
         pass
 
 
-def _taxa_acerto_global() -> tuple:
-    """Retorna (percentual, total_lancamentos); (None, 0) se sem historico."""
+def _taxa_acerto_global(portal: str = "") -> tuple:
+    """Retorna (percentual, total_lancamentos); (None, 0) se sem historico.
+
+    Se ``portal`` for informado, considera apenas as estatisticas daquele
+    portal (chave de ``por_portal`` do stats_globais.json).
+    """
     try:
         with open(_stats_globais_path(), encoding="utf-8") as f:
             dados = json.load(f)
-        sucesso = int(dados.get("sucesso", 0))
-        falha = int(dados.get("falha", 0))
+        if portal:
+            pp = dados.get("por_portal", {}).get(str(portal), {})
+            sucesso = int(pp.get("sucesso", 0))
+            falha = int(pp.get("falha", 0))
+        else:
+            sucesso = int(dados.get("sucesso", 0))
+            falha = int(dados.get("falha", 0))
         total = sucesso + falha
         if total <= 0:
             return None, 0
@@ -1047,12 +1093,44 @@ with st.sidebar:
         )
         st.session_state.portal_selecionado = portal_selecionado
 
+        try:
+            with open(_stats_globais_path(), encoding="utf-8") as _f:
+                _stats = json.load(_f)
+            _pp = _stats.get("por_portal", {})
+            if _pp:
+                _rotulos = {"sge": "SGE", "professor_online": "Professor Online"}
+                _linhas = []
+                for _k, _v in sorted(_pp.items()):
+                    _s = int(_v.get("sucesso", 0))
+                    _fa = int(_v.get("falha", 0))
+                    _t = _s + _fa
+                    if _t <= 0:
+                        continue
+                    _nome = _rotulos.get(str(_k).lower(), str(_k))
+                    _linhas.append(f"**{_nome}**: {round(100.0 * _s / _t)}% ({_t})")
+                if _linhas:
+                    st.caption("Taxa de acerto por portal: " + " | ".join(_linhas))
+        except Exception:  # noqa: BLE001
+            pass
+
         if portal_selecionado == "Auto (detecta pela escola)":
             st.caption(
                 "**Auto**: o bot consulta o registro de escolas (~/.sge_bot/escolas.json). "
                 "Se a escola filtrada for conhecida do **Professor Online**, executa nele; "
                 "caso contrario, usa o **SGE**. As credenciais do Professor Online ficam salvas na config."
             )
+            try:
+                from bot.core.escola_registry import escolhas_por_portal_resumo
+                resumo = escolhas_por_portal_resumo()
+                if resumo:
+                    st.caption(_fmt_resumo_portais(resumo))
+                else:
+                    st.caption(
+                        "Registro de escolas ainda vazio. As escolas sao gravadas "
+                        "automaticamente apos o primeiro lancamento no portal."
+                    )
+            except Exception:
+                pass
 
         if portal_selecionado == "Professor Online":
             portal_default_url = "https://professoronline.sed.sc.gov.br"
@@ -1296,8 +1374,10 @@ with st.sidebar:
             )
         elif fonte == "imagem":
             st.info(
-                "Envie uma foto ou print na seção 'Filtros' abaixo. "
-                "A IA extrairá as notas automaticamente."
+                "Envie uma foto ou print na seção 'Filtros' abaixo e clique em "
+                "**'🔍 Ler imagem com IA e gerar tabela para revisão'**. "
+                "A IA extrai as notas e abre uma **tabela editável na aba Planilha** "
+                "para você conferir/corrigir os nomes antes de enviar."
             )
         elif fonte in ("excel", "csv"):
             ext = "XLSX / XLS" if fonte == "excel" else "CSV"
@@ -1746,7 +1826,14 @@ with st.sidebar:
                 tmp_path = tmp_dir / img.name
                 with open(tmp_path, "wb") as f:
                     f.write(img.getbuffer())
-                st.session_state["imagem_path"] = str(tmp_path)
+                _novo_img_path = str(tmp_path)
+                if st.session_state.get("imagem_path") != _novo_img_path:
+                    # Imagem mudou: zera a tabela revisada anterior.
+                    st.session_state["imagem_linhas"] = []
+                    st.session_state["imagem_revisada"] = False
+                    st.session_state.pop("imagem_editor", None)
+                    st.session_state.pop("imagem_revisada_check", None)
+                st.session_state["imagem_path"] = _novo_img_path
                 st.success(f"Imagem salva: {img.name}")
                 st.caption("Informe abaixo o **nome da atividade** e a **data** para o bot localizar no portal:")
                 col_ia1, col_ia2 = st.columns(2)
@@ -1764,13 +1851,59 @@ with st.sidebar:
                         help="Data de realização para o bot localizar/validar no portal."
                     )
                     st.session_state.avaliacao_data = avaliacao_data
-                    st.session_state.imagem_conferencia_check = st.checkbox(
-                        "Conferir a planilha extraída da foto antes de lançar",
-                        value=st.session_state.get("imagem_conferencia_check", True),
-                        key="imagem_conferencia_check",
-                        help="Após extrair as notas da foto, o bot monta a planilha na tela para você "
-                        "conferir/corrigir os nomes antes de enviar ao portal."
-                    )
+                if st.button(
+                    "🔍 Ler imagem com IA e gerar tabela para revisão",
+                    key="imagem_ler_btn",
+                    use_container_width=True,
+                ):
+                    # Garante que a IA configurada na barra lateral esteja ativa agora.
+                    _prov_img = st.session_state.get("ai_provider", "local")
+                    os.environ["AI_PROVIDER"] = _prov_img
+                    if _prov_img == "gemini":
+                        if st.session_state.get("gemini_key"):
+                            os.environ["GEMINI_API_KEY"] = st.session_state["gemini_key"]
+                        os.environ["AI_MODEL"] = st.session_state.get("gemini_model", "gemini-2.5-flash")
+                    elif _prov_img == "openai":
+                        if st.session_state.get("openai_key"):
+                            os.environ["OPENAI_API_KEY"] = st.session_state["openai_key"]
+                        os.environ["OPENAI_MODEL"] = st.session_state.get("openai_model", "gpt-4o")
+                    elif _prov_img == "anthropic":
+                        if st.session_state.get("anthropic_key"):
+                            os.environ["ANTHROPIC_API_KEY"] = st.session_state["anthropic_key"]
+                        os.environ["ANTHROPIC_MODEL"] = st.session_state.get("anthropic_model", "claude-sonnet-4-20250514")
+                    elif _prov_img == "local":
+                        os.environ["OLLAMA_MODEL"] = st.session_state.get("ollama_model", "llama3.2-vision")
+
+                    from ai_assist import extrair_notas_imagem as _extrair_img
+                    with st.spinner("Lendo a imagem com IA (pode levar um tempo)..."):
+                        try:
+                            with open(_novo_img_path, "rb") as _f:
+                                _img_bytes = _f.read()
+                            _lidas = _extrair_img(_img_bytes)
+                        except Exception as _exc:
+                            _lidas = []
+                            st.error(f"Falha ao ler a imagem: {_exc}")
+
+                    if _lidas:
+                        st.session_state["imagem_linhas"] = [
+                            {
+                                "aluno": str(_i.get("aluno", "") or "").strip(),
+                                "nota": str(_i.get("nota", "") or "").strip().replace(",", "."),
+                            }
+                            for _i in _lidas
+                        ]
+                        st.session_state["imagem_revisada"] = False
+                        st.session_state.pop("imagem_editor", None)
+                        st.session_state.pop("imagem_revisada_check", None)
+                        st.success(
+                            f"{len(_lidas)} aluno(s) lido(s). **Revise a tabela na aba Planilha** "
+                            "e marque a confirmação antes de enviar."
+                        )
+                    else:
+                        st.warning(
+                            "A IA nao conseguiu ler notas nesta imagem. Tente uma foto mais "
+                            "nitida ou preencha a tabela manualmente na aba Planilha."
+                        )
             else:
                 st.session_state.pop("imagem_path", None)
                 st.session_state.pop("avaliacao_nome", None)
@@ -2031,6 +2164,60 @@ with tab_plan:
                     "aluno": "", "atividade": "", "nota": "", "data_realizacao": "", "status": "",
                 }]
                 st.rerun()
+    elif st.session_state.get("fonte", "notion") == "imagem" or st.session_state.get("imagem_linhas"):
+        st.markdown("### Revisão da leitura por imagem")
+        if st.session_state.get("fonte", "notion") != "imagem":
+            st.error(
+                "A origem atual **não é** 'Imagem / Foto'. Para lançar estes dados, "
+                "selecione **Imagem / Foto (extrair notas com IA)** em *Origem dos Dados* "
+                "na barra lateral."
+            )
+        st.warning(
+            "⚠️ **Confira os dados antes de lançar.** A IA pode trocar ou errar nomes "
+            "parecidos (ex.: 'Ana' x 'Anna', sobrenomes) e notas. Corrija as células "
+            "abaixo, remova linhas erradas e só então marque a confirmação."
+        )
+        _img_linhas = st.session_state.get("imagem_linhas", [])
+        if not _img_linhas:
+            st.info(
+                "Nenhuma tabela gerada ainda. Volte à barra lateral "
+                "(**Filtros → Imagem / Foto**), envie a foto e clique em "
+                "**'🔍 Ler imagem com IA e gerar tabela para revisão'**."
+            )
+        else:
+            st.caption(
+                f"{len(_img_linhas)} aluno(s) lido(s) pela IA. Edite aluno/nota ou use o "
+                "`+` na última linha para adicionar quem faltou."
+            )
+            _img_editor = st.data_editor(
+                _img_linhas,
+                num_rows="dynamic",
+                key="imagem_editor",
+                use_container_width=True,
+                column_config={
+                    "aluno": st.column_config.TextColumn("Aluno", width="large"),
+                    "nota": st.column_config.NumberColumn(
+                        "Nota", min_value=0.0, max_value=10.0, format="%.2f"
+                    ),
+                },
+            )
+            st.session_state["imagem_linhas"] = _img_editor
+            st.session_state["imagem_revisada"] = st.checkbox(
+                "✅ Confirmo que revisei os nomes e as notas acima e estão corretos",
+                key="imagem_revisada_check",
+            )
+            _col_i1, _col_i2 = st.columns(2)
+            with _col_i1:
+                if st.button("Limpar tabela", key="imagem_limpar", use_container_width=True):
+                    st.session_state["imagem_linhas"] = []
+                    st.session_state["imagem_revisada"] = False
+                    st.session_state.pop("imagem_editor", None)
+                    st.session_state.pop("imagem_revisada_check", None)
+                    st.rerun()
+            with _col_i2:
+                if st.button("+ Adicionar linha", key="imagem_add", use_container_width=True):
+                    st.session_state["imagem_linhas"] = list(_img_editor) + [{"aluno": "", "nota": ""}]
+                    st.rerun()
     else:
         st.info(
             "Selecione a origem **'Planilha no painel (editar aqui)'** na barra lateral "
@@ -2114,6 +2301,11 @@ with col_btn1:
     _df_atual = st.session_state.get("df")
     if _df_atual is not None and hasattr(_df_atual, "empty") and not _df_atual.empty:
         _resumo_envio.append(f"**Registros na tabela:** {len(_df_atual)}")
+    if st.session_state.get("fonte", "") == "imagem":
+        _img_n = len(st.session_state.get("imagem_linhas") or [])
+        _resumo_envio.append(f"**Alunos na tabela revisada:** {_img_n}")
+        if not st.session_state.get("imagem_revisada"):
+            _resumo_envio.append("**Revisão da imagem:** ⚠️ ainda NÃO confirmada")
 
     executar_btn = st.button(
         "ENVIAR NOTAS AO PORTAL",
@@ -2168,7 +2360,11 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
         if portal_resolvido == "Professor Online":
             st.info(f"**Auto**: escola '{st.session_state.get('escola', '')}' reconhecida do **Professor Online**. Executando neste portal.")
         else:
-            st.info("**Auto**: escola não registrada no Professor Online. Executando no **SGE**.")
+            _reg_nome = (st.session_state.get("escola", "") or "").strip()
+            if _reg_nome:
+                st.info("**Auto**: escola **não registrada** no Professor Online. Executando no **SGE**.")
+            else:
+                st.info("**Auto**: sem escola selecionada. Executando no **SGE**. Dica: escolha\na escola para o roteamento automatico, ou registre as escolas executando\numa vez o lancamento no portal desejado (SGE/Professor Online).")
     st.session_state["portal_resolvido"] = portal_resolvido
 
     # === BARRA DE PROGRESSO ===
@@ -2203,6 +2399,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
         tb_str = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
         lp(f"ERRO: {exc}")
         print(tb_str)
+        lp("[ERRO_VISIVEL] " + " ".join(str(exc).split()))
 
         autofix_on = st.session_state.get("autofix_enabled", False)
         attempts = st.session_state.get("autofix_attempts", 0)
@@ -2238,6 +2435,25 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
             else:
                 motivo = result.get("explanation", "Erro não corrigivel automaticamente.") if result else "Sem resposta da IA."
                 lp(f"Autofix: {motivo}")
+
+        # Erro fatal tambem visivel na tela (nao so no log), para o usuario
+        # corrigir os filtros/campos e executar novamente.
+        st.session_state.resultado = {
+            "blocos": 0,
+            "notas": 0,
+            "notas_preenchidas": 0,
+            "planejamentos": 0,
+            "anexos": 0,
+            "situacoes": 0,
+            "ausentes": 0,
+            "divergencias": 0,
+            "falhas": 1,
+            "falhas_detalhes": [str(exc)],
+        }
+        try:
+            st.error(f"Erro ao executar: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         # Prepara variaveis de ambiente
@@ -2358,8 +2574,18 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
             if resultado.get("ok"):
                 log_progress(f"[APRENDIZADO-OK] Portal '{resultado['portal']}' aprendido com {resultado.get('steps', 0)} passo(s).")
                 log_progress(f"Plano salvo em: {resultado.get('plan_path', '')}")
+                st.success(
+                    f"**Portal '{resultado['portal']}' aprendido** com {resultado.get('steps', 0)} passo(s).\n\n"
+                    "Na **1ª execução** o lançamento foi feito por você — o bot apenas gravou o fluxo.\n\n"
+                    f"Agora selecione **'{resultado['portal']}'** no seletor de portal (ele já aparece na lista) "
+                    "e **execute novamente** com os seus dados: o bot vai reproduzir o fluxo automaticamente."
+                )
             else:
-                log_progress(f"[APRENDIZADO] Concluído com {resultado.get('steps', 0)} passo(s) gravados, mas o plano não foi gerado.")
+                log_progress(f"[APRENDIZADO] Concluido com {resultado.get('steps', 0)} passo(s) gravados, mas o plano nao foi gerado.")
+                st.error(
+                    f"Não foi possível gerar o plano de automação do portal '{resultado.get('portal', '')}'. "
+                    "Confira os passos gravados e tente novamente."
+                )
             st.stop()
 
         # Determina tipo de execucao
@@ -2427,157 +2653,123 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
                         st.stop()
 
-                    conferida = bool(
-                        (st.session_state.get("imagem_conferida") or _rev_retentar or _rev_aplicar)
-                        and st.session_state.get("planilha_linhas")
-                    )
-                    if conferida:
-                        from leitor_planilhas import linhas_para_registros
-                        registros = linhas_para_registros(
-                            st.session_state.planilha_linhas,
-                            defaults={
-                                "escola": st.session_state.get("escola", ""),
-                                "turno": st.session_state.get("turno", ""),
-                                "turma": st.session_state.get("turma", ""),
-                                "trimestre": st.session_state.get("trimestre", ""),
-                                "atividade": st.session_state.get("avaliacao_nome", "").strip(),
-                                "data_realizacao": st.session_state.get("avaliacao_data", "").strip(),
-                            },
-                            logger=log_progress,
+                    _linhas_revisadas = st.session_state.get("imagem_linhas") or []
+                    if not _linhas_revisadas:
+                        log_progress("ERRO: Nenhuma tabela de revisao gerada a partir da imagem.")
+                        st.error(
+                            "Antes de enviar, clique em **'­ƒöì Ler imagem com IA e gerar tabela "
+                            "para revis├úo'** (barra lateral ÔåÆ Filtros ÔåÆ Imagem/Foto) e confira "
+                            "os dados na aba **Planilha**."
                         )
-                        if not registros:
-                            log_progress("ERRO: Nenhuma linha válida na planilha de conferência da foto.")
-                            st.session_state.resultado = {"blocos": 0, "notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
-                            st.stop()
-                        st.session_state.pop("imagem_conferida", None)
-                        st.session_state.pop("imagem_conferencia_pendente", None)
-                        log_progress(f"[CONFERENCIA] {len(registros)} nota(s) confirmadas na planilha da foto.")
+                        st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
+                        st.stop()
+                    if not st.session_state.get("imagem_revisada"):
+                        log_progress("ERRO: Tabela da imagem nao confirmada pelo usuario.")
+                        st.error(
+                            "ÔÜá´©Å **Confirme a revis├úo antes de lan├ºar.** Abra a aba **Planilha**, "
+                            "confira/corrija os nomes e notas e marque a caixa "
+                            "'Confirmo que revisei os nomes e as notas acima e est├úo corretos'."
+                        )
+                        st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
+                        st.stop()
 
-                    if not conferida:
-                        log_progress("Extraindo notas da imagem com IA (reforçada)...")
-                        try:
-                            from ai_assist import extrair_notas_imagem
-                            with open(fonte_path, "rb") as f:
-                                image_bytes = f.read()
-
-                            extraidas = extrair_notas_imagem(
-                                image_bytes,
-                                logger=log_progress,
-                            )
-
-                            if not extraidas:
-                                log_progress("AVISO: IA não conseguiu extrair notas da imagem.")
-                                st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 0}
-                                st.stop()
-
-                            log_progress(f"Extraídas {len(extraidas)} notas da imagem.")
-                            escola = st.session_state.get("escola", "")
-                            turno = st.session_state.get("turno", "")
-                            turma = st.session_state.get("turma", "")
-                            trimestre = st.session_state.get("trimestre", "")
-                            atividade = st.session_state.get("avaliacao_nome", "").strip()
-                            data_realizacao = st.session_state.get("avaliacao_data", "").strip()
-                            if not atividade:
-                                log_progress("ERRO: Informe o nome da atividade (abaixo da imagem) para o bot identificar no portal.")
-                                st.error("Informe o **nome da atividade** abaixo da imagem antes de executar.")
-                                st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
-                                st.stop()
-                            log_progress(f"[IMAGEM] Atividade: '{atividade}' | Data: {data_realizacao or 'não informada'}")
-
-                            from leitor_planilhas import RegistroNota
-
-                            # === SALVAGUARDAS DA EXTRACAO POR IMAGEM ===
-                            _nota_max = float(os.environ.get("NOTA_MAX_IMAGEM", "10"))
-                            _descartes: list = []
-                            _duplicados: list = []
-                            _vistos: dict = {}
-                            registros_img: list = []
-
-                            def _chave_nome(nome: str) -> str:
-                                import unicodedata
-                                return re.sub(
-                                    r"\s+", " ",
-                                    unicodedata.normalize("NFD", (nome or "").strip().lower())
-                                    .encode("ascii", "ignore").decode(),
-                                )
-
-                            for item in extraidas:
-                                aluno = str(item.get("aluno", "")).strip()
-                                nota = str(item.get("nota", "")).strip().replace(",", ".")
-
-                                if not aluno:
-                                    _descartes.append("(sem nome): leitura incompleta")
-                                    continue
-                                if not nota:
-                                    _descartes.append(f"{aluno}: nota ilegivel/vazia")
-                                    continue
-
-                                chave = _chave_nome(aluno)
-                                if chave in _vistos:
-                                    _duplicados.append(f"{aluno} (lido 2x: '{_vistos[chave]}' e '{nota}'; usando '{_vistos[chave]}')")
-                                    continue
-                                _vistos[chave] = nota
-
-                                try:
-                                    num = float(nota)
-                                except ValueError:
-                                    _descartes.append(f"{aluno}: nota ilegivel ('{nota}')")
-                                    continue
-                                if num < 0 or num > _nota_max:
-                                    _descartes.append(
-                                        f"{aluno}: nota suspeita ({nota}) fora da faixa 0-{_nota_max:g}"
-                                        f" — provavel leitura errada da foto"
-                                    )
-                                    continue
-
-                                registros_img.append(RegistroNota(
-                                    escola=escola, turno=turno, turma=turma,
-                                    trimestre=trimestre, aluno=aluno,
-                                    atividade=atividade, nota=nota,
-                                    data_realizacao=data_realizacao,
-                                ))
-
-                            for d in _duplicados:
-                                log_progress(f"[IMAGEM] Nome duplicado na foto: {d}")
-                            for d in _descartes:
-                                log_progress(f"[IMAGEM] IGNORADO -> {d}. Corrija manualmente no portal ou envie foto melhor.")
-                            if _duplicados or _descartes:
-                                log_progress(
-                                    f"[IMAGEM] RESUMO: {len(_duplicados)} duplicado(s), "
-                                    f"{len(_descartes)} ignorado(s), {len(registros_img)} válido(s)."
-                                )
-                            st.session_state["imagem_descartes"] = _descartes
-                            registros.extend(registros_img)
-
-                            # Checagem de contagem contra a tabela carregada (se houver)
-                            _df_ref = st.session_state.get("df")
-                            if _df_ref is not None and hasattr(_df_ref, "empty") and not _df_ref.empty:
-                                _esperados = len(_df_ref)
-                                if len(extraidas) < _esperados:
-                                    log_progress(
-                                        f"AVISO [IMAGEM]: li apenas {len(extraidas)} aluno(s) na foto, mas a tabela "
-                                        f"tem {_esperados}. A foto pode ter cortado o final — confira se todos foram lancados."
-                                    )
-
-                        except Exception as exc:
-                            log_progress(f"ERRO ao processar imagem com IA: {exc}")
-                            import traceback
-                            traceback.print_exc()
+                    log_progress(f"[IMAGEM] Usando tabela revisada com {len(_linhas_revisadas)} linha(s).")
+                    try:
+                        escola = st.session_state.get("escola", "")
+                        turno = st.session_state.get("turno", "")
+                        turma = st.session_state.get("turma", "")
+                        trimestre = st.session_state.get("trimestre", "")
+                        atividade = st.session_state.get("avaliacao_nome", "").strip()
+                        data_realizacao = st.session_state.get("avaliacao_data", "").strip()
+                        if not atividade:
+                            log_progress("ERRO: Informe o nome da atividade (abaixo da imagem) para o bot identificar no portal.")
+                            st.error("Informe o **nome da atividade** abaixo da imagem antes de executar.")
                             st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
                             st.stop()
+                        log_progress(f"[IMAGEM] Atividade: '{atividade}' | Data: {data_realizacao or 'nao informada'}")
 
-                        if not conferida and st.session_state.get("imagem_conferencia_check", True):
-                            from leitor_planilhas import registros_para_linhas
-                            st.session_state.planilha_linhas = registros_para_linhas(registros_img)
-                            st.session_state.imagem_conferencia_pendente = True
-                            st.session_state.imagem_conferida = False
-                            log_progress("[CONFERENCIA] Notas extraídas da foto. Planilha pronta para conferência.")
-                            st.warning(
-                                "**Conferência da foto:** as notas foram extraídas e a planilha está na tela. "
-                                "Confira os **nomes** (e as notas) e clique em **Confirmar e lançar no portal**."
+                        from leitor_planilhas import RegistroNota
+
+                        # === SALVAGUARDAS DA EXTRACAO POR IMAGEM ===
+                        _nota_max = float(os.environ.get("NOTA_MAX_IMAGEM", "10"))
+                        _descartes: list = []
+                        _duplicados: list = []
+                        _vistos: dict = {}
+                        registros_img: list = []
+
+                        def _chave_nome(nome: str) -> str:
+                            import unicodedata
+                            return re.sub(
+                                r"\s+", " ",
+                                unicodedata.normalize("NFD", (nome or "").strip().lower())
+                                .encode("ascii", "ignore").decode(),
                             )
-                            st.session_state.executando = False
-                            st.stop()
+
+                        for item in _linhas_revisadas:
+                            aluno = str(item.get("aluno", "") or "").strip()
+                            _nota_bruta = item.get("nota", "")
+                            nota = "" if _nota_bruta is None else str(_nota_bruta).strip().replace(",", ".")
+
+                            if not aluno:
+                                _descartes.append("(sem nome): leitura incompleta")
+                                continue
+                            if not nota:
+                                _descartes.append(f"{aluno}: nota ilegivel/vazia")
+                                continue
+
+                            chave = _chave_nome(aluno)
+                            if chave in _vistos:
+                                _duplicados.append(f"{aluno} (repetido: '{_vistos[chave]}' e '{nota}'; usando '{_vistos[chave]}')")
+                                continue
+                            _vistos[chave] = nota
+
+                            try:
+                                num = float(nota)
+                            except ValueError:
+                                _descartes.append(f"{aluno}: nota ilegivel ('{nota}')")
+                                continue
+                            if num < 0 or num > _nota_max:
+                                _descartes.append(
+                                    f"{aluno}: nota suspeita ({nota}) fora da faixa 0-{_nota_max:g}"
+                                    f" ÔÇö provavel leitura errada da foto"
+                                )
+                                continue
+
+                            registros_img.append(RegistroNota(
+                                escola=escola, turno=turno, turma=turma,
+                                trimestre=trimestre, aluno=aluno,
+                                atividade=atividade, nota=nota,
+                                data_realizacao=data_realizacao,
+                            ))
+
+                        for d in _duplicados:
+                            log_progress(f"[IMAGEM] Nome duplicado na foto: {d}")
+                        for d in _descartes:
+                            log_progress(f"[IMAGEM] IGNORADO -> {d}. Corrija na tabela revisada ou no portal.")
+                        if _duplicados or _descartes:
+                            log_progress(
+                                f"[IMAGEM] RESUMO: {len(_duplicados)} duplicado(s), "
+                                f"{len(_descartes)} ignorado(s), {len(registros_img)} valido(s)."
+                            )
+                        st.session_state["imagem_descartes"] = _descartes
+                        registros.extend(registros_img)
+
+                        # Checagem de contagem contra a tabela carregada (se houver)
+                        _df_ref = st.session_state.get("df")
+                        if _df_ref is not None and hasattr(_df_ref, "empty") and not _df_ref.empty:
+                            _esperados = len(_df_ref)
+                            if len(_linhas_revisadas) < _esperados:
+                                log_progress(
+                                    f"AVISO [IMAGEM]: a tabela revisada tem {len(_linhas_revisadas)} aluno(s), mas "
+                                    f"a referencia tem {_esperados}. Confira se todos foram lancados."
+                                )
+
+                    except Exception as exc:
+                        log_progress(f"ERRO ao processar a tabela da imagem: {exc}")
+                        import traceback
+                        traceback.print_exc()
+                        st.session_state.resultado = {"notas": 0, "notas_preenchidas": 0, "ausentes": 0, "falhas": 1}
+                        st.stop()
 
                 elif fonte == "planilha":
                     fonte_path = _PAINEL_SOURCE_PATH
@@ -3229,6 +3421,8 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         "anexos": resumo.anexos_enviados,
                         "situacoes": resumo.situacoes_ativadas,
                         "falhas": resumo.falhas,
+                        "falhas_detalhes": resumo.falhas_detalhes or [],
+                        "titulo_fluxo": "Sequência Didática",
                     }
                     log_progress(f"Concluído! Planejamentos: {resumo.planejamentos_criados}, Falhas: {resumo.falhas}")
 
@@ -3243,69 +3437,16 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
     finally:
         st.session_state.executando = False
         st.session_state.revisao_forcar = False
-        st.session_state.imagem_conferida = False
-        _registrar_stats_resultado(st.session_state.get("resultado") or {})
+        _registrar_stats_resultado(
+            st.session_state.get("resultado") or {},
+            portal=(st.session_state.get("portal_resolvido")
+                    or st.session_state.get("portal_selecionado")
+                    or "SGE"),
+        )
         try:
             status.update(label="Finalizado", state="complete")
         except RuntimeError:
             pass
-
-# === CONFERENCIA DA PLANILHA EXTRAIDA DA FOTO ===
-if (
-    st.session_state.get("imagem_conferencia_pendente")
-    and st.session_state.get("planilha_linhas")
-    and st.session_state.get("fonte", "notion") == "imagem"
-    and st.session_state.get("tipo", "notas") == "notas"
-):
-    st.markdown("### Conferência das notas extraídas da foto")
-    st.caption(
-        "A IA leu os nomes e as notas da foto e montou a planilha abaixo. "
-        "**Corrija os nomes que a IA leu errado** (use o nome EXATO que aparece na grade do portal) "
-        "e ajuste as notas se necessário, antes de enviar. "
-        "Se algum aluno não for localizado no portal, ele entra na aba **Pendências** após o lançamento, "
-        "onde você pode corrigir o nome e re-tentar."
-    )
-    _colunas_conf = {
-        "aluno": st.column_config.TextColumn("Aluno", required=True),
-        "nota": st.column_config.NumberColumn("Nota", min_value=0.0, max_value=10.0, format="%.2f", required=True),
-        "atividade": st.column_config.TextColumn("Atividade"),
-        "data_realizacao": st.column_config.TextColumn("Data"),
-        "escola": st.column_config.TextColumn("Escola", disabled=True),
-        "turno": st.column_config.TextColumn("Turno", disabled=True),
-        "turma": st.column_config.TextColumn("Turma", disabled=True),
-        "trimestre": st.column_config.TextColumn("Trimestre", disabled=True),
-    }
-    _editado_conf = st.data_editor(
-        st.session_state.planilha_linhas,
-        column_config=_colunas_conf,
-        num_rows="dynamic",
-        key="planilha_editor_conferencia",
-        use_container_width=True,
-        hide_index=True,
-    )
-    _c_conf1, _c_conf2 = st.columns(2)
-    with _c_conf1:
-        if st.button("Confirmar e lançar no portal", type="primary", key="img_conf_confirmar", use_container_width=True):
-            _linhas_final = []
-            for _ln in _editado_conf:
-                _nome = str(_ln.get("aluno") or "").strip()
-                if not _nome:
-                    continue
-                _ln = dict(_ln)
-                _ln["aluno"] = _nome
-                _linhas_final.append(_ln)
-            st.session_state.planilha_linhas = _linhas_final
-            st.session_state.imagem_conferida = True
-            st.session_state.imagem_conferencia_pendente = False
-            st.session_state.pop("resultado", None)
-            st.session_state.executar_agora = True
-            st.rerun()
-    with _c_conf2:
-        if st.button("Descartar e extrair de novo", key="img_conf_refazer", use_container_width=True):
-            st.session_state.planilha_linhas = []
-            st.session_state.imagem_conferencia_pendente = False
-            st.session_state.imagem_conferida = False
-            st.rerun()
 
 # === FILA DE CONFIRMACAO DE DIVERGÊNCIAS (screenshot + decisão) ===
 with tab_rev:
@@ -3639,7 +3780,14 @@ if st.session_state.resultado:
     if res.get("divergencias", 0) > 0:
         st.warning(f"{res.get('divergencias')} divergência(s) aguardando confirmação na aba **Pendências**.")
     elif falhas > 0:
-        st.warning(f"Houve {falhas} falha(s). Verifique os logs na aba **Logs**.")
+        st.warning(f"Houve {falhas} falha(s).")
+        _det_falhas = res.get("falhas_detalhes") or []
+        if _det_falhas:
+            with st.expander("Detalhes das falhas - o que corrigir e executar novamente", expanded=True):
+                for _d in _det_falhas[:15]:
+                    st.error(_d)
+        else:
+            st.caption("Verifique os logs na aba **Logs** para mais detalhes.")
     elif preenchidas > 0:
         st.success("Tudo concluído com sucesso!")
 

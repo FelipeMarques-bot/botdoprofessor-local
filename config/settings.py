@@ -13,6 +13,8 @@ _db_url = os.environ.get("DATABASE_URL", "")
 if _db_url and not _db_url.startswith("sqlite:///data/"):
     if _db_url.startswith("postgres://"):
         _db_url = _db_url.replace("postgres://", "postgresql://", 1)
+    if _db_url.startswith("postgresql://") and "+psycopg" not in _db_url:
+        _db_url = _db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     SQLALCHEMY_DATABASE_URI = _db_url
 else:
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATA_DIR / 'bot_local.db'}"

@@ -19,7 +19,7 @@ import urllib.error
 import csv
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -61,6 +61,97 @@ from leitor_planilhas import (
     gerar_template_sequencias_xlsx, gerar_template_sequencias_csv,
     ler_sequencias_excel, ler_sequencias_csv,
 )
+
+
+def _normalize_nome_ia(s: str) -> str:
+    """Normaliza nome para comparacao: minusculas, sem acentos/simbolos."""
+    import unicodedata
+    t = re.sub(r"[^a-z0-9\s]", "", unicodedata.normalize("NFD", (s or "").lower()))
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _tokens_nome_ia(s: str) -> List[str]:
+    stop = {"da", "de", "do", "das", "dos", "e"}
+    return [t for t in _normalize_nome_ia(s).split() if t and t not in stop]
+
+
+def _similar_nome_ia(a: str, b: str) -> float:
+    """Similaridade de nomes (mesma formula do lancamento SGE)."""
+    import difflib
+    na, nb = _normalize_nome_ia(a), _normalize_nome_ia(b)
+    ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+    ta, tb = _tokens_nome_ia(a), _tokens_nome_ia(b)
+    if ta and tb:
+        first = difflib.SequenceMatcher(None, ta[0], tb[0]).ratio()
+        ratio = max(ratio, first * 0.95)
+    return ratio
+
+
+def _parse_lista_alunos(texto: str) -> List[str]:
+    """Converte a textarea 'um nome por linha' em lista limpa de nomes."""
+    return [
+        ln.strip()
+        for ln in (texto or "").splitlines()
+        if ln.strip()
+    ]
+
+
+def _reconciliar_nomes_ia(alunos_lidos: List[Dict[str, str]], lista_real: List[str]) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Casa nomes lidos pela IA com a lista real de alunos da turma.
+
+    Retorna (linhas, avisos):
+    - match >= 0.82 -> substitui 'aluno' pelo nome real, guarda o lido em 'ia_leu'.
+    - 0.45 <= match < 0.82 -> mantem o lido e sugere o nome real em 'sugestao'.
+    - sem match -> mantem o lido e registra aviso.
+    Sem lista real, devolve as linhas como vieram (sem colunas extras).
+    """
+    if not lista_real:
+        return alunos_lidos, []
+    linhas: List[Dict[str, str]] = []
+    avisos: List[str] = []
+    for item in alunos_lidos:
+        lido = str(item.get("aluno", "") or "").strip()
+        nota = str(item.get("nota", "") or "").strip().replace(",", ".")
+        if not lido:
+            linhas.append({"aluno": "", "nota": nota, "ia_leu": "", "sugestao": ""})
+            continue
+        scored = []
+        for nome in lista_real:
+            r = _similar_nome_ia(lido, nome)
+            if r >= 0.45:
+                scored.append((r, nome))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if scored and scored[0][0] >= 0.82:
+            linhas.append({"aluno": scored[0][1], "nota": nota, "ia_leu": lido, "sugestao": ""})
+        elif scored:
+            melhor = scored[0]
+            if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.05:
+                _segundo = scored[1][1]
+                linhas.append({
+                    "aluno": lido,
+                    "nota": nota,
+                    "ia_leu": lido,
+                    "sugestao": (
+                        f"{melhor[1]} ou {_segundo} (confianca {melhor[0]:.0%}). "
+                        "Decida qual e o correto."
+                    ),
+                })
+                avisos.append(
+                    f"'{lido}' -> pode ser '{melhor[1]}' ou '{_segundo}' "
+                    f"({melhor[0]:.0%}), confirme qual e o correto."
+                )
+            else:
+                linhas.append({
+                    "aluno": lido,
+                    "nota": nota,
+                    "ia_leu": lido,
+                    "sugestao": f"{melhor[1]} (confianca {melhor[0]:.0%})",
+                })
+                avisos.append(f"'{lido}' -> sugeri '{melhor[1]}', confira.")
+        else:
+            linhas.append({"aluno": lido, "nota": nota, "ia_leu": lido, "sugestao": ""})
+            avisos.append(f"'{lido}' nao identificado na lista de alunos.")
+    return linhas, avisos
 
 # Caminho sintetico da fonte "planilha no painel": usada pelo StatusStore
 # para persistir o status (Lancada/Falha) das linhas editadas entre execuções.
@@ -1851,6 +1942,19 @@ with st.sidebar:
                         help="Data de realização para o bot localizar/validar no portal."
                     )
                     st.session_state.avaliacao_data = avaliacao_data
+
+                    lista_alunos = st.text_area(
+                        "Lista real de alunos da turma (opcional) — um nome por linha",
+                        key="imagem_lista_alunos",
+                        height=100,
+                        placeholder="Ex.:\nMARIA SILVA\nJOAO SANTOS\nANA LUIZA",
+                        help=(
+                            "Ao preencher, o bot tenta casar cada nome lido pela IA "
+                            "com esta lista e já corrige/sugere o nome certo na tabela. "
+                            "Deixe vazio para usar somente a imagem."
+                        ),
+                    )
+                    st.session_state["imagem_lista_alunos"] = lista_alunos
                 if st.button(
                     "🔍 Ler imagem com IA e gerar tabela para revisão",
                     key="imagem_ler_btn",
@@ -1879,26 +1983,27 @@ with st.sidebar:
                         try:
                             with open(_novo_img_path, "rb") as _f:
                                 _img_bytes = _f.read()
-                            _lidas = _extrair_img(_img_bytes)
+                            _lidas = _extrair_img(_img_bytes, ordem_alfabetica=False)
                         except Exception as _exc:
                             _lidas = []
                             st.error(f"Falha ao ler a imagem: {_exc}")
 
                     if _lidas:
-                        st.session_state["imagem_linhas"] = [
-                            {
-                                "aluno": str(_i.get("aluno", "") or "").strip(),
-                                "nota": str(_i.get("nota", "") or "").strip().replace(",", "."),
-                            }
-                            for _i in _lidas
-                        ]
+                        _lista_alunos_ia = _parse_lista_alunos(st.session_state.get("imagem_lista_alunos", ""))
+                        _linhas_ai, _avisos_ai = _reconciliar_nomes_ia(_lidas, _lista_alunos_ia)
+                        st.session_state["imagem_linhas"] = _linhas_ai
                         st.session_state["imagem_revisada"] = False
                         st.session_state.pop("imagem_editor", None)
                         st.session_state.pop("imagem_revisada_check", None)
                         st.success(
-                            f"{len(_lidas)} aluno(s) lido(s). **Revise a tabela na aba Planilha** "
+                            f"{len(_linhas_ai)} aluno(s) lido(s). **Revise a tabela na aba Planilha** "
                             "e marque a confirmação antes de enviar."
                         )
+                        if _avisos_ai:
+                            st.warning(
+                                "Confira em destaque: "
+                                + " ".join(_avisos_ai)
+                            )
                     else:
                         st.warning(
                             "A IA nao conseguiu ler notas nesta imagem. Tente uma foto mais "
@@ -2186,20 +2291,31 @@ with tab_plan:
             )
         else:
             st.caption(
-                f"{len(_img_linhas)} aluno(s) lido(s) pela IA. Edite aluno/nota ou use o "
-                "`+` na última linha para adicionar quem faltou."
+                f"{len(_img_linhas)} aluno(s) lido(s) pela IA. Corrija aluno/nota, aprove a "
+                "sugestão em azul ou use o `+` na última linha para adicionar quem faltou."
             )
+            _colunas_editor: Dict[str, Any] = {
+                "aluno": st.column_config.TextColumn("Aluno", width="large"),
+                "nota": st.column_config.NumberColumn(
+                    "Nota", min_value=0.0, max_value=10.0, format="%.2f"
+                ),
+            }
+            if any("ia_leu" in (ln or {}) for ln in _img_linhas):
+                _colunas_editor["ia_leu"] = st.column_config.TextColumn(
+                    "IA leu", width="medium", disabled=True,
+                    help="Nome como a IA leu na imagem (referência)."
+                )
+            if any("sugestao" in (ln or {}) for ln in _img_linhas):
+                _colunas_editor["sugestao"] = st.column_config.TextColumn(
+                    "Sugestão", width="medium", disabled=True,
+                    help="Nome real sugerido pela lista de alunos. Aprove digitando ou copiando."
+                )
             _img_editor = st.data_editor(
                 _img_linhas,
                 num_rows="dynamic",
                 key="imagem_editor",
                 use_container_width=True,
-                column_config={
-                    "aluno": st.column_config.TextColumn("Aluno", width="large"),
-                    "nota": st.column_config.NumberColumn(
-                        "Nota", min_value=0.0, max_value=10.0, format="%.2f"
-                    ),
-                },
+                column_config=_colunas_editor,
             )
             st.session_state["imagem_linhas"] = _img_editor
             st.session_state["imagem_revisada"] = st.checkbox(
@@ -2216,7 +2332,12 @@ with tab_plan:
                     st.rerun()
             with _col_i2:
                 if st.button("+ Adicionar linha", key="imagem_add", use_container_width=True):
-                    st.session_state["imagem_linhas"] = list(_img_editor) + [{"aluno": "", "nota": ""}]
+                    _nova = [{"aluno": "", "nota": ""}]
+                    _ref = list(_img_editor) + [{}]
+                    for _campo in _ref[0]:
+                        if _campo not in _nova[0]:
+                            _nova[0][_campo] = ""
+                    st.session_state["imagem_linhas"] = list(_img_editor) + _nova
                     st.rerun()
     else:
         st.info(

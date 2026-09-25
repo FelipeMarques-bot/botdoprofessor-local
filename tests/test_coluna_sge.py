@@ -216,7 +216,13 @@ class TestReadExistingGradeMulticoluna:
             lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ALUNO A"}],
         )
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
-        monkeypatch.setattr(m, "_read_grade_value_js", lambda scope, suffix, coluna="", strict=False: value)
+        monkeypatch.setattr(
+            m, "_read_grade_value_anchored_js",
+            lambda scope, aluno, suffix, coluna="", allow_first_name_only=False:
+                (None, 1) if value is None
+                else (value, 1) if coluna
+                else (value, 1 if len(counts) == 1 else len(counts)),
+        )
         return m, page
 
     def test_pagina_multicoluna_nao_gera_sge_ja_falso(self, monkeypatch):

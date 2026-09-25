@@ -155,7 +155,7 @@ class TestPickOllamaModelBroken:
         import ai_assist
 
         monkeypatch.setattr(ai_assist, "_ollama_active_model", None)
-        monkeypatch.setattr(ai_assist, "_get_available_ram_gb", lambda: 1.5)
+        monkeypatch.setattr(ai_assist, "_get_available_ram_gb", lambda: 0.7)
         monkeypatch.setattr(ai_assist, "_ollama_broken_models", set())
 
         assert ai_assist._pick_ollama_model() == ""

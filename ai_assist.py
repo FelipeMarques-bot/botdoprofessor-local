@@ -501,7 +501,7 @@ def _optimize_image_bytes(data: bytes, max_dim: int = 1024, quality: int = 88) -
     Se Pillow nao estiver disponivel ou algo falhar, devolve a imagem original.
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageEnhance, ImageFilter
         import io as _io
 
         if len(data) <= 0:
@@ -511,6 +511,9 @@ def _optimize_image_bytes(data: bytes, max_dim: int = 1024, quality: int = 88) -
             return data
         img = img.convert("RGB")
         img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        # Nitidez extra para letra de mao/foto: mais contraste + unsharp leve.
+        img = ImageEnhance.Contrast(img).enhance(1.18)
+        img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=130, threshold=2))
         buf = _io.BytesIO()
         img.save(buf, "JPEG", quality=quality, optimize=True)
         return buf.getvalue()
@@ -928,17 +931,16 @@ EXTRAIR_NOTAS_IMAGEM_PROMPT = """\
 Voce e um assistente especialista em OCR de diarios de classe, listas manuscritas e tabelas impressas.
 Analise esta imagem com extrema atencao e extraia TODOS os alunos com a nota da atividade.
 
-Regras obrigatorias:
-- Leia linha por linha. Para cada linha com nome de aluno, capture o nome COMPLETO e a nota correspondente.
-- A nota pode estar com virgula (8,5), ponto (8.5) ou apenas numero (8). Preserve o valor original.
-- Mantenha exatamente a grafia do nome como aparece. Corrija apenas erros obvios de maiusculas/minusculas.
-- NUNCA invente nomes, notas ou linhas ausentes. Se ilegivel, omita.
-- Ignore cabecalhos, totais, medias, "Turma", "Data", rodapes, rubricas e nomes de disciplinas.
-- Foque na coluna de NOTA da atividade. Nao confunda com faltas, presencas ou situacoes.
-- Separe corretamente nomes compostos (sobrenomes). Nao misture notas entre alunos.
-- Se houver numeros soltos fora da coluna de nota, ignore-os.
+Regras:
+- Percorra o documento LINHA POR LINHA, de cima para baixo, e mantenha a MESMA ORDEM das linhas na resposta.
+- Copie o nome de cada aluno EXATAMENTE como esta escrito, aproveitando o maximo possivel (primeiro nome e sobrenomes) - nunca troque letras nem reordene as palavras do nome.
+- A nota pode aparecer com virgula (8,5) ou ponto (8.5). Preserve o valor original.
+- Se um aluno NAO tiver nota visivel, use null ('nota': null) e NAO omita a linha.
+- NAO invente nomes nem notas; NAO junte duas linhas numa so; NAO troque a nota de um aluno pela de outro.
+- Se uma linha inteira estiver ilegivel demais, omita-a.
+- Ignore cabecalhos, totais, medias, rodapes e nomes de disciplinas.
 
-Responda APENAS com um JSON array, sem texto antes ou depois, no formato:
+Responda APENAS com um JSON array, sem texto antes ou depois, MANTENDO a ordem da folha, no formato:
 [{"aluno": "Nome Completo", "nota": "8,5"}, {"aluno": "Outro Aluno", "nota": "7.0"}]
 Se nao houver nada para extrair, retorne apenas [].
 """
@@ -1204,6 +1206,7 @@ def extrair_notas_imagem(
     logger: Optional[LogFn] = None,
     prompt: Optional[str] = None,
     retries: int = 1,
+    ordem_alfabetica: bool = True,
 ) -> List[Dict[str, str]]:
     """Extrai alunos + notas de uma imagem usando a IA configurada (local ou web).
 
@@ -1213,10 +1216,12 @@ def extrair_notas_imagem(
     - Parsing tolerante a code fences e texto ao redor.
     - Validacao e normalizacao de aluno e nota.
     - Retry com prompt de refinamento quando a leitura vem vazia.
-    - Ordem alfabetica (A-Z) ignorando acentos.
+    - Ordem alfabetica (A-Z) ignorando acentos por padrao (troque com
+      ``ordem_alfabetica=False`` para manter a ordem original da folha na resposta).
 
     Returns:
-        Lista de dicts {"aluno": str, "nota": str} ordenada alfabeticamente.
+        Lista de dicts {"aluno": str, "nota": str}, ordenada alfabeticamente
+        (ou na ordem lida pela IA quando ``ordem_alfabetica=False``).
     """
     if not image_bytes:
         return []
@@ -1255,7 +1260,8 @@ def extrair_notas_imagem(
         registros = _extract_grade_records(resposta)
         _log(logger, f"[AI-Extracao] Refinamento: {len(registros)} aluno(s) validos.")
 
-    registros.sort(key=lambda r: _alphabetical_key(r.get("aluno", "")))
+    if ordem_alfabetica:
+        registros.sort(key=lambda r: _alphabetical_key(r.get("aluno", "")))
     return registros
 
 

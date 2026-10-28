@@ -16,3 +16,4 @@ streamlit>=1.30
 openpyxl>=3.1
 requests>=2.31
 gdown>=5.2
+psycopg[binary]>=3.1,<4

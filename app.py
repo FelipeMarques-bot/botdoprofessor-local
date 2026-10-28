@@ -1,6 +1,6 @@
+import logging
 import os
 import sys
-from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -8,7 +8,14 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
-from config.settings import SQLALCHEMY_DATABASE_URI, SECRET_KEY, DATA_DIR, LOGS_DIR
+from config.settings import (
+    DATA_DIR,
+    LOGS_DIR,
+    SECRET_KEY,
+    SECRET_KEY_IS_EPHEMERAL,
+    SQLALCHEMY_DATABASE_URI,
+)
+from bot.utils.logging_config import setup_logging
 from bot.models.database import db, init_db
 from bot.models.user import User
 from bot.api.routes import auth_bp, license_bp, admin_bp, audit_bp
@@ -22,6 +29,18 @@ from bot.security.errors import register_error_handlers
 from bot.ops.monitoring import BackupManager, HealthChecker
 
 LANDING_DIR = os.path.join(os.path.dirname(__file__), "landing")
+logger = logging.getLogger("botdoprofessor")
+
+
+def _is_test_or_dev() -> bool:
+    env = (
+        os.environ.get("BOT_LOCAL_ENV")
+        or os.environ.get("FLASK_ENV")
+        or ""
+    ).strip().lower()
+    return env in {"dev", "development", "local", "test", "testing"} or bool(
+        os.environ.get("PYTEST_CURRENT_TEST")
+    )
 
 
 def create_app():
@@ -32,6 +51,13 @@ def create_app():
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    setup_logging("botdoprofessor", LOGS_DIR / "app.log")
+
+    if SECRET_KEY_IS_EPHEMERAL and not _is_test_or_dev():
+        raise RuntimeError(
+            "SECRET_KEY nao configurada. Defina uma chave forte no ambiente "
+            "(ex.: python -c \"import secrets; print(secrets.token_hex(32))\")."
+        )
 
     init_db(app)
     register_error_handlers(app)
@@ -133,21 +159,33 @@ def create_app():
 
 
 def _seed_initial_admin(app):
-    """Cria admin inicial se nao existe. Nao altera senha em DB persistente (PostgreSQL)."""
+    """Cria admin inicial se nao existe. Nao altera senha em DB persistente."""
     with app.app_context():
         admin_user = os.environ.get("ADMIN_USER", "admin")
-        admin_pass = os.environ.get("ADMIN_PASS", "admin123")
         admin_email = os.environ.get("ADMIN_EMAIL", "admin@botlocal.com")
 
         existing = User.query.filter_by(username=admin_user).first()
         if existing:
-            print(f"[SEED] Admin '{admin_user}' OK (id={existing.id})")
-        else:
-            admin = User(username=admin_user, email=admin_email, profile="admin")
-            admin.set_password(admin_pass)
-            db.session.add(admin)
-            db.session.commit()
-            print(f"[SEED] Admin criado: {admin_user} / {admin_pass}")
+            logger.info("[SEED] Admin '%s' OK (id=%s)", admin_user, existing.id)
+            return
+
+        admin_pass = os.environ.get("ADMIN_PASS", "").strip()
+        if not admin_pass:
+            raise RuntimeError(
+                "ADMIN_PASS nao configurada. Defina uma senha inicial forte "
+                "(minimo 12 caracteres) antes de criar o primeiro admin."
+            )
+        if len(admin_pass) < 12:
+            raise RuntimeError("ADMIN_PASS deve ter pelo menos 12 caracteres.")
+
+        admin = User(username=admin_user, email=admin_email, profile="admin")
+        admin.set_password(admin_pass)
+        db.session.add(admin)
+        db.session.commit()
+        logger.info(
+            "[SEED] Admin '%s' criado. Troque a senha inicial no primeiro acesso.",
+            admin_user,
+        )
 
 
 if __name__ == "__main__":

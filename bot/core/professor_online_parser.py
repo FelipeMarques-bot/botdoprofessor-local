@@ -489,3 +489,145 @@ def atividade_matches(descricao: str, alvo: str) -> bool:
         return False
     desc_norm = norm(descricao)
     return desc_norm == alvo_norm or alvo_norm in desc_norm or desc_norm in alvo_norm
+
+
+# --------------------------------------------------------------------- #
+#  Formularios de planejamento (criacao/anexo)                          #
+# --------------------------------------------------------------------- #
+
+def is_planejamentos_list(html: str) -> bool:
+    """True se a pagina e a lista de planejamentos semanais da turma.
+
+    (cadmostrarplanejamentosemanal.aspx). Detectada pela presenca do botao
+    ``INCLUIR`` e do filtro ``vPLANEJAMENTOSEMANALVIGENTE``.
+    """
+    return bool(
+        re.search(r'name="INCLUIR"', html)
+        and re.search(r'name="vPLANEJAMENTOSEMANALVIGENTE"', html)
+    )
+
+
+def is_planejamento_semanal_form(html: str) -> bool:
+    """True se a pagina e o formulario de planejamento semanal
+    (planejamentosemanal.aspx)."""
+    return bool(
+        re.search(r'name="PLANEJAMENTOSEMDATAFIM"', html)
+        and re.search(r'name="PLANEJSEMANALOBSERVACAO"', html)
+        and re.search(r'name="PLANEJAMENTOSEMANALSEMARQUIVO"', html)
+    )
+
+
+def is_conteudo_prog_form(html: str) -> bool:
+    """True se a pagina e o formulario do conteudo programatico / plano anual
+    (conteudoprogramaticodisciplina.aspx)."""
+    return bool(
+        re.search(r'name="CONTEUDOPROGOBSERVACAO"', html)
+        and re.search(r'name="CONTEUDOPROGVIGENTE"', html)
+    )
+
+
+def form_field_value(html: str, field: str, default: str = "") -> str:
+    """Le o valor de um campo do formulario (input/text/textarea/select).
+
+    Para selects retorna o texto da opcao selecionada. Como fallback le o
+    valor serializado no GXState.
+    """
+    m = re.search(
+        r'<input[^>]+name="%s"[^>]*value="([^"]*)"' % re.escape(field),
+        html,
+    )
+    if m:
+        return _html.unescape(m.group(1))
+    m = re.search(
+        r'<textarea[^>]+name="%s"[^>]*>(.*?)</textarea>' % re.escape(field),
+        html,
+        re.S,
+    )
+    if m:
+        return _html.unescape(m.group(1)).strip()
+    m = re.search(
+        r'<select[^>]+name="%s"[^>]*>(.*?)</select>' % re.escape(field),
+        html,
+        re.S,
+    )
+    if m:
+        sel = re.search(r'<option([^>]*)selected(?:="[^"]*")?([^>]*)>([^<]*)', m.group(1))
+        if sel:
+            return _html.unescape(sel.group(3)).strip()
+        return ""
+    state = parse_gxstate(html)
+    if state and field in state and state[field] is not None:
+        return str(state[field])
+    return default
+
+
+def form_field_enabled(html: str, field: str) -> bool:
+    """True se o campo esta habilitado conforme o GXState (``<campo>_Enabled``)."""
+    state = parse_gxstate(html)
+    if state is None:
+        return True
+    v = state.get(f"{field}_Enabled")
+    return v is None or str(v) == "1"
+
+
+def extract_planejamento_form(html: str) -> Dict[str, Any]:
+    """Le o estado do formulario de planejamento semanal.
+
+    Retorna: id, data_inicio, data_fim, sem_arquivo, observacao, tem_pdf,
+    editavel (bool) e formulario (bool).
+    """
+    state = parse_gxstate(html) or {}
+    return {
+        "id": form_field_value(html, "PLANEJAMENTOSEMANALID", str(state.get("PLANEJAMENTOSEMANALID", "0"))),
+        "data_inicio": form_field_value(html, "PLANEJAMENTOSEMDATAINICIO"),
+        "data_fim": form_field_value(html, "PLANEJAMENTOSEMDATAFIM"),
+        "sem_arquivo": form_field_value(html, "PLANEJAMENTOSEMANALSEMARQUIVO"),
+        "observacao": form_field_value(html, "PLANEJSEMANALOBSERVACAO"),
+        "tem_pdf": bool(re.search(r'name="PLANEJSEMANALARQUIVOPDF"', html)),
+        "editavel": form_field_enabled(html, "PLANEJAMENTOSEMDATAINICIO"),
+        "formulario": is_planejamento_semanal_form(html),
+    }
+
+
+def extract_conteudo_prog_form(html: str) -> Dict[str, Any]:
+    """Le o estado do formulario do conteudo programatico (plano anual).
+
+    Retorna: versao, vigente, observacao, tem_pdf, editavel e formulario.
+    """
+    state = parse_gxstate(html) or {}
+    return {
+        "versao": form_field_value(
+            html, "CONTEUDOPROGRAMATICOVERSAO",
+            str(state.get("CONTEUDOPROGRAMATICOVERSAO", "")),
+        ),
+        "vigente": form_field_value(
+            html, "CONTEUDOPROGVIGENTE",
+            str(state.get("CONTEUDOPROGVIGENTE", "")),
+        ),
+        "observacao": form_field_value(html, "CONTEUDOPROGOBSERVACAO"),
+        "tem_pdf": bool(re.search(r'name="CONTEUDOPROGARQUIVOPDF"', html)),
+        "editavel": form_field_enabled(html, "CONTEUDOPROGOBSERVACAO"),
+        "formulario": is_conteudo_prog_form(html),
+    }
+
+
+def find_error_message(html: str) -> str:
+    """Extrai a mensagem de erro visivel da pagina (viewers GeneXus).
+
+    Procura por ``gxErrorViewer`` ou ``ErrorViewer`` (span/div) e devolve o
+    texto limpo. Retorna string vazia se nao houver erro apresentado.
+    """
+    for pat in (
+        r'<span[^>]+id="gxErrorViewer"[^>]*>(?P<t>.*?)</span>',
+        r'<span[^>]+class="[^"]*ErrorViewer[^"]*"[^>]*>(?P<t>.*?)</span>',
+        r'<div[^>]+id="gxErrorViewer"[^>]*>(?P<t>.*?)</div>',
+        r'<div[^>]+class="[^"]*ErrorViewer[^"]*"[^>]*>(?P<t>.*?)</div>',
+    ):
+        m = re.search(pat, html, re.S)
+        if m:
+            txt = re.sub(r"<[^>]+>", "", m.group("t"))
+            txt = _html.unescape(txt).strip()
+            txt = re.sub(r"\s+", " ", txt)
+            if txt:
+                return txt
+    return ""

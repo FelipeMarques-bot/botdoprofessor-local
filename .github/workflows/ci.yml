@@ -10,6 +10,7 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -17,12 +18,13 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: 'pip'
 
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff
+          pip install ruff pytest
 
       - name: Verificar sintaxe (AST)
         run: |
@@ -30,12 +32,12 @@ jobs:
           import ast, os, sys
           errors = []
           for root, dirs, files in os.walk('.'):
-              dirs[:] = [d for d in dirs if d not in ('.venv', 'build_venv', '.git', '__pycache__', 'build', 'dist', 'node_modules', '.github')]
+              dirs[:] = [d for d in dirs if d not in ('.venv', 'build_venv', '.git', '__pycache__', 'build', 'dist', 'node_modules', '.github', '.ruff_cache', '.pytest_cache')]
               for f in files:
                   if f.endswith('.py'):
                       path = os.path.join(root, f)
                       try:
-                          with open(path, encoding='utf-8') as fh:
+                          with open(path, encoding='utf-8-sig') as fh:
                               ast.parse(fh.read())
                       except SyntaxError as e:
                           errors.append(f'{path}: {e}')
@@ -46,10 +48,18 @@ jobs:
           print('Todos os arquivos .py compilam com sucesso.')
           "
 
-      - name: Lint com Ruff
+      - name: Lint com Ruff (erros críticos)
+        run: |
+          ruff check --select E9,F63,F7,F82 --line-length=160 .
+
+      - name: Lint com Ruff (avisos)
         continue-on-error: true
         run: |
-          ruff check --ignore=E501,F401,E402,F811 --line-length=160 . || true
+          ruff check --ignore=E501 --line-length=160 .
+
+      - name: Testes unitarios/integracao (API + utilitarios)
+        run: |
+          python -m pytest tests/test_all.py tests/test_e2e.py tests/test_revocation.py tests/test_status_store.py -q --disable-warnings
 
       - name: Testar geracao de templates
         run: |

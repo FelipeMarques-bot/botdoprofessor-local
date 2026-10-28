@@ -650,10 +650,258 @@ class ProfessorOnlineAdapter(PortalAdapter):
         return [dict(r) for r in p.extract_planejamento_anual(self._html())]
 
     def create_lesson_plan(self, plan: LessonPlan) -> bool:
-        return False
+        """Cria um planejamento semanal na turma atual.
+
+        Fluxo: lista (cadmostrarplanejamentosemanal.aspx) -> botao INCLUIR
+        (abre planejamentosemanal.aspx em popup) -> preenche datas, PDF e
+        observacao -> Confirmar (BTN_ENTER) -> verifica na lista.
+        """
+        if not self.is_logged_in():
+            return False
+        try:
+            self._goto(self.PLANEJAMENTOS_PATH)
+            self._wait_network_idle()
+            self._wait_settle(1200)
+        except Exception:
+            pass
+        if not p.is_planejamentos_list(self._html()):
+            self.memory.record_failure("create_lesson_plan", plan.titulo, "nao_abriu_lista_planejamentos")
+            return False
+
+        criado = self._create_planejamento_form(plan)
+        if not criado:
+            return False
+
+        if plan.data_inicio:
+            # Confirma lendo a lista principal apos o fechamento do popup.
+            try:
+                self._goto(self.PLANEJAMENTOS_PATH)
+                self._wait_network_idle()
+                self._wait_settle(1200)
+                for e in self.read_planejamentos():
+                    if plan.data_inicio in (e.get("data_inicio") or "") and plan.data_fim in (e.get("data_fim") or ""):
+                        self.memory.record_success("create_lesson_plan", f"{plan.data_inicio}..{plan.data_fim}")
+                        return True
+            except Exception:
+                pass
+            self.memory.record_failure(
+                "create_lesson_plan", plan.titulo,
+                f"nao_encontrado_apos_criar {plan.data_inicio}",
+            )
+            return False
+
+        self.memory.record_success("create_lesson_plan", plan.titulo)
+        return True
 
     def upload_lesson_plan_pdf(self, titulo: str, pdf_path: str) -> bool:
+        """Anexa um PDF ao planejamento semanal.
+
+        No Professor Online o anexo e feito DENTRO do formulario de criacao/
+        edicao (planejamentosemanal.aspx) — nao ha upload avulso. Para anexar
+        em criacao use ``create_lesson_plan`` com ``plan.pdf_path``.
+        """
+        self.memory.record_failure("upload_lesson_plan_pdf", titulo, "anexo_so_no_formulario")
         return False
+
+    def create_planejamento_anual(self, plan: LessonPlan) -> bool:
+        """Atualiza o conteudo programatico (plano anual) na turma atual.
+
+        Fluxo: lista (cadmostrarconteudoprog.aspx) -> INCLUIR (abre
+        conteudoprogramaticodisciplina.aspx em popup) -> observacao + PDF ->
+        Confirmar. O plano anual nao tem periodo: versao/vigente sao fixos.
+        """
+        if not self.is_logged_in():
+            return False
+        try:
+            self._goto(self.PLANEJAMENTO_ANUAL_PATH)
+            self._wait_network_idle()
+            self._wait_settle(1200)
+        except Exception:
+            pass
+        if p.is_conteudo_prog_form(self._html()):
+            return self._fill_conteudo_prog_form(plan) and self._confirm_planejamento()
+
+        popup = self._open_form_popup(self._click_incluir)
+        if popup is None:
+            self.memory.record_failure("create_planejamento_anual", plan.titulo, "nao_abriu_formulario_anual")
+            return False
+        main = self._page
+        eh_outra = popup is not main
+        if eh_outra:
+            self._page = popup
+        try:
+            ok = self._fill_conteudo_prog_form(plan) and self._confirm_planejamento()
+        finally:
+            if eh_outra:
+                self._page = main
+                try:
+                    popup.close()
+                except Exception:
+                    pass
+                self._wait_settle(800)
+        return bool(ok)
+
+    # ------------------------------------------------------------------ #
+    #  Helpers do formulario de planejamento (popup GeneXus)              #
+    # ------------------------------------------------------------------ #
+
+    def _click_incluir(self) -> None:
+        """Clica no botao INCLUIR da lista (nova versao). Fallback via evento."""
+        btn = self.page.locator("input[name='INCLUIR']")
+        try:
+            if btn.count() > 0:
+                btn.first.click(timeout=self.ACTION_TIMEOUT)
+                return
+        except Exception:
+            pass
+        self._trigger_event("E'INCLUIR'.")
+
+    def _trigger_event(self, event_expr: str) -> bool:
+        """Dispara um evento GeneXus por expressao (ex: ``E'INCLUIR'.``)."""
+        try:
+            return bool(self.page.evaluate(
+                """
+                (args) => {
+                    if (!window.gx || !gx.evt || !gx.evt.execEvt) return false;
+                    try { gx.evt.execEvt(args.event, null); return true; }
+                    catch (e) { return false; }
+                }
+                """,
+                {"event": event_expr},
+            ))
+        except Exception:
+            return False
+
+    def _open_form_popup(self, open_fn: Callable[[], None]) -> Optional[Page]:
+        """Executa open_fn e retorna a Page do formulario.
+
+        O formulario de planejamento abre em popup (GeneXus, botao Fechar usa
+        ``gx.fn.closeWindow``) — por isso memo usa ``expect_popup``. Se abrir
+        na mesma aba (fallback), retorna a pagina atual.
+        """
+        try:
+            with self.page.expect_popup(timeout=4000) as pop_info:
+                open_fn()
+            popup = pop_info.value
+            popup.wait_for_load_state("domcontentloaded", timeout=self.NAV_TIMEOUT)
+            try:
+                popup.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:
+                pass
+            popup.wait_for_timeout(1500)
+            return popup
+        except Exception:
+            pass
+        # fallback: mesma aba
+        self._wait_network_idle()
+        self._wait_settle(1800)
+        return self.page
+
+    def _create_planejamento_form(self, plan: LessonPlan) -> bool:
+        """Abre o formulario semanal (popup ou mesma aba), preenche e confirma."""
+        popup_ref = None
+        if p.is_planejamento_semanal_form(self._html()):
+            contender = self.page
+        else:
+            contender = self._open_form_popup(self._click_incluir)
+            if contender is None:
+                self.memory.record_failure("create_planejamento", plan.titulo, "form_nao_abriu")
+                return False
+        main = self._page
+        if contender is not main:
+            popup_ref = contender
+        if popup_ref is not None:
+            self._page = popup_ref
+        try:
+            if not p.is_planejamento_semanal_form(self._html()):
+                self.memory.record_failure("create_planejamento", plan.titulo, "pagina_nao_e_formulario")
+                return False
+            if not self._fill_planejamento_form(plan):
+                return False
+            return self._confirm_planejamento()
+        finally:
+            if popup_ref is not None:
+                self._page = main
+                try:
+                    popup_ref.close()
+                except Exception:
+                    pass
+                self._wait_settle(800)
+
+    def _fill_planejamento_form(self, plan: LessonPlan) -> bool:
+        """Preenche datas, PDF e observacao no formulario semanal."""
+        p_ = self.page
+        try:
+            if plan.data_inicio:
+                di = p_.locator("input[name='PLANEJAMENTOSEMDATAINICIO']")
+                if di.count() > 0:
+                    di.first.fill(plan.data_inicio)
+                    di.first.dispatch_event("change")
+                    di.first.dispatch_event("blur")
+            if plan.data_fim:
+                df = p_.locator("input[name='PLANEJAMENTOSEMDATAFIM']")
+                if df.count() > 0:
+                    df.first.fill(plan.data_fim)
+                    df.first.dispatch_event("change")
+                    df.first.dispatch_event("blur")
+            if plan.pdf_path and os.path.exists(plan.pdf_path):
+                fu = p_.locator("input[name='PLANEJSEMANALARQUIVOPDF']")
+                if fu.count() > 0:
+                    fu.first.set_input_files(plan.pdf_path)
+                    self._wait_settle(1200)
+            obs_texto = (plan.titulo or "").strip()
+            if obs_texto:
+                obs = p_.locator("textarea[name='PLANEJSEMANALOBSERVACAO']")
+                if obs.count() > 0:
+                    obs.first.fill(obs_texto)
+            self._wait_settle(800)
+            self.memory.record_success("fill_planejamento_form", f"{plan.data_inicio}..{plan.data_fim}")
+            return True
+        except Exception as exc:
+            self.memory.record_failure("fill_planejamento_form", plan.titulo, str(exc))
+            return False
+
+    def _fill_conteudo_prog_form(self, plan: LessonPlan) -> bool:
+        """Preenche observacao e PDF no formulario do plano anual."""
+        p_ = self.page
+        try:
+            if plan.pdf_path and os.path.exists(plan.pdf_path):
+                fu = p_.locator("input[name='CONTEUDOPROGARQUIVOPDF']")
+                if fu.count() > 0:
+                    fu.first.set_input_files(plan.pdf_path)
+                    self._wait_settle(1200)
+            obs_texto = (plan.titulo or "").strip()
+            if obs_texto:
+                obs = p_.locator("textarea[name='CONTEUDOPROGOBSERVACAO']")
+                if obs.count() > 0:
+                    obs.first.fill(obs_texto)
+            self._wait_settle(800)
+            return True
+        except Exception as exc:
+            self.memory.record_failure("fill_conteudo_prog_form", plan.titulo, str(exc))
+            return False
+
+    def _confirm_planejamento(self) -> bool:
+        """Clica em Confirmar (BTN_ENTER) e valida a ausencia de erro."""
+        btn = self.page.locator("input[name='BTN_ENTER']")
+        if btn.count() == 0:
+            self.memory.record_failure("confirm_planejamento", "BTN_ENTER", "botao_ausente")
+            return False
+        try:
+            btn.first.click(timeout=self.ACTION_TIMEOUT)
+            self._wait_network_idle()
+            self._wait_settle(1800)
+        except Exception:
+            return True
+        try:
+            html = self._html()
+        except Exception:
+            return True
+        err = p.find_error_message(html)
+        if err:
+            self.memory.record_failure("confirm_planejamento", "BTN_ENTER", err)
+            return False
+        return True
 
     # ------------------------------------------------------------------ #
     #  Helpers genericos                                                  #

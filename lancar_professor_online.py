@@ -10,13 +10,16 @@ painel: {blocos, notas, notas_preenchidas, ausentes, falhas}.
 """
 
 import os
+import re
+import tempfile
+import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from leitor_planilhas import carregar_notas
 
-from bot.core.portal_adapter import PortalContext
+from bot.core.portal_adapter import LessonPlan, PortalContext
 from bot.core.professor_online_adapter import ProfessorOnlineAdapter
 
 LogFn = Callable[[str], None]
@@ -629,9 +632,32 @@ def executar_planejamento(
                     _log(logger, f"  [JA-EXISTE] '{titulo}' (inicio {periodo_inicio}). Nada a fazer.")
                     continue
 
-                _log(logger, f"  [NAO-IMPLEMENTADO] Criacao/upload de planejamento '{titulo}' no Professor Online "
-                             "ainda nao foi gravada. Use o Modo Aprendizado para registrar o fluxo.")
-                nao_implementado += 1
+                _log(logger, f"  [CRIAR] '{titulo}' (inicio {periodo_inicio}). Enviando ao Professor Online...")
+                pdf_url = str(reg.get("arquivo_url") or "").strip()
+                pdf_local = _baixar_pdf_temp(pdf_url, logger=logger)
+                try:
+                    plano = LessonPlan(
+                        titulo=titulo,
+                        data_inicio=periodo_inicio,
+                        data_fim=str(reg.get("periodo_fim") or "").strip(),
+                        n_aulas=int(reg.get("n_aulas") or 0),
+                        pdf_path=pdf_local or None,
+                        pdf_url=pdf_url or None,
+                    )
+                    if adapter.create_lesson_plan(plano):
+                        criados += 1
+                        if pdf_local:
+                            anexos += 1
+                        _log(logger, f"  [OK] Planejamento '{titulo}' criado.")
+                    else:
+                        falhas += 1
+                        _log(logger, f"  [FALHA] Nao foi possivel criar '{titulo}'.")
+                finally:
+                    if pdf_local and os.path.exists(pdf_local):
+                        try:
+                            os.remove(pdf_local)
+                        except Exception:
+                            pass
 
         _log(logger, f"Resumo: {criados} criados, {anexos} anexos, {situacoes} situacoes, "
                      f"{falhas} falhas, {nao_implementado} pendente(s) de aprendizado")
@@ -677,6 +703,44 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Dict[str, str], lo
         filtrados.append(reg)
     _log(logger, f"Registros apos filtro: {len(filtrados)}")
     return filtrados
+
+
+def _drive_direct_url(url: str) -> str:
+    """Converte link do Google Drive para a URL direta de download."""
+    match = re.search(
+        r"(?:drive\.google\.com/file/d/|drive\.google\.com/open\?id=|drive\.google\.com/uc\?id=)"
+        r"([a-zA-Z0-9_-]+)",
+        url,
+    )
+    if match:
+        return f"https://drive.google.com/uc?export=download&id={match.group(1)}"
+    return url
+
+
+def _baixar_pdf_temp(url: str, logger: Optional[LogFn] = None) -> str:
+    """Baixa um PDF de ``url`` para um arquivo temporario (best-effort).
+
+    Retorna o caminho local; string vazia se a URL nao existir ou nao for
+    possivel baixar (nesses casos a criacao segue sem anexo).
+    """
+    if not url or not url.strip():
+        return ""
+    try:
+        dl_url = _drive_direct_url(url.strip())
+        req = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=45) as resp:  # noqa: S310
+            data = resp.read()
+        if not data:
+            return ""
+        fd, path = tempfile.mkstemp(prefix="po_planejamento_", suffix=".pdf")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(data)
+        _log(logger, f"[PO] PDF baixado para anexo ({len(data)} bytes)")
+        return path
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, f"[PO] Sem PDF para anexar ({exc}). Criando planejamento sem arquivo.")
+        return ""
 
 
 def main() -> None:

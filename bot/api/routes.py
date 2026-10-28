@@ -13,6 +13,7 @@ from bot.security.auth import (
     check_license_valid,
 )
 from bot.security.rate_limit import rate_limit
+from bot.utils.time_utils import now_local
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 license_bp = Blueprint("license", __name__, url_prefix="/api/license")
@@ -88,7 +89,7 @@ def public_validate_license():
             "landing_url": LANDING_URL,
         })
 
-    if lic.expires_at and lic.expires_at < datetime.utcnow():
+    if lic.expires_at and lic.expires_at < now_local():
         return jsonify({
             "valid": False,
             "error": _blocked_message("assinatura expirada"),
@@ -99,7 +100,7 @@ def public_validate_license():
 
     days_remaining = -1
     if lic.expires_at:
-        delta = lic.expires_at - datetime.utcnow()
+        delta = lic.expires_at - now_local()
         days_remaining = max(0, delta.days)
 
     return jsonify({

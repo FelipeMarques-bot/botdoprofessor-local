@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import hashlib
+import hmac
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ import urllib.parse
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
+
+from bot.security.redaction import redact_text
 
 APP_DIR = Path.home() / ".bot_local"
 VENV_DIR = APP_DIR / "venv"
@@ -43,6 +46,7 @@ REQUIREMENTS = [
     "openai>=1.30",
     "anthropic>=0.25",
     "gdown>=5.2",
+    "cryptography>=42.0",
 ]
 
 PYTHON_VERSION = "3.11.9"
@@ -69,11 +73,12 @@ else:
 
 
 def log(msg):
+    msg = redact_text(msg)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-    except Exception:
+    except OSError:
         pass
 
 
@@ -400,18 +405,36 @@ def clear_pip_cache(pip_path):
     run_silent([str(pip_path), "cache", "purge"], timeout=60)
 
 
+def _runtime_requirements():
+    """Le requirements-exe.txt do bundle; usa a lista embutida como fallback."""
+    path = get_bundled_dir() / "requirements-exe.txt"
+    try:
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if lines:
+            return lines
+    except OSError:
+        pass
+    return list(REQUIREMENTS)
+
+
 def install_requirements(pip_path):
     log("Instalando dependencias...")
+    requirements = _runtime_requirements()
     return run_silent(
-        [str(pip_path), "install", "--quiet", "--no-cache-dir", "--disable-pip-version-check"] + REQUIREMENTS,
+        [str(pip_path), "install", "--quiet", "--no-cache-dir",
+         "--disable-pip-version-check"] + requirements,
         timeout=600,
     )
 
 
 def _requirements_hash() -> str:
     h = hashlib.sha256()
-    for r in REQUIREMENTS:
-        h.update(r.encode())
+    for requirement in _runtime_requirements():
+        h.update(requirement.encode())
     return h.hexdigest()[:16]
 
 
@@ -424,7 +447,7 @@ def _requirements_changed(pip_path) -> bool:
             log(f"Hash salvo:      {salvo}")
             if salvo == atual:
                 return False
-        except Exception:
+        except OSError:
             pass
     log("Hash diferente — reinstalando dependencias...")
     ok = install_requirements(pip_path)
@@ -432,8 +455,8 @@ def _requirements_changed(pip_path) -> bool:
         try:
             REQS_HASH_FILE.write_text(atual, encoding="utf-8")
             log("Hash salvo")
-        except Exception as e:
-            log(f"Erro ao salvar hash: {e}")
+        except OSError as exc:
+            log(f"Erro ao salvar hash: {exc}")
     return not ok
 
 
@@ -717,27 +740,39 @@ def get_local_version():
 
 
 def _check_server_update(license_key, local_version):
-    """Consulta o servidor e retorna (sa, baixar_url, nova_versao). Falha de
-    rede ou servidor retorna (False, ...) para seguir com a versao atual."""
+    """Consulta o servidor e retorna (ha_update, url, versao, sha256)."""
     try:
         url = f"{UPDATE_URL}?key={urllib.parse.quote(license_key)}&current={urllib.parse.quote(local_version)}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
         resp = urllib.request.urlopen(req, timeout=20)
         data = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Resposta de atualizacao invalida")
         if data.get("update"):
-            return True, data.get("download_url", ""), data.get("version", "")
-        return False, None, data.get("version", "")
-    except Exception as e:
-        log(f"Falha ao verificar atualizacao: {e}")
-        return False, None, None
+            return (
+                True,
+                data.get("download_url", ""),
+                data.get("version", ""),
+                data.get("sha256", ""),
+            )
+        return False, None, data.get("version", ""), ""
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        log(f"Falha ao verificar atualizacao: {type(exc).__name__}")
+        return False, None, None, ""
 
 
-def _download_update(splash, url, version):
-    """Baixa o novo exe para NEW_EXE_FILE mostrando 'Atualizando, aguarde um momento!'."""
+def _download_update(splash, url, version, expected_sha256):
+    """Baixa o novo exe e so o aceita se o SHA-256 bater com o manifesto."""
     splash.update("Atualizando, aguarde um momento!", f"Baixando nova versao v{version}...")
     splash.set_progress(0.02)
     tmp = NEW_EXE_FILE.with_suffix(".part")
+    expected = (expected_sha256 or "").strip().lower()
+    if not expected:
+        log("Atualizacao recusada: manifesto sem SHA-256")
+        return False
+
     try:
+        digest = hashlib.sha256()
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
@@ -748,24 +783,30 @@ def _download_update(splash, url, version):
                     if not chunk:
                         break
                     f.write(chunk)
+                    digest.update(chunk)
                     downloaded += len(chunk)
                     if total:
                         splash.set_progress(0.02 + 0.88 * (downloaded / total))
                     splash.update("Atualizando, aguarde um momento!", f"Baixando nova versao v{version}...")
         if not tmp.exists() or tmp.stat().st_size == 0:
             raise ValueError("Download vazio")
+
+        actual = digest.hexdigest()
+        if not hmac.compare_digest(actual, expected):
+            raise ValueError("SHA-256 divergente")
+
         if NEW_EXE_FILE.exists():
             NEW_EXE_FILE.unlink()
         os.replace(tmp, NEW_EXE_FILE)
         size = NEW_EXE_FILE.stat().st_size
-        log(f"Atualizacao baixada: {size} bytes")
+        log(f"Atualizacao baixada e verificada: {size} bytes")
         return True
-    except Exception as e:
-        log(f"Falha no download da atualizacao: {e}")
+    except (OSError, ValueError) as exc:
+        log(f"Falha no download da atualizacao: {type(exc).__name__}")
         try:
             if tmp.exists():
                 tmp.unlink()
-        except Exception:
+        except OSError:
             pass
         return False
 
@@ -935,13 +976,19 @@ def maybe_apply_update(splash, license_key):
     local_version = get_local_version()
     log(f"Versao local: {local_version}")
 
-    has_update, download_url, new_version = _check_server_update(license_key, local_version)
+    has_update, download_url, new_version, expected_sha256 = _check_server_update(
+        license_key, local_version
+    )
     if not has_update or not download_url:
         log("Sem atualizacao disponivel")
         return True
 
+    if not expected_sha256:
+        log("Atualizacao recusada: servidor nao informou SHA-256")
+        return True
+
     log(f"Nova versao disponivel: {new_version}")
-    ok = _download_update(splash, download_url, new_version)
+    ok = _download_update(splash, download_url, new_version, expected_sha256)
     if not ok:
         log("Falha na atualizacao — usando versao atual")
         return True

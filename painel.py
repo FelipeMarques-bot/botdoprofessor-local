@@ -24,9 +24,24 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 from autofix import attempt_autofix, apply_fix
+from bot.security.crypto import (
+    is_protected_value,
+    protect_value,
+    unprotect_value,
+)
+from bot.security.redaction import redact_text
 
 LICENSE_SERVER_URL = "https://botdoprofessor.onrender.com"
 BOT_VERSION_FALLBACK = "1.4.43"
+
+_SENSITIVE_CONFIG_KEYS = (
+    "sge_cpf",
+    "sge_senha",
+    "notion_token",
+    "gemini_key",
+    "openai_key",
+    "anthropic_key",
+)
 
 
 def _ler_versao() -> str:
@@ -79,47 +94,73 @@ st.set_page_config(
 # === ESTILO CSS ===
 _BASE_CSS = """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-    * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 1400px; }
 
     .main-header {
-        font-size: 2rem; font-weight: 700; margin-bottom: 0.25rem;
-        background: linear-gradient(135deg, #2563eb, #7c3aed);
+        font-size: 2.25rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.25rem;
+        background: linear-gradient(135deg, #1d4ed8 0%, #7c3aed 50%, #9333ea 100%);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         background-clip: text;
     }
-    .sub-header { font-size: 1rem; color: #666; margin-bottom: 1.5rem; }
+    .sub-header { font-size: 0.98rem; color: #475569; margin-bottom: 1.75rem; }
 
     .card {
-        background: #f8f9fa; border-radius: 12px; padding: 1.5rem;
-        margin-bottom: 1rem; border: 1px solid #e9ecef;
-        transition: box-shadow 0.2s ease, transform 0.2s ease;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        border-radius: 14px; padding: 1.5rem; margin-bottom: 1rem;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.01), 0 10px 30px -20px rgba(37, 99, 235, 0.9);
+        transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
     }
-    .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); transform: translateY(-1px); }
+    .card:hover { box-shadow: 0 10px 40px -18px rgba(79, 70, 229, 0.8); transform: translateY(-2px); border-color: rgba(99, 102, 241, 0.45); }
+
+    [data-testid="stSidebar"] {
+        background: radial-gradient(circle at top, #f8fafc, #f1f5f9);
+        border-right: 1px solid rgba(148, 163, 184, 0.25);
+    }
+    [data-testid="stSidebar"] .block-container { padding-top: 1.25rem; }
 
     .stButton button {
-        width: 100%; border-radius: 8px; padding: 0.5rem 1rem; font-weight: 600;
+        border-radius: 10px; padding: 0.55rem 1rem; font-weight: 600; letter-spacing: -0.01em;
         transition: all 0.2s ease; position: relative; overflow: hidden;
+        border: 1px solid transparent;
     }
     .stButton button:hover {
-        transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,0.3);
+        transform: translateY(-1px); box-shadow: 0 10px 30px -18px rgba(37, 99, 235, 0.9);
     }
     .stButton button:active { transform: translateY(0); }
     .stButton button[kind="primary"] {
-        background: linear-gradient(135deg, #2563eb, #7c3aed);
-        border: none; color: white;
+        background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+        color: white;
     }
     .stButton button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #1d4ed8, #6d28d9);
-        box-shadow: 0 4px 16px rgba(37,99,235,0.4);
+        background: linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%);
+        box-shadow: 0 12px 40px -16px rgba(79, 70, 229, 0.95);
     }
 
-    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] {
-        border-radius: 8px; transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
+        border-radius: 10px; border-color: rgba(148, 163, 184, 0.4);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
     .stTextInput input:focus, .stTextArea textarea:focus {
-        border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+        border-color: #4f46e5; box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.08);
+    }
+
+    [data-testid="stExpander"] {
+        border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.25);
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.01);
+        overflow: hidden;
+    }
+    [data-testid="stExpander"] details > summary {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        font-weight: 600;
+    }
+
+    [data-testid="stDataFrame"], [data-testid="stTable"] {
+        border-radius: 12px; overflow: hidden; border: 1px solid rgba(148, 163, 184, 0.25);
     }
 
     .st-bb, .st-bc, .st-bd, .st-be, .st-bf, .st-bg, .st-bh { border-radius: 8px; }
@@ -168,9 +209,17 @@ _LIGHT_CSS = """
 
 _DARK_THEME_CSS = """
 <style>
-    .stApp { background: #0e1117; color: #e0e0e0; }
-    div[data-testid="stMetric"] { background: #1e2130; border-color: #2d3040; }
-    div[data-testid="stMetric"]:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .stApp { background: radial-gradient(circle at top, #0f172a, #020617); color: #e2e8f0; }
+    [data-testid="stHeader"] { background-color: transparent; }
+    [data-testid="stSidebar"] { background: radial-gradient(circle at top, #020617, #010409); border-right: 1px solid rgba(148, 163, 184, 0.18); }
+    div[data-testid="stMetric"] { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 12px; }
+    div[data-testid="stMetric"]:hover { box-shadow: 0 20px 40px -30px rgba(129, 140, 248, 0.9); }
+    .main-header { background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 55%, #c084fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .sub-header { color: #94a3b8 !important; }
+    .card { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); border: 1px solid rgba(148, 163, 184, 0.25); }
+    [data-testid="stExpander"] details > summary { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); color: #e2e8f0; }
+    .stTextInput input, .stTextArea textarea, .stSelectbox > div > div { background-color: rgba(15,23,42,0.9) !important; color: #e2e8f0 !important; border-color: rgba(148, 163, 184, 0.4) !important; }
+    [data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
     .main-header { background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; background-clip: text; }
     .sub-header { color: #888; }
     .card { background: #1e2130; border-color: #2d3040; }
@@ -206,8 +255,9 @@ if "notion_dbs" not in st.session_state:
 
 
 def log(msg: str):
+    msg = redact_text(msg)
+    timestamp = datetime.now().strftime("%H:%M:%S")
     try:
-        timestamp = datetime.now().strftime("%H:%M:%S")
         st.session_state.logs.append(f"[{timestamp}] {msg}")
     except Exception:
         pass
@@ -796,13 +846,34 @@ def salvar_config():
         "seq_n_aulas": st.session_state.get("seq_n_aulas", 4),
         "seq_drive_links": st.session_state.get("seq_drive_links", []),
     }
+    for key in _SENSITIVE_CONFIG_KEYS:
+        value = config.get(key, "")
+        if value and not is_protected_value(str(value)):
+            config[key] = protect_value(str(value))
+
     config_dir = Path.home() / ".sge_bot"
     config_dir.mkdir(exist_ok=True)
     config_path = config_dir / "config.json"
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    try:
+        os.chmod(config_path, 0o600)
+    except OSError:
+        pass
     st.session_state.config_path = str(config_path)
     return str(config_path)
+
+
+def _desproteger_config(config: dict) -> dict:
+    for key in _SENSITIVE_CONFIG_KEYS:
+        value = config.get(key, "")
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            config[key] = unprotect_value(value)
+        except Exception:  # noqa: BLE001 - valor corrompido/chave de outro usuario
+            config[key] = ""
+    return config
 
 
 def carregar_config():
@@ -815,7 +886,9 @@ def carregar_config():
         if path.exists():
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    config = json.load(f)
+                if isinstance(config, dict):
+                    return _desproteger_config(config)
             except (json.JSONDecodeError, IOError):
                 try:
                     from dotenv import load_dotenv
@@ -2053,8 +2126,11 @@ with st.sidebar:
     salvar = st.button("Salvar Configuração")
 
     if salvar:
-        path = salvar_config()
-        st.success(f"Configuração salva em {path}")
+        try:
+            path = salvar_config()
+            st.success(f"Configuração salva em {path}")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Não foi possível salvar a configuração com segurança: {exc}")
 
     limpar = st.button("Limpar Logs")
     if limpar:
@@ -2398,7 +2474,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
         import traceback as _tb
         tb_str = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
         lp(f"ERRO: {exc}")
-        print(tb_str)
+        lp("[TRACEBACK]\n" + tb_str)
         lp("[ERRO_VISIVEL] " + " ".join(str(exc).split()))
 
         autofix_on = st.session_state.get("autofix_enabled", False)

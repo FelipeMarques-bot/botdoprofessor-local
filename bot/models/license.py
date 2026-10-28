@@ -1,5 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from bot.models.database import db
+from bot.utils.time_utils import now_local
 
 
 class License(db.Model):
@@ -10,7 +11,7 @@ class License(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     plan = db.Column(db.String(20), nullable=False)
     days = db.Column(db.Integer, nullable=False)
-    activated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    activated_at = db.Column(db.DateTime, default=now_local)
     expires_at = db.Column(db.DateTime, nullable=False)
     active = db.Column(db.Boolean, default=True)
     reminder_sent = db.Column(db.Boolean, default=False)
@@ -20,13 +21,13 @@ class License(db.Model):
 
     @property
     def is_valid(self) -> bool:
-        return self.active and datetime.utcnow() < self.expires_at
+        return self.active and now_local() < self.expires_at
 
     @property
     def days_remaining(self) -> int:
         if not self.is_valid:
             return 0
-        delta = self.expires_at - datetime.utcnow()
+        delta = self.expires_at - now_local()
         return max(0, delta.days)
 
     @classmethod
@@ -35,7 +36,7 @@ class License(db.Model):
         p = PLANOS.get(plan)
         if not p:
             raise ValueError(f"Plano desconhecido: {plan}")
-        now = datetime.utcnow()
+        now = now_local()
         lic = cls(
             license_key=key,
             user_id=user_id,

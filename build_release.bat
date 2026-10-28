@@ -30,6 +30,10 @@ echo [1/3] Instalando PyInstaller...
 python -m pip install pyinstaller --quiet
 
 echo [2/3] Gerando .exe (sem UPX - reduz falsos positivos)...
+if exist requirements-exe.txt (
+    echo Instalando dependencias para build...
+    python -m pip install -r requirements-exe.txt --quiet
+)
 python -m PyInstaller ^
     --onefile ^
     --name "BotDoProfessor" ^
@@ -50,14 +54,19 @@ python -m PyInstaller ^
     --add-data "docs;docs" ^
     --add-data ".env.example;." ^
     --add-data "VERSION.txt;." ^
+    --add-data "requirements-exe.txt;." ^
     --hidden-import "streamlit" ^
     --hidden-import "playwright" ^
     --hidden-import "playwright.sync_api" ^
     --hidden-import "openpyxl" ^
     --hidden-import "pandas" ^
+    --hidden-import "httpx" ^
+    --hidden-import "notion_client" ^
     --hidden-import "google.genai" ^
     --hidden-import "openai" ^
     --hidden-import "anthropic" ^
+    --hidden-import "gdown" ^
+    --hidden-import "cryptography" ^
     --hidden-import "requests" ^
     --hidden-import "dotenv" ^
     launcher.py

@@ -68,10 +68,72 @@ class SGEAdapter(PortalAdapter):
             try:
                 p.goto(url, timeout=self.NAV_TIMEOUT, wait_until="domcontentloaded")
                 if self._detect_login_form(p):
-                    return self._do_login(p, cpf, senha)
+                    ok = self._do_login(p, cpf, senha)
+                    if ok:
+                        self._registrar_escolas_registry()
+                    return ok
             except Exception:
                 continue
         return self._logged_in
+
+    def _registrar_escolas_registry(self) -> None:
+        """Registra as escolas do professor no mapa escola->portal (hybrid)."""
+        try:
+            from bot.core.escola_registry import registrar_escola
+            for nome in self.detectar_escolas():
+                registrar_escola(nome, "sge")
+        except Exception:
+            pass
+
+    def detectar_escolas(self, limit: int = 60) -> List[str]:
+        """Lista as escolas disponiveis (best-effort) para registro no mapa.
+
+        Procura opcoes de select da pagina cujo texto pareca nome de escola
+        (EEB/EEM/CEDUP/...). Fallback: primeiras opcoes preenchidas de selects
+        com mais de uma opcao.
+        """
+        nomes: List[str] = []
+        vistos = set()
+        padrao_escola = re.compile(
+            r"\b(?:EEB|EEM|EER|CEDUP|NEEB|CEF)\b|ESCOLA|COLÉGIO|COLEGIO|NÚCLEO|NUCLEO|PATRONATO",
+            re.I,
+        )
+        try:
+            for sel in self.page.locator("select").all():
+                try:
+                    textos = sel.locator("option").all_text_contents()
+                except Exception:
+                    continue
+                for txt in ((t or "").strip() for t in textos):
+                    if len(txt) < 6 or txt in vistos:
+                        continue
+                    if padrao_escola.search(txt):
+                        vistos.add(txt)
+                        nomes.append(txt)
+        except Exception:
+            pass
+        if not nomes:
+            try:
+                for sel in self.page.locator("select").all():
+                    qtd = sel.locator("option").count()
+                    if qtd > 1:
+                        for i in range(min(4, qtd)):
+                            try:
+                                txt = sel.locator("option").nth(i).inner_text().strip()
+                            except Exception:
+                                continue
+                            if (
+                                len(txt) >= 6
+                                and txt not in vistos
+                                and not txt.lower().startswith(
+                                    ("selecione", "escolha", "nenhuma", "todas", "--", "-")
+                                )
+                            ):
+                                vistos.add(txt)
+                                nomes.append(txt)
+            except Exception:
+                pass
+        return nomes[:limit]
 
     def _detect_login_form(self, page: Page) -> bool:
         selectors = [
@@ -956,18 +1018,36 @@ class SGEAdapter(PortalAdapter):
             pass
 
         for scope in self._iter_scopes(p):
+            prefixes = ["W0019W0075", "W0019W0076", "W0019W0080", "W0019W0060"]
+            hidden_rows = None
             for attempt in range(10):
-                hidden_rows = scope.locator("input[name^='W0019W0075_TURNUMSTR_']")
-                total = hidden_rows.count()
-                if total > 0:
+                for prefix in prefixes:
+                    try:
+                        cand = scope.locator(f"input[name^='{prefix}_TURNUMSTR_']")
+                        if cand.count() > 0:
+                            hidden_rows = cand
+                            break
+                    except Exception:
+                        continue
+                if hidden_rows is None:
+                    try:
+                        cand = scope.locator("input[name*='_TURNUMSTR_']")
+                        if cand.count() > 0:
+                            hidden_rows = cand
+                    except Exception:
+                        pass
+                if hidden_rows is not None:
                     break
                 try:
                     p.wait_for_timeout(500)
                 except Exception:
                     pass
-            else:
-                total = 0
+            total = hidden_rows.count() if hidden_rows is not None else 0
 
+            # Match obrigatorio: turno + ano + turma. O trimestre NAO e exigido
+            # (a grade mostra o periodo corrente, ex.: '3º Trimestre' apos o
+            # rodar); ele vira apenas criterio de desempate.
+            candidatos = []
             for idx in range(total):
                 cell = hidden_rows.nth(idx)
                 try:
@@ -977,21 +1057,28 @@ class SGEAdapter(PortalAdapter):
                 norm = self._normalize(label)
                 ok_turno = bool(turno_norm and self._normalize(turno_norm) in norm)
                 ok_turma = True if not turma_num else bool(re.search(rf"\bturma\s*{re.escape(turma_num)}\b", norm))
-                ok_trim = bool(trimestre_num and f"{trimestre_num}o trimestre" in norm)
                 ok_etapa = not bool(etapa_num) or bool(re.search(rf"\b{re.escape(etapa_num)}\s*[ºo]?\s*ano\b", norm))
-                if not (ok_turno and ok_turma and ok_trim and ok_etapa):
+                if not (ok_turno and ok_turma and ok_etapa):
                     continue
+                ok_trim = bool(trimestre_num and f"{trimestre_num}o trimestre" in norm)
+                candidatos.append((not ok_trim, idx, label))
+            candidatos.sort()
 
+            for _pref, idx, label in candidatos:
+                cell = hidden_rows.nth(idx)
                 name = (cell.get_attribute("name") or "")
                 suffix = name.rsplit("_", 1)[-1]
                 selectors = [
-                    f"#W0019W0075_DISCIPLINA_{suffix}",
-                    f"img[name='W0019W0075_DISCIPLINA_{suffix}']",
-                    f"a:has(img[name='W0019W0075_DISCIPLINA_{suffix}'])",
-                    f"#W0019W0075_PLANOAULA_{suffix}",
-                    f"img[name='W0019W0075_PLANOAULA_{suffix}']",
-                    f"#W0019W0075_PLANODEAULA_{suffix}",
-                    f"img[name='W0019W0075_PLANODEAULA_{suffix}']",
+                    f"[id$='_DISCIPLINA_{suffix}']",
+                    f"[name$='_DISCIPLINA_{suffix}']",
+                    f"[id$='_PLANOAULA_{suffix}']",
+                    f"[name$='_PLANOAULA_{suffix}']",
+                    f"[id$='_PLANODEAULA_{suffix}']",
+                    "img[title*='Planejamento de Aula' i]",
+                    "a:has(img[title*='Planejamento de Aula' i])",
+                    "a[title*='Planejamento de Aula' i]",
+                    "img[src*='Altera4' i]",
+                    "a:has(img[src*='Altera4' i])",
                 ]
                 for sel in selectors:
                     try:

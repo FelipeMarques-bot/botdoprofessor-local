@@ -1,6 +1,7 @@
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
+from bot.utils.time_utils import now_local
 
 
 REMINDER_DAYS_BEFORE = 3
@@ -44,7 +45,7 @@ def _send_reminders(app):
         from bot.models.user import User
         from bot.utils.email_sender import send_email
 
-        now = datetime.utcnow()
+        now = now_local()
         cutoff = now + timedelta(days=REMINDER_DAYS_BEFORE)
 
         licenses = License.query.filter(

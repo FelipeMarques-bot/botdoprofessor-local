@@ -96,6 +96,20 @@ def escolas_do_portal(portal: str) -> List[str]:
     ]
 
 
+def escolhas_por_portal_resumo() -> Dict[str, List[str]]:
+    """Resumo {portal: [nomes de escolas]} para exibicao no painel."""
+    resumo = {}
+    for entry in load_registry()["escolas"].values():
+        portal = entry.get("portal")
+        nome = entry.get("nome", "")
+        if not portal or not nome:
+            continue
+        resumo.setdefault(portal, []).append(nome)
+    for portal in resumo:
+        resumo[portal].sort()
+    return resumo
+
+
 def listar_registros() -> List[Dict]:
     return [
         {**entry, "escola": entry.get("nome", "")}

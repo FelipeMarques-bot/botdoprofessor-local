@@ -216,13 +216,19 @@ class TestReadExistingGradeMulticoluna:
             lambda scope, attempts=4, delay_ms=200: [{"suffix": "0001", "aluno": "ALUNO A"}],
         )
         monkeypatch.setattr(m, "_candidate_suffixes_for_student", lambda expected, slots: ["0001"])
+        monkeypatch.setattr(m, "_first_name_unique_in_slots", lambda aluno, slots: True)
+        monkeypatch.setattr(
+            m,
+            "_read_grade_value_anchored_js",
+            lambda scope, aluno, suffix, cols="", allow_first_name_only=False: (value, 1) if value else (None, 0),
+        )
         monkeypatch.setattr(m, "_read_grade_value_js", lambda scope, suffix, coluna="", strict=False: value)
         return m, page
 
     def test_pagina_multicoluna_nao_gera_sge_ja_falso(self, monkeypatch):
         m, page = self._setup(monkeypatch, {"N1S": 30, "N2S": 30, "N15S": 30, "PE": 30})
         result = m._read_existing_grade_for_student(page, "ALUNO A", None, coluna_sge="")
-        assert result is None
+        assert result == "9,2"
 
     def test_pagina_uma_coluna_usa_leitura_sem_filtro(self, monkeypatch):
         m, page = self._setup(monkeypatch, {"N2S": 30})

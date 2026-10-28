@@ -124,6 +124,49 @@ class TestParserPlanejamentos:
         assert plans[0]["pdf_url"]
 
 
+class TestParserFormulariosPlanejamento:
+    def test_is_planejamentos_list(self):
+        assert p.is_planejamentos_list(_html("planejamentos_turma.html"))
+        assert p.is_planejamentos_list(_html("planejamentos_turma_anexado.html"))
+        assert not p.is_planejamentos_list(_html("planejamento_semanal_form.html"))
+
+    def test_is_planejamento_semanal_form(self):
+        assert p.is_planejamento_semanal_form(_html("planejamento_semanal_form.html"))
+        assert p.is_planejamento_semanal_form(_html("planejamento_semanal_form_info.html"))
+        assert not p.is_planejamento_semanal_form(_html("planejamentos_turma.html"))
+
+    def test_is_conteudo_prog_form(self):
+        assert p.is_conteudo_prog_form(_html("planejamento_anual_form.html"))
+        assert not p.is_conteudo_prog_form(_html("planejamento_anual.html"))
+
+    def test_extract_planejamento_form_criacao(self):
+        d = p.extract_planejamento_form(_html("planejamento_semanal_form.html"))
+        assert d["formulario"] is True
+        assert d["editavel"] is True
+        assert d["data_inicio"].strip().strip("/").strip() in ("", "  /  /")
+        assert d["data_fim"].strip().strip("/").strip() in ("", "  /  /")
+
+    def test_extract_planejamento_form_preenchido(self):
+        d = p.extract_planejamento_form(_html("planejamento_semanal_form_info.html"))
+        assert d["formulario"] is True
+        assert d["data_inicio"].strip().strip("/").strip() in ("", "  /  /")
+
+    def test_extract_conteudo_prog_form(self):
+        d = p.extract_conteudo_prog_form(_html("planejamento_anual_form.html"))
+        assert d["formulario"] is True
+        assert d["vigente"] in ("", "Sim")
+        assert d["versao"] in ("", "1")
+
+    def test_find_error_message_vazio(self):
+        assert p.find_error_message(_html("planejamento_semanal_form.html")) == ""
+
+    def test_form_field_value(self):
+        html = _html("planejamento_semanal_form.html")
+        assert "PLANEJAMENTOSEMDATAINICIO" in html
+        v = p.form_field_value(html, "PLANEJAMENTOSEMDATAINICIO")
+        assert isinstance(v, str)
+
+
 class TestParserMenu:
     def test_menu_extraido(self):
         state = p.parse_gxstate(_html("avaliacoes_turma.html"))
@@ -453,3 +496,14 @@ class TestEscolaRegistry:
 
         er.registrar_escola("EEB JOÃO DA SILVA", "sge")
         assert er.portal_da_escola("EEB Joao da Silva") == "sge"
+
+    def test_resumo_por_portal(self, monkeypatch, tmp_path):
+        import bot.core.escola_registry as er
+        monkeypatch.setattr(er, "REGISTRY_PATH", tmp_path / "escolas.json")
+
+        er.registrar_escola("EEB A", "professor_online")
+        er.registrar_escola("EEB B", "professor_online")
+        er.registrar_escola("EEB C", "sge")
+        resumo = er.escolhas_por_portal_resumo()
+        assert resumo["professor_online"] == ["EEB A", "EEB B"]
+        assert resumo["sge"] == ["EEB C"]

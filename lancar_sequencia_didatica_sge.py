@@ -68,6 +68,7 @@ from lancar_notas_sge import (
     _infer_context,
     _is_non_empty,
     _is_notas_database,
+    _is_period_selection_page,
     _is_placeholder_env,
     _iter_scopes,
     _list_children,
@@ -80,6 +81,7 @@ from lancar_notas_sge import (
     _resolve_env_credential,
     _safe_notion_call,
     _select_context,
+    _select_period,
     _set_filters_on_portal,
     _turno_code,
 )
@@ -782,6 +784,184 @@ def _download_pdf(url: str, name_hint: str) -> str:
     return target
 
 
+def _collect_context_rows(scope, page):
+    """Localiza os inputs ocultos com o label das linhas do grid de disciplinas.
+
+    O prefixo do grid (W0019W0075...) pode variar entre versoes/instalacoes do
+    SGE; por isso tentamos varios prefixos e caimos num seletor generico como
+    fallback (mesma estrategia do fluxo de notas).
+    """
+    prefixes = ["W0019W0075", "W0019W0076", "W0019W0080", "W0019W0060"]
+    for _ in range(10):
+        for prefix in prefixes:
+            try:
+                loc = scope.locator(f"input[name^='{prefix}_TURNUMSTR_']")
+                if loc.count() > 0:
+                    return loc
+            except Exception:  # noqa: BLE001
+                continue
+        try:
+            generic = scope.locator("input[name*='_TURNUMSTR_']")
+            if generic.count() > 0:
+                return generic
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(500)
+    return None
+
+
+def _click_planejamento_icon(page, scope, cell, label, logger) -> bool:
+    """Clica no icone 'Planejamento de Aula da Disciplina' da linha do grid e
+    confirma que a navegacao caiu na pagina de planejamento/sequencia didatica.
+
+    Se o clique abrir uma pagina errada, volta para o grid e tenta a proxima
+    estrategia (mesmo raciocinio do fluxo de notas).
+    """
+    try:
+        name = (cell.get_attribute("name") or "")
+        suffix = name.rsplit("_", 1)[-1]
+    except Exception:  # noqa: BLE001
+        suffix = ""
+
+    try:
+        row = cell.locator("xpath=ancestor::tr[1]")
+        tem_row = row.count() > 0
+    except Exception:  # noqa: BLE001
+        row = None
+        tem_row = False
+
+    strategies = []
+    if suffix:
+        strategies.append(("id_suffix", [
+            f"[id$='_DISCIPLINA_{suffix}']",
+            f"[name$='_DISCIPLINA_{suffix}']",
+            f"[id$='_PLANOAULA_{suffix}']",
+            f"[name$='_PLANOAULA_{suffix}']",
+            f"[id$='_PLANODEAULA_{suffix}']",
+        ]))
+    if tem_row:
+        strategies.append(("titulo", [
+            "img[title*='Planejamento de Aula' i]",
+            "a:has(img[title*='Planejamento de Aula' i])",
+            "a[title*='Planejamento de Aula' i]",
+            "img[alt*='Planejamento de Aula' i]",
+            "a:has(img[alt*='Planejamento de Aula' i])",
+            "img[title*='Planejamento Semanal' i]",
+            "a:has(img[title*='Planejamento Semanal' i])",
+        ]))
+        strategies.append(("src_altera4", [
+            "img[src*='Altera4' i]",
+            "a:has(img[src*='Altera4' i])",
+            "img[src*='Altera' i]",
+            "a:has(img[src*='Altera' i])",
+        ]))
+
+    for _tag, selectors in strategies:
+        for sel in selectors:
+            url_before = (page.url or "").lower()
+            try:
+                if _tag == "id_suffix" and suffix:
+                    loc = scope.locator(sel)
+                    if loc.count() == 0:
+                        continue
+                    alvo = loc.first
+                else:
+                    if not tem_row:
+                        continue
+                    loc = row.first.locator(sel)
+                    if loc.count() == 0:
+                        continue
+                    alvo = loc.first
+                if not alvo.is_visible():
+                    continue
+                alvo.click(timeout=ACTION_TIMEOUT_MS)
+            except Exception:  # noqa: BLE001
+                continue
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+            except Exception:  # noqa: BLE001
+                pass
+            page.wait_for_timeout(2000)
+
+            url_atual = (page.url or "").lower()
+            if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
+                _log(logger, f"Icone clicado; navegacao concluida. ({label})")
+                return True
+            if url_atual != url_before:
+                _log(logger, "Clique abriu outra pagina; voltando ao grid e testando proxima estrategia...")
+                try:
+                    page.go_back(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                except Exception:  # noqa: BLE001
+                    pass
+                page.wait_for_timeout(1500)
+                # Se go_back nao voltou ao grid, recarrega a pagina da escola
+                url_after_back = (page.url or "").lower()
+                if "hportalprofessor" not in url_after_back and "hportaldisciplina" not in url_after_back:
+                    try:
+                        page.goto("https://www.sge8147.com.br/hportalprofessor.aspx", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                        page.wait_for_timeout(1500)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    # Ultimo recurso: ultimo link/imagem visivel da linha (comum no SGE).
+    if tem_row:
+        for sel in ["a", "input[type='image']"]:
+            try:
+                links = row.first.locator(sel)
+                total = links.count()
+                for i in range(total - 1, -1, -1):
+                    link = links.nth(i)
+                    try:
+                        if not link.is_visible():
+                            continue
+                    except Exception:  # noqa: BLE001
+                        continue
+                    url_before = (page.url or "").lower()
+                    try:
+                        link.click(timeout=ACTION_TIMEOUT_MS)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    page.wait_for_timeout(2000)
+                    url_atual = (page.url or "").lower()
+                    if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
+                        _log(logger, f"Icone clicado (ultimo link da linha); navegacao concluida. ({label})")
+                        return True
+                    if url_atual != url_before:
+                        try:
+                            page.go_back(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        page.wait_for_timeout(1500)
+                        url_after_back = (page.url or "").lower()
+                        if "hportalprofessor" not in url_after_back and "hportaldisciplina" not in url_after_back:
+                            try:
+                                page.goto("https://www.sge8147.com.br/hportalprofessor.aspx", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                                page.wait_for_timeout(1500)
+                            except Exception:  # noqa: BLE001
+                                pass
+            except Exception:  # noqa: BLE001
+                continue
+    return False
+
+
+def _handle_periodo_page(page, contexto, logger) -> None:
+    """Apos clicar na escola, algumas unidades abrem a tela de selecao de
+    periodo com o periodo atual ja pre-selecionado: basta confirmar ('Continuar').
+    Se a tela nao aparecer, apenas ignora (mesmo comportamento do fluxo de notas).
+    """
+    try:
+        if _is_period_selection_page(page):
+            _log(logger, "Tela de selecao de periodo detectada; confirmando periodo...")
+            _select_period(page, contexto, logger=logger)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) -> bool:
     # 0) Garante que estamos na pagina principal do portal (grid de escolas)
     page.goto("https://www.sge8147.com.br/hportalprofessor.aspx", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
@@ -811,6 +991,9 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
         pass
     page.wait_for_timeout(2000)
 
+    # 1.5) Algumas escolas abrem a tela de selecao de periodo (so confirmar "Continuar").
+    _handle_periodo_page(page, contexto, logger)
+
     # 2) Localiza a linha da disciplina/turma correta e clica no icone "Plano de Aulas"
     turma_num = _extract_turma_number(contexto.turma)
     trimestre_num = _extract_first_number(contexto.trimestre)
@@ -821,65 +1004,64 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
     _set_filters_on_portal(page, contexto, logger=logger)
     page.wait_for_timeout(1500)
 
-    for scope in _iter_scopes(page):
-        # Aguarda o grid carregar (ate 8s).
-        for attempt in range(10):
-            hidden_rows = scope.locator("input[name^='W0019W0075_TURNUMSTR_']")
-            total = hidden_rows.count()
-            if total > 0:
-                break
-            page.wait_for_timeout(500)
-        else:
-            total = 0
-        _log(logger, f"Linhas de disciplina encontradas: {total}")
+    def _tenta_abrir_grid(aviso: str) -> bool:
+        for scope in _iter_scopes(page):
+            rows = _collect_context_rows(scope, page)
+            total = rows.count() if rows is not None else 0
+            _log(logger, f"Linhas de disciplina {aviso}: {total}")
 
-        for idx in range(total):
-            cell = hidden_rows.nth(idx)
-            try:
-                label = (cell.input_value(timeout=400) or "").strip()
-            except Exception:  # noqa: BLE001
-                continue
-
-            norm = _normalize(label)
-            ok_turno = bool(turno_norm and _normalize(turno_norm) in norm)
-            ok_turma = True if not turma_num else bool(re.search(rf"\bturma\s*{re.escape(turma_num)}\b", norm))
-            ok_trim = bool(trimestre_num and f"{trimestre_num}o trimestre" in norm)
-            ok_etapa = not bool(etapa_num) or bool(re.search(rf"\b{re.escape(etapa_num)}\s*[ºo]?\s*ano\b", norm))
-            if not (ok_turno and ok_turma and ok_trim and ok_etapa):
-                continue
-
-            _log(logger, f"Disciplina correspondente encontrada: {label}")
-
-            name = (cell.get_attribute("name") or "")
-            suffix = name.rsplit("_", 1)[-1]
-            selectors = [
-                f"#W0019W0075_DISCIPLINA_{suffix}",
-                f"img[name='W0019W0075_DISCIPLINA_{suffix}']",
-                f"a:has(img[name='W0019W0075_DISCIPLINA_{suffix}'])",
-                f"#W0019W0075_PLANOAULA_{suffix}",
-                f"img[name='W0019W0075_PLANOAULA_{suffix}']",
-                f"#W0019W0075_PLANODEAULA_{suffix}",
-                f"img[name='W0019W0075_PLANODEAULA_{suffix}']",
-                f"#W0019W0075_SEQUENCIADIDATICA_{suffix}",
-                f"img[name='W0019W0075_SEQUENCIADIDATICA_{suffix}']",
-            ]
-            for sel in selectors:
+            # Match obrigatorio: turno + ano + turma. O trimestre NAO e
+            # exigido no label: o SGE mostra sempre o periodo corrente na grade
+            # (ex.: '3º Trimestre' apos o periodo rodar). Exigir o trimestre do
+            # contexto derrubava todas as linhas e o fluxo caia na navegacao
+            # direta, abrindo a pagina de planejamento sem contexto.
+            candidatos = []
+            for idx in range(total):
+                cell = rows.nth(idx)
                 try:
-                    icon = scope.locator(sel)
-                    if icon.count() == 0:
-                        continue
-                    icon.first.click(timeout=ACTION_TIMEOUT_MS)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    page.wait_for_timeout(2000)
-                    url_atual = (page.url or "").lower()
-                    if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
-                        _log(logger, "Icone clicado; navegacao concluida.")
-                        return True
+                    label = (cell.input_value(timeout=400) or "").strip()
                 except Exception:  # noqa: BLE001
                     continue
+                norm = _normalize(label)
+                ok_turno = bool(turno_norm and _normalize(turno_norm) in norm)
+                ok_turma = True if not turma_num else bool(re.search(rf"\bturma\s*{re.escape(turma_num)}\b", norm))
+                ok_etapa = not bool(etapa_num) or bool(re.search(rf"\b{re.escape(etapa_num)}\s*[ºo]?\s*ano\b", norm))
+                if not (ok_turno and ok_turma and ok_etapa):
+                    continue
+                # Preferencia (nao exigido): linhas cujo label traga o trimestre do contexto.
+                ok_trim = bool(trimestre_num and f"{trimestre_num}o trimestre" in norm)
+                candidatos.append((not ok_trim, idx))
+
+            if not candidatos:
+                continue
+            _log(logger, f"Candidatos por turno+ano+turma {aviso}: {len(candidatos)}")
+            candidatos.sort()
+
+            for _preferencia, idx in candidatos:
+                cell = rows.nth(idx)
+                try:
+                    label = (cell.input_value(timeout=400) or "").strip()
+                except Exception:  # noqa: BLE001
+                    continue
+                _log(logger, f"Disciplina correspondente encontrada {aviso}: {label}")
+                if _click_planejamento_icon(page, scope, cell, label, logger):
+                    return True
+
+            # Nenhum icone funcionou nesta linha: recarrega o portal e a escola
+            # para garantir um grid limpo antes do proximo candidato.
+            try:
+                page.goto("https://www.sge8147.com.br/hportalprofessor.aspx", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                page.wait_for_timeout(1500)
+                _click_text_any_scope(page, contexto.escola)
+                page.wait_for_timeout(1500)
+                _handle_periodo_page(page, contexto, logger)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return False
+
+    if _tenta_abrir_grid("encontradas"):
+        return True
 
     # 3) Tenta novamente SEM filtros, procurando a linha manualmente
     _log(logger, "Tentando encontrar disciplina SEM filtros...")
@@ -894,56 +1076,10 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
     except Exception:  # noqa: BLE001
         pass
 
-    for scope in _iter_scopes(page):
-        for attempt in range(10):
-            hidden_rows = scope.locator("input[name^='W0019W0075_TURNUMSTR_']")
-            total = hidden_rows.count()
-            if total > 0:
-                break
-            page.wait_for_timeout(500)
-        else:
-            total = 0
-        _log(logger, f"Linhas de disciplina SEM filtro: {total}")
+    _handle_periodo_page(page, contexto, logger)
 
-        for idx in range(total):
-            try:
-                label = (hidden_rows.nth(idx).input_value(timeout=400) or "").strip()
-            except Exception:  # noqa: BLE001
-                continue
-            norm = _normalize(label)
-            ok_turno = bool(turno_norm and _normalize(turno_norm) in norm)
-            ok_turma = True if not turma_num else bool(re.search(rf"\bturma\s*{re.escape(turma_num)}\b", norm))
-            ok_trim = bool(trimestre_num and f"{trimestre_num}o trimestre" in norm)
-            ok_etapa = not bool(etapa_num) or bool(re.search(rf"\b{re.escape(etapa_num)}\s*[ºo]?\s*ano\b", norm))
-            if not (ok_turno and ok_turma and ok_trim and ok_etapa):
-                continue
-            _log(logger, f"Disciplina correspondente encontrada (sem filtro): {label}")
-            name = (hidden_rows.nth(idx).get_attribute("name") or "")
-            suffix = name.rsplit("_", 1)[-1]
-            for sel in [
-                f"#W0019W0075_DISCIPLINA_{suffix}",
-                f"img[name='W0019W0075_DISCIPLINA_{suffix}']",
-                f"a:has(img[name='W0019W0075_DISCIPLINA_{suffix}'])",
-                f"#W0019W0075_PLANOAULA_{suffix}",
-                f"img[name='W0019W0075_PLANOAULA_{suffix}']",
-                f"a:has(img[name='W0019W0075_PLANOAULA_{suffix}'])",
-                f"#W0019W0075_SEQUENCIADIDATICA_{suffix}",
-                f"img[name='W0019W0075_SEQUENCIADIDATICA_{suffix}']",
-                f"a:has(img[name='W0019W0075_SEQUENCIADIDATICA_{suffix}'])",
-            ]:
-                try:
-                    icon = scope.locator(sel)
-                    if icon.count() == 0:
-                        continue
-                    icon.first.click(timeout=ACTION_TIMEOUT_MS)
-                    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
-                    page.wait_for_timeout(2000)
-                    url_atual = (page.url or "").lower()
-                    if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
-                        _log(logger, "Icone clicado; navegacao concluida.")
-                        return True
-                except Exception:  # noqa: BLE001
-                    continue
+    if _tenta_abrir_grid("SEM filtro"):
+        return True
 
     # 5) Fallback: navegacao direta
     _log(logger, "Nenhuma linha com icone encontrada; tentando navegacao direta...")
@@ -956,9 +1092,97 @@ def _open_plano_aulas_for_context(page, contexto: ContextoPlano, logger=None) ->
         url_atual = (page.url or "").lower()
         if "planejamentoaula" in url_atual or "sequenciadidatica" in url_atual:
             _log(logger, f"Navegacao direta funcionou: {url_tentativa}")
+            try:
+                gra = page.locator("input[name='_GRACURCODDES']")
+                trn = page.locator("input[name='_TRNDESC']")
+                gra_v = gra.first.input_value() if gra.count() else ""
+                trn_v = trn.first.input_value() if trn.count() else ""
+            except Exception:  # noqa: BLE001
+                gra_v = trn_v = ""
+            if not gra_v and not trn_v:
+                _log(logger, "AVISO: navegacao direta abriu a pagina de planejamento SEM contexto de disciplina; o Confirmar tende a falhar.")
             return True
     _log(logger, f"Navegacao falhou. URL atual: {url_atual}")
     return False
+
+
+def _periodo_letivo_do_sge(page, logger=None) -> Tuple[str, str, Optional[int]]:
+    """Le o periodo letivo do trimestre que o proprio SGE exibe no titulo.
+
+    O titulo eh algo como:
+        'Planejamento da Disciplina - 3º Trimestre - 03/09/26 a 09/12/26'
+
+    Retorna (data_inicio, data_fim, trimestre_num) em dd/mm/yyyy e numero
+    ordinal (1/2/3) do trimestre exibido. Se nao conseguir extrair,
+    retorna ("", "", None). Esse periodo (do trimestre letivo) e o
+    intervalo valido para criar o planejamento no SGE; as datas do
+    documento (ex.: '31/08 a 25/09') podem ficar fora dele e causar
+    rejeicao silenciosa (formulario permanece visivel apos Confirmar).
+    O trimestre_num serve de salvaguarda: so deve ser usado quando bate
+    com o trimestre do contexto, senao a escola pode estar com outro
+    trimestre aberto (ex.: Mulde no 2o) e criar no trimestre errado.
+    """
+    try:
+        loc = page.locator("span[id='TITULO']")
+        if loc.count() == 0:
+            return "", "", None
+        titulo = (loc.first.inner_text(timeout=1500) or "").strip()
+    except Exception:  # noqa: BLE001
+        return "", "", None
+
+    m = re.search(
+        r"(\d{1,2})/(\d{1,2})/(\d{2,4})\s*(?:a|ate|to|-|/)\s*(\d{1,2})/(\d{1,2})/(\d{2,4})",
+        titulo,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        _log(logger, f"[periodo] Nao foi possivel extrair periodo letivo do titulo: '{titulo}'")
+        return "", "", None
+
+    d1, mo1, y1, d2, mo2, y2 = m.groups()
+    year1 = int(y1) if len(y1) == 4 else 2000 + int(y1)
+    year2 = int(y2) if len(y2) == 4 else 2000 + int(y2)
+    try:
+        inicio = datetime.strptime(f"{int(d1):02d}/{int(mo1):02d}/{year1}", "%d/%m/%Y").strftime("%d/%m/%Y")
+        fim = datetime.strptime(f"{int(d2):02d}/{int(mo2):02d}/{year2}", "%d/%m/%Y").strftime("%d/%m/%Y")
+    except ValueError:
+        _log(logger, f"[periodo] Datas invalidas no titulo: '{titulo}'")
+        return "", "", None
+
+    trimestre_num = None
+    mt = re.search(r"(\d)\s*(?:o|º|°)?\s*trimestre", titulo, flags=re.IGNORECASE)
+    if mt:
+        trimestre_num = int(mt.group(1))
+
+    _log(logger, f"[periodo] Periodo letivo do SGE identificado: {inicio} a {fim} (trimestre {trimestre_num})")
+    return inicio, fim, trimestre_num
+
+
+def _sanitizar_periodo_para_sge(data_inicio: str, data_fim: str) -> Tuple[str, str]:
+    """Garante data_fim >= data_inicio corrigindo provavel erro de ano.
+
+    Caso classico: usuario digita '03/09/2026 a 01/10/2016' (ano do fim com
+    digito errado). O SGE rejeita o formulario com 'Data Inicio maior que
+    Data Fim do periodo planejado'. Aqui corrigimos o ano do fim em relacao
+    ao inicio, mantendo o intervalo do documento.
+    """
+    def _parse(s: str):
+        try:
+            return datetime.strptime((s or "").strip(), "%d/%m/%Y")
+        except ValueError:
+            return None
+
+    di, df = _parse(data_inicio), _parse(data_fim)
+    if di is None or df is None or di <= df:
+        return data_inicio, data_fim
+
+    novo_ano = di.year
+    if df.month < di.month or (df.month == di.month and df.day < di.day):
+        novo_ano += 1
+    fim_corrigido = df.replace(year=novo_ano)
+    if fim_corrigido <= di:
+        fim_corrigido = fim_corrigido.replace(year=di.year)
+    return di.strftime("%d/%m/%Y"), fim_corrigido.strftime("%d/%m/%Y")
 
 
 def _set_periodo_and_aulas(page, data_inicio: str, data_fim: str, n_aulas: int) -> bool:
@@ -1010,6 +1234,26 @@ def _click_confirmar(page) -> bool:
         "input[value*='Confirmar' i]",
     ]
     return _click_any_selector_any_scope(page, selectors)
+
+
+def _erro_visivel_sge(page) -> str:
+    """Extrai a mensagem de validacao que o SGE exibe apos rejeitar o form.
+
+    GeneXus renderiza a validacao em um span com class 'ErrorViewer'
+    (ex.: 'Data Inicio maior que Data Fim do periodo planejado').
+    Usada para transformar rejeicao silenciosa em erro acionavel na tela.
+    """
+    try:
+        html = page.content()
+    except Exception:  # noqa: BLE001
+        return ""
+    m = re.search(r'class="[^"]*ErrorViewer[^"]*"[^>]*>(.*?)</span>', html, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        txt = re.sub(r"<[^>]+>", " ", m.group(1))
+        txt = re.sub(r"\s+", " ", txt).strip(" -")
+        if txt:
+            return txt
+    return ""
 
 
 def _click_plus_planejamento(page) -> bool:
@@ -1370,7 +1614,42 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
     page.wait_for_timeout(2000)
 
-    if not _set_periodo_and_aulas(page, registro.periodo_inicio, registro.periodo_fim, registro.n_aulas):
+    # Chuva de datas: o SGE rejeita silenciosamente periodos FORA do
+    # trimestre letivo (formulario permanece visivel apos Confirmar). O
+    # periodo do documento (ex.: '31/08 a 25/09') pode cair fora do
+    # trimestre (ex.: 3o trimestre = 03/09 a 09/12). Por isso priorizamos
+    # o periodo letivo que o proprio SGE expoe no titulo da pagina.
+    data_inicio = registro.periodo_inicio
+    data_fim = registro.periodo_fim
+    try:
+        pl_inicio, pl_fim, pl_tri = _periodo_letivo_do_sge(page, logger=logger)
+        if pl_inicio and pl_fim:
+            contexto_tri = _extract_first_number(contexto.trimestre)
+            if contexto_tri and pl_tri and str(contexto_tri) != str(pl_tri):
+                _log(
+                    logger,
+                    f"[periodo] ALERTA: pagina exibe {pl_tri}o trimestre, mas contexto espera "
+                    f"{contexto_tri}o. Nao vou usar o periodo do SGE para nao criar no "
+                    f"trimestre errado; seguindo com as datas do documento.",
+                )
+            else:
+                data_inicio, data_fim = pl_inicio, pl_fim
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Guarda extra: ano da data fim com provavel digito errado (ex.: '2016'
+    # em vez de '2026') faz o SGE rejeitar com 'Data Inicio maior que Data
+    # Fim do periodo planejado'. Corrigimos o ano mantendo o intervalo.
+    novas = _sanitizar_periodo_para_sge(data_inicio, data_fim)
+    if novas != (data_inicio, data_fim):
+        _log(
+            logger,
+            f"[periodo] Data fim corrigida de '{data_fim}' para '{novas[1]}' "
+            f"(inicio '{data_inicio}').",
+        )
+        data_inicio, data_fim = novas
+
+    if not _set_periodo_and_aulas(page, data_inicio, data_fim, registro.n_aulas):
         debug_dir = os.environ.get("SGE_DEBUG_DIR", "artifacts/sge-login")
         os.makedirs(debug_dir, exist_ok=True)
         try:
@@ -1413,11 +1692,19 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
                 f.write(page.content())
         except Exception:
             pass
-        raise LancamentoError("Falha ao criar planejamento (formulario ainda visivel apos Confirmar).")
+        erro_sge = _erro_visivel_sge(page)
+        detalhe = f" SGE: {erro_sge}." if erro_sge else ""
+        dica = ""
+        if "data" in detalhe.lower() and ("fim" in detalhe.lower() or "maior" in detalhe.lower()):
+            dica = " Corrija os campos 'Período início' e 'Período fim' no painel e execute novamente."
+        raise LancamentoError(
+            "Falha ao criar planejamento (formulario ainda visivel apos Confirmar)."
+            f"{detalhe}{dica}"
+        )
 
     ok_planejamento = True
 
-    row = _row_for_periodo(page, registro.periodo_inicio, registro.periodo_fim)
+    row = _row_for_periodo(page, data_inicio, data_fim)
     if row is None:
         debug_dir = os.environ.get("SGE_DEBUG_DIR", "artifacts/sge-login")
         os.makedirs(debug_dir, exist_ok=True)
@@ -1468,7 +1755,7 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
     page.wait_for_timeout(1500)
 
-    row = _row_for_periodo(page, registro.periodo_inicio, registro.periodo_fim)
+    row = _row_for_periodo(page, data_inicio, data_fim)
     if row is not None:
         ok_situacao = _ativar_situacao_da_linha(row)
 
@@ -1520,6 +1807,13 @@ def executar_lancamento_sequencia(
     # Constroi contextos direto da database (cada linha = 1 contexto).
     contextos_raw = _gerar_contextos_de_sequencias(registros, logger=logger)
 
+    # Preenche trimestre do CLI nos contextos (ja que vem da database, nao do titulo).
+    # IMPORTANTE: deve acontecer ANTES do filtro para que _filter_contexts
+    # possa comparar corretamente o trimestre (evita publicar na escola errada).
+    for c in contextos_raw:
+        if not c.trimestre:
+            c.trimestre = trimestre
+
     # Aplica filtros de escola/turno/turma/trimestre.
     _log(logger, f"[filtro] escola='{escola}' turno='{turno}' turma='{turma}' trimestre='{trimestre}'")
     _log(logger, f"[filtro] Total contextos brutos: {len(contextos_raw)}")
@@ -1538,11 +1832,6 @@ def executar_lancamento_sequencia(
     )
 
     _log(logger, f"[filtro] Contextos apos filtro: {len(contextos)}")
-
-    # Preenche trimestre do CLI nos contextos (ja que vem da database, nao do titulo).
-    for c in contextos:
-        if not c.trimestre:
-            c.trimestre = trimestre
 
     if not contextos:
         anos_disp = sorted({_normalize(r.ano) for r in registros if r.ano})

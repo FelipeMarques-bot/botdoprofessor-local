@@ -6,6 +6,7 @@ from typing import Optional, Dict
 from bot.models.license import License
 from bot.models.database import db
 from bot.security.auth import generate_token
+from bot.utils.time_utils import now_local
 
 
 class LicenseService:
@@ -128,10 +129,10 @@ class LicenseService:
         lic = License.query.filter_by(license_key=license_key).first()
         if not lic or not lic.active:
             return False
-        if lic.expires_at > datetime.utcnow():
+        if lic.expires_at > now_local():
             lic.expires_at = lic.expires_at + __import__("datetime").timedelta(days=days)
         else:
-            lic.expires_at = datetime.utcnow() + __import__("datetime").timedelta(days=days)
+            lic.expires_at = now_local() + __import__("datetime").timedelta(days=days)
         db.session.commit()
         return True
 

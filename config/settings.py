@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -18,7 +19,26 @@ else:
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATA_DIR / 'bot_local.db'}"
 SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
 SQLALCHEMY_TRACK_MODIFICATIONS = False
-SECRET_KEY = os.environ.get("SECRET_KEY", "bot-local-change-in-production")
+
+_APP_ENV = (
+    os.environ.get("BOT_LOCAL_ENV")
+    or os.environ.get("FLASK_ENV")
+    or ""
+).strip().lower()
+_INSECURE_SECRETS = {
+    "",
+    "bot-local-change-in-production",
+    "change-this-to-a-random-string-in-production",
+    "changeme",
+    "change-me",
+    "secret",
+}
+_SECRET_KEY = os.environ.get("SECRET_KEY", "").strip()
+SECRET_KEY_IS_EPHEMERAL = _SECRET_KEY.lower() in _INSECURE_SECRETS
+if SECRET_KEY_IS_EPHEMERAL:
+    SECRET_KEY = secrets.token_hex(32)
+else:
+    SECRET_KEY = _SECRET_KEY
 
 LICENSE_SERVER_URL = os.environ.get("LICENSE_SERVER_URL", "")
 

@@ -1,0 +1,150 @@
+﻿    # 2) Array JSON em qualquer lugar do texto (code fences, explicacoes)
+    if data is None:
+        arr = re.search(r"\[[\s\S]*\]", raw)
+        if arr:
+            try:
+                data = json.loads(arr.group(0))
+            except json.JSONDecodeError:
+                data = None
+    # 3) Objeto JSON como ultimo recurso
+    if data is None:
+        data = _safe_json_parse(raw, None)
+    if data is None:
+        return []
+
+    items = data if isinstance(data, list) else (
+        data.get("alunos") if isinstance(data, dict) else None
+    )
+    if not isinstance(items, list):
+        return []
+
+    records: List[Dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aluno = ""
+        for k in ("aluno", "nome", "estudante", "name", "aluno_nome", "student"):
+            v = item.get(k)
+            if isinstance(v, str) and v.strip():
+                aluno = v.strip()
+                break
+        if not aluno:
+            continue
+        nota = _normalize_nota(item.get("nota"))
+        if nota is None:
+            continue
+        records.append({"aluno": aluno, "nota": nota})
+    return records
+
+
+def _alphabetical_key(name: str) -> str:
+    """Chave de ordenacao alfabetica (A-Z), ignorando maiusculas e acentos."""
+    if not isinstance(name, str):
+        return ""
+    return unicodedata.normalize("NFD", name).strip().lower()
+
+
+def extrair_notas_imagem(
+    image_bytes: bytes,
+    logger: Optional[LogFn] = None,
+    prompt: Optional[str] = None,
+    retries: int = 1,
+) -> List[Dict[str, str]]:
+    """Extrai alunos + notas de uma imagem usando a IA configurada (local ou web).
+
+    Reforcos implementados:
+    - Prompt detalhado para leitura de letra de mao e tabelas.
+    - Fallback automatico entre provedores configurados (local/Gemini/OpenAI/Anthropic).
+    - Parsing tolerante a code fences e texto ao redor.
+    - Validacao e normalizacao de aluno e nota.
+    - Retry com prompt de refinamento quando a leitura vem vazia.
+    - Ordem alfabetica (A-Z) ignorando acentos.
+
+    Returns:
+        Lista de dicts {"aluno": str, "nota": str} ordenada alfabeticamente.
+    """
+    if not image_bytes:
+        return []
+
+    p_prompt = (prompt or "").strip() or EXTRAIR_NOTAS_IMAGEM_PROMPT
+    _log(logger, f"[AI-Extracao] Enviando imagem ({len(image_bytes)} bytes) para extracao de notas...")
+    _log(logger, f"[AI-Extracao] Orcamento de tempo: {EXTRACAO_TIMEOUT}s (EXTRACAO_TIMEOUT).")
+    deadline = time.time() + EXTRACAO_TIMEOUT
+
+    try:
+        resposta = _call_ai_with_fallback(p_prompt, image_bytes, logger=logger, deadline=deadline)
+    except AIAssistError as exc:
+        _log(logger, f"[AI-Extracao] ERRO: {exc}")
+        if "Ollama" in str(exc):
+            _log(
+                logger,
+                "[AI-Extracao] Dica: confirme se o Ollama esta aberto (servico rodando) e se o "
+                "modelo de visao esta baixado (execute 'ollama list'). Imagens muito grandes "
+                "ou falta de RAM tambem travam o Ollama.",
+            )
+        return []
+
+    _log(logger, f"[AI-Extracao] Resposta bruta ({len(resposta)} chars): {resposta[:300]}")
+    registros = _extract_grade_records(resposta)
+    _log(logger, f"[AI-Extracao] 1a leitura: {len(registros)} aluno(s) validos.")
+
+    for tentativa in range(max(0, retries)):
+        if registros or time.time() >= deadline:
+            break
+        _log(logger, f"[AI-Extracao] Leitura vazia/invalida. Refinando ({(tentativa + 1)}/{retries})...")
+        try:
+            resposta = _call_ai_with_fallback(EXTRAIR_NOTAS_IMAGEM_REFINAR, image_bytes, logger=logger, deadline=deadline)
+        except AIAssistError as exc:
+            _log(logger, f"[AI-Extracao] ERRO no refinamento: {exc}")
+            break
+        registros = _extract_grade_records(resposta)
+        _log(logger, f"[AI-Extracao] Refinamento: {len(registros)} aluno(s) validos.")
+
+    registros.sort(key=lambda r: _alphabetical_key(r.get("aluno", "")))
+    return registros
+
+
+CHAMADA_SITUACOES = {"presente", "falta", "falta_justificada"}
+
+CHAMADA_MOTIVOS = (
+    "atestado_medico", "obito", "suspensao",
+    "falta_justificada", "atividade_extra_classe",
+)
+
+
+def _normalize_chamada_situacao(value: Any) -> str:
+    """Normaliza o simbolo/rotulo da chamada para uma das situacoes suportadas."""
+    raw = (value or "").strip().lower()
+    if raw in ("presente", "presenca", "present", "compareceu", "presente."):
+        return "presente"
+    if raw in ("falta_justificada", "falta justificada", "justificada",
+               "faltajustificada", "fj", "f.j.", "fjust", "justificativo"):
+        return "falta_justificada"
+    if raw in ("falta", "ausente", "faltou", "ausencia", "faltas"):
+        return "falta"
+    norm = unicodedata.normalize("NFD", raw)
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    if norm in (".", "c", "v", "-", ""):
+        return "presente"
+    if norm in ("f", "x", "a", "aus", "falt", "f1", "f2", "f3", "f4", "f5"):
+        return "falta"
+    if norm in ("j", "fj", "f.j.", "fjust", "fjustificada"):
+        return "falta_justificada"
+    return ""
+
+
+def _normalize_chamada_motivo(value: Any) -> str:
+    """Mapeia a anotacao de motivo visivel para a chave de MOTIVO_JUSTIFICADO."""
+    raw = (value or "").strip().lower()
+    norm = unicodedata.normalize("NFD", raw)
+    norm = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+    if not norm:
+        return ""
+    if any(k in norm for k in ("atestado medico", "atestadomedico", "medico", "atestado")):
+        return "atestado_medico"
+    if "obito" in norm:
+        return "obito"
+    if "suspensao" in norm or "suspens" in norm:
+        return "suspensao"
+    if any(k in norm for k in ("atividade extra", "extra classe", "extraclasse", "atividadeextra")):
+        return "atividade_extra_classe"

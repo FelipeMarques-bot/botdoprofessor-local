@@ -925,16 +925,18 @@ def _safe_json_parse(text: str, fallback: Optional[Dict] = None) -> Dict[str, An
 # =====================================================================
 
 EXTRAIR_NOTAS_IMAGEM_PROMPT = """\
-Voce e um assistente de leitura de diarios de classe e boletins escolares.
-Analise a imagem com muita atencao e extraia TODOS os alunos com as notas desta atividade.
+Voce e um assistente especialista em OCR de diarios de classe, listas manuscritas e tabelas impressas.
+Analise esta imagem com extrema atencao e extraia TODOS os alunos com a nota da atividade.
 
-Regras:
-- Leia linha por linha: o nome completo do aluno e a nota correspondente.
-- A nota pode aparecer com virgula (8,5) ou ponto (8.5). Preserve o valor original.
-- Se um nome estiver abreviado ou com sobrenome incompleto, mantenha exatamente como esta.
-- NAO invente nomes nem notas: se uma linha estiver ilegivel, omita-a.
-- Ignore cabecalhos, totais, medias, rodapes e nomes de disciplinas.
-- Nao troque a nota de um aluno pela de outro.
+Regras obrigatorias:
+- Leia linha por linha. Para cada linha com nome de aluno, capture o nome COMPLETO e a nota correspondente.
+- A nota pode estar com virgula (8,5), ponto (8.5) ou apenas numero (8). Preserve o valor original.
+- Mantenha exatamente a grafia do nome como aparece. Corrija apenas erros obvios de maiusculas/minusculas.
+- NUNCA invente nomes, notas ou linhas ausentes. Se ilegivel, omita.
+- Ignore cabecalhos, totais, medias, "Turma", "Data", rodapes, rubricas e nomes de disciplinas.
+- Foque na coluna de NOTA da atividade. Nao confunda com faltas, presencas ou situacoes.
+- Separe corretamente nomes compostos (sobrenomes). Nao misture notas entre alunos.
+- Se houver numeros soltos fora da coluna de nota, ignore-os.
 
 Responda APENAS com um JSON array, sem texto antes ou depois, no formato:
 [{"aluno": "Nome Completo", "nota": "8,5"}, {"aluno": "Outro Aluno", "nota": "7.0"}]
@@ -942,12 +944,15 @@ Se nao houver nada para extrair, retorne apenas [].
 """
 
 EXTRAIR_NOTAS_IMAGEM_REFINAR = """\
-A leitura anterior desta imagem nao retornou alunos/notas validos.
-Tente novamente com mais cuidado: observe todas as linhas da tabela ou da folha
-e copie EXATAMENTE o nome de cada aluno e a sua nota (aceita virgula ou ponto).
+A leitura anterior nao retornou alunos/notas validos. Tente novamente com mais rigor.
 
-Retorne APENAS um JSON array: [{"aluno": "...", "nota": "..."}]
-Se realmente nao for possivel ler nada, retorne [].
+Foque EXCLUSIVAMENTE em duas colunas: "Aluno/Nome" e "Nota/Valor". 
+Ignore qualquer outra coluna.
+Leia letra por letra se necessario. Se a escrita for cursiva, tente decifrar com cuidado.
+Copie EXATAMENTE o nome e a nota da mesma linha. Nunca troque entre linhas.
+
+Retorne APENAS um JSON array: [{"aluno": "Nome Completo", "nota": "8,5"}]
+Se realmente nao conseguir ler qualquer par aluno+nota, retorne [].
 """
 
 EXTRAIR_CHAMADA_IMAGEM_PROMPT = """\

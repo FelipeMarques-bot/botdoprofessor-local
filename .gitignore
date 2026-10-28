@@ -1,16 +1,117 @@
-.venv/
+# BotDoProfessor
 __pycache__/
-*.pyc
-data/
-logs/
-evidencias/
-*.db
-.env
-.pytest_cache/
-*.log
-bot_local.db
-dist/
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
-build_venv/
-build_venv*/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
 *.spec
+
+# Environment
+.env
+.env.local
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+build_venv*/
+build_venv311/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+flask*.log
+
+# Data local
+data/
+instance/
+artifacts/
+evidencias/
+stats_globais.json
+
+# Screenshots/tests artifacts
+*.png
+*.jpg
+*.jpeg
+botdo_captura*.png
+chat_history.md
+
+# Cache
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Temporary
+*.tmp
+*.bak
+*.old
+Q
+nul
+auto_exec*bat
+botdo.zip
+BotDoProfessor-Streamlit.zip
+exclude.txt
+dist_temp/
+release_temp/
+first_run_marker.txt
+xpress_test*
+
+# Updater
+updater.bat
+BotDoProfessor_new.exe
+*.part
+
+# Secrets/keys
+*.pem
+*.key
+.encryption_key
+xpra-*
+xpra*.zip
+xpra*/
+
+# Node (se houver)
+node_modules/
+package-lock.json
+
+# Executaveis gerados localmente
+BotDoProfessor.exe
+BotDoProfessor-Setup-*.exe
+installer-*.exe

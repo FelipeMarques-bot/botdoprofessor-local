@@ -1,3 +1,4 @@
+import logging
 from functools import wraps
 from datetime import datetime, timedelta
 import jwt
@@ -6,6 +7,8 @@ from config.settings import SECRET_KEY
 from bot.models.user import User
 from bot.models.license import License
 from bot.models.audit import AuditLog
+
+logger = logging.getLogger(__name__)
 
 
 def generate_token(user: User) -> str:
@@ -33,21 +36,40 @@ def require_auth(f):
         try:
             payload = decode_token(token)
         except jwt.ExpiredSignatureError:
-            print(f"[AUTH FAIL] Token expirado path={request.path} ip={request.remote_addr}")
+            logger.warning(
+                "[AUTH FAIL] Token expirado path=%s ip=%s",
+                request.path,
+                request.remote_addr,
+            )
             return jsonify({"error": "Token expirado"}), 401
-        except jwt.InvalidTokenError as e:
-            print(f"[AUTH FAIL] Token invalido: {e} path={request.path} ip={request.remote_addr}")
+        except jwt.InvalidTokenError as exc:
+            logger.warning(
+                "[AUTH FAIL] Token invalido path=%s ip=%s: %s",
+                request.path,
+                request.remote_addr,
+                exc,
+            )
             return jsonify({"error": "Token invalido"}), 401
 
         user = User.query.get(payload["user_id"])
         if not user or not user.active:
-            print(f"[AUTH FAIL] Usuario inativo ou nao encontrado: {payload.get('user_id')} path={request.path}")
+            logger.warning(
+                "[AUTH FAIL] Usuario inativo ou nao encontrado: user_id=%s path=%s",
+                payload.get("user_id"),
+                request.path,
+            )
             return jsonify({"error": "Usuario inativo"}), 401
 
         stored_version = getattr(user, "token_version", 0)
         token_version = payload.get("token_version", 0)
         if stored_version != token_version:
-            print(f"[AUTH FAIL] Token version mismatch: stored={stored_version} token={token_version} user={user.username} path={request.path}")
+            logger.warning(
+                "[AUTH FAIL] Token version mismatch: stored=%s token=%s user=%s path=%s",
+                stored_version,
+                token_version,
+                user.username,
+                request.path,
+            )
             AuditLog.log(user.id, "token_reused_after_invalidation",
                          status="denied", ip=request.remote_addr)
             return jsonify({"error": "Sessao invalidada. Faca login novamente."}), 401

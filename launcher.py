@@ -58,7 +58,7 @@ LICENSE_CACHE_DAYS = 7
 
 UPDATE_URL = f"{LICENSE_SERVER_URL}/api/check-update"
 VERSION_FILE_NAME = "VERSION.txt"
-NEW_EXE_FILE = APP_DIR / "BotDoProfessor_new.exe"
+NEW_EXE_FILE = APP_DIR / "BotDoProfessor_new.exe"  # payload de atualizacao (exe ou instalador)
 
 if os.name == "nt":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
@@ -901,6 +901,72 @@ def _launch_updater(splash):
         return False
 
 
+def _payload_is_nsis_installer(path):
+    """Detecta se o payload baixado e um instalador NSIS (marcador 'Nullsoft')."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(1 << 18)
+        return b"Nullsoft" in head
+    except OSError:
+        return False
+
+
+def _launch_installer_update(splash):
+    """Instalador assinou o binario: gera e dispara update_install.bat
+    que espera este processo sair, roda o instalador em modo silencioso (/S)
+    na mesma pasta da versao atual e reabre o programa."""
+    if os.name != "nt":
+        return False
+    if not getattr(sys, "frozen", False):
+        log("Instalador baixado, mas app nao esta empacotado")
+        return False
+
+    current_exe = sys.executable
+    install_dir = Path(current_exe).parent
+    installer_bat = APP_DIR / "update_install.bat"
+    install_log = LOG_DIR / "updater.log"
+
+    content = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f"set \"SETUP={NEW_EXE_FILE}\"\r\n"
+        f"set \"BATCH={installer_bat}\"\r\n"
+        f"set \"APPDIR={install_dir}\"\r\n"
+        f"set \"LOG={install_log}\"\r\n"
+        "echo [%date% %time%] Iniciando instalador silencioso >>\"%LOG%\"\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
+        "if not exist \"%SETUP%\" (\r\n"
+        "    echo [%date% %time%] Instalador ausente, reabrindo versao atual >>\"%LOG%\"\r\n"
+        "    start \"\" \"%APPDIR%\\BotDoProfessor.exe\"\r\n"
+        "    goto done\r\n"
+        ")\r\n"
+        "\"%SETUP%\" /S /D=%APPDIR%\r\n"
+        "echo [%date% %time%] Instalador terminou (exit %errorlevel%) >>\"%LOG%\"\r\n"
+        "if exist \"%APPDIR%\\BotDoProfessor.exe\" (\r\n"
+        "    start \"\" \"%APPDIR%\\BotDoProfessor.exe\" --updated\r\n"
+        "    echo [%date% %time%] Nova versao reaberta >>\"%LOG%\"\r\n"
+        ")\r\n"
+        ":done\r\n"
+        "if exist \"%SETUP%\" del \"%SETUP%\" >nul 2>nul\r\n"
+        "del \"%~f0\" >nul 2>nul\r\n"
+        "endlocal\r\n"
+        "exit /b 0\r\n"
+    )
+    try:
+        installer_bat.write_text(content, encoding="ascii", errors="replace")
+        log(f"Instalador de atualizacao criado: {installer_bat}")
+        cmd = ["cmd", "/c", str(installer_bat)]
+        subprocess.Popen(
+            cmd,
+            creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
+            close_fds=True,
+        )
+        return True
+    except Exception as e:
+        log(f"Falha ao disparar instalador de atualizacao: {e}")
+        return False
+
+
 def _try_supervised_swap(splash):
     """Swap sem fechar: o exe em execucao se renomeia, a nova versao entra no
     lugar e o processo atual relanca a nova versao por conta propria. Retorna
@@ -999,6 +1065,22 @@ def maybe_apply_update(splash, license_key):
     ok = _download_update(splash, download_url, new_version, expected_sha256)
     if not ok:
         log("Falha na atualizacao — usando versao atual")
+        return True
+
+    if _payload_is_nsis_installer(NEW_EXE_FILE):
+        log("Payload e instalador NSIS — instalando silenciosamente")
+        splash.update("Atualizando, aguarde um momento!", "Instalando a nova versao...")
+        splash.set_progress(0.95)
+        if _launch_installer_update(splash):
+            log("Instalador disparado — encerrando versao atual")
+            splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
+            time.sleep(1.0)
+            try:
+                splash.close()
+            except Exception:
+                pass
+            sys.exit(0)
+        log("Nao foi possivel instalar — usando versao atual")
         return True
 
     splash.update("Atualizando, aguarde um momento!", "Finalizando instalacao...")
@@ -1317,6 +1399,7 @@ def main():
             stdout=streamlit_log,
             stderr=streamlit_log,
             env=clean_env,
+            creationflags=NO_WINDOW,
         )
 
         splash.update("Aguardando painel...", "Verificando se o servidor esta pronto")

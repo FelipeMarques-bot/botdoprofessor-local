@@ -7,7 +7,7 @@
 
 ; === CONFIGURACOES ===
 !define APP_NAME "BotDoProfessor"
-!define APP_VERSION "1.4.43"
+!define APP_VERSION "1.4.57"
 !define APP_PUBLISHER "BotDoProfessor"
 !define APP_URL "https://github.com/FelipeMarques-bot/botdoprofessor-local"
 !define INSTALL_DIR "$LOCALAPPDATA\BotDoProfessor"
@@ -42,33 +42,10 @@ SetCompressor /SOLID lzma
 Section "Instalar"
     SetOutPath "$INSTDIR"
 
-    ; Arquivos principais
-    File "dist\BotDoProfessor.exe"
-    File "painel.py"
-    File "lancar_notas_sge.py"
-    File "lancar_professor_online.py"
-    File "lancar_chamada_sge.py"
-    File "lancar_sequencia_didatica_sge.py"
-    File "leitor_planilhas.py"
-    File "ai_assist.py"
-    File "status_store.py"
-    File "autofix.py"
-    File "aprender_novo_portal.py"
-    File "interpretar_pedido.py"
+    ; App em modo one-dir: exe + _internal
+    File /r "dist\BotDoProfessor\*.*"
     File ".env.example"
     File "requirements.txt"
-
-    ; Pasta bot/
-    SetOutPath "$INSTDIR\bot"
-    File /r "bot\*.py"
-
-    ; Pasta config/
-    SetOutPath "$INSTDIR\config"
-    File /r "config\*.py"
-
-    ; Pasta landing/
-    SetOutPath "$INSTDIR\landing"
-    File /r "landing\*.*"
 
     ; Criar desinstalador
     WriteUninstaller "$INSTDIR\uninstall.exe"

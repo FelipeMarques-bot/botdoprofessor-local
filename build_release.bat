@@ -7,8 +7,8 @@ echo  BotDoProfessor - Build Completo
 echo =============================================
 echo.
 echo  Opcoes:
-echo  [1] Gerar .exe (PyInstaller)
-echo  [2] Gerar .exe + Instalador NSIS
+echo  [1] Gerar app one-dir (PyInstaller)
+echo  [2] Gerar app + Instalador NSIS (Setup)
 echo  [3] Submeter para whitelist de antivirus
 echo  [4] Criar release no GitHub
 echo  [5] Tudo (build + installer + release)
@@ -29,55 +29,19 @@ echo.
 echo [1/3] Instalando PyInstaller...
 python -m pip install pyinstaller --quiet
 
-echo [2/3] Gerando .exe (sem UPX - reduz falsos positivos)...
+echo [2/3] Gerando app one-dir via spec (abertura instantanea)...
 if exist requirements-exe.txt (
     echo Instalando dependencias para build...
     python -m pip install -r requirements-exe.txt --quiet
 )
-python -m PyInstaller ^
-    --onefile ^
-    --name "BotDoProfessor" ^
-    --noconfirm ^
-    --clean ^
-    --add-data "painel.py;." ^
-    --add-data "autofix.py;." ^
-    --add-data "lancar_notas_sge.py;." ^
-    --add-data "lancar_professor_online.py;." ^
-    --add-data "aprender_novo_portal.py;." ^
-    --add-data "lancar_sequencia_didatica_sge.py;." ^
-    --add-data "leitor_planilhas.py;." ^
-    --add-data "ai_assist.py;." ^
-    --add-data "status_store.py;." ^
-    --add-data "lancar_chamada_sge.py;." ^
-    --add-data "interpretar_pedido.py;." ^
-    --add-data "bot;bot" ^
-    --add-data "docs;docs" ^
-    --add-data ".env.example;." ^
-    --add-data "VERSION.txt;." ^
-    --add-data "requirements-exe.txt;." ^
-    --hidden-import "streamlit" ^
-    --hidden-import "playwright" ^
-    --hidden-import "playwright.sync_api" ^
-    --hidden-import "openpyxl" ^
-    --hidden-import "pandas" ^
-    --hidden-import "httpx" ^
-    --hidden-import "notion_client" ^
-    --hidden-import "google.genai" ^
-    --hidden-import "openai" ^
-    --hidden-import "anthropic" ^
-    --hidden-import "gdown" ^
-    --hidden-import "cryptography" ^
-    --hidden-import "requests" ^
-    --hidden-import "dotenv" ^
-    launcher.py
+python -m PyInstaller --noconfirm --clean BotDoProfessor.spec
 
 echo [3/3] Verificando resultado...
-if exist dist\BotDoProfessor.exe (
+if exist dist\BotDoProfessor\BotDoProfessor.exe (
     echo.
     echo =============================================
-    echo  .exe gerado com sucesso!
-    echo  Localizacao: %cd%\dist\BotDoProfessor.exe
-    for %%I in (dist\BotDoProfessor.exe) do echo  Tamanho: %%~zI bytes
+    echo  App one-dir gerado com sucesso!
+    echo  Localizacao: %cd%\dist\BotDoProfessor\BotDoProfessor.exe
     echo =============================================
 ) else (
     echo ERRO: Falha ao gerar .exe.
@@ -86,7 +50,7 @@ pause
 exit /b 0
 
 :build_installer
-call :build_exe
+call :build_exe_silent
 echo.
 echo [NSIS] Verificando NSIS...
 set "NSIS_PATH="
@@ -107,17 +71,38 @@ if "%NSIS_PATH%"=="" (
     pause
     exit /b 1
 )
-echo [NSIS] Gerando instalador...
+
+for /f "delims=" %%V in (VERSION.txt) do set "VER=%%V"
+echo [NSIS] Gerando instalador v%VER%...
 "%NSIS_PATH%" installer.nsi
-if exist dist\BotDoProfessor-Setup-v1.4.40.exe (
+if exist "dist\BotDoProfessor-Setup-v%VER%.exe" (
     echo.
     echo =============================================
     echo  Instalador gerado!
-    echo  Localizacao: %cd%\dist\BotDoProfessor-Setup-v1.4.40.exe
+    echo  Localizacao: %cd%\dist\BotDoProfessor-Setup-v%VER%.exe
     echo =============================================
+) else (
+    echo ERRO: Falha ao gerar instalador.
 )
 pause
 exit /b 0
+
+:build_exe_silent
+echo.
+echo [BUILD] Instalando PyInstaller...
+python -m pip install pyinstaller --quiet
+if exist requirements-exe.txt (
+    python -m pip install -r requirements-exe.txt --quiet
+)
+echo [BUILD] Gerando app one-dir via spec...
+python -m PyInstaller --noconfirm --clean BotDoProfessor.spec
+if not exist dist\BotDoProfessor\BotDoProfessor.exe (
+    echo ERRO: Falha ao gerar .exe.
+    pause
+    exit /b 1
+)
+echo [BUILD] App gerado: dist\BotDoProfessor\BotDoProfessor.exe
+goto :eof
 
 :whitelist
 echo.
@@ -163,13 +148,15 @@ echo  Fazendo login no GitHub...
 gh auth login
 echo.
 echo  Criando tag e release...
-set /p versao="Versao (ex: 1.0.0): "
+for /f "delims=" %%V in (VERSION.txt) do set "VER=%%V"
+set /p versao="Versao (Enter usa %VER%): "
+if "%versao%"=="" set "versao=%VER%"
 git tag -a v%versao% -m "Release v%versao%"
 git push origin v%versao%
 gh release create v%versao% ^
-    dist\BotDoProfessor.exe ^
+    dist\BotDoProfessor-Setup-v%versao%.exe ^
     --title "BotDoProfessor v%versao%" ^
-    --notes "Versao %versao% do BotDoProfessor" ^
+    --notes "Versao %versao% do BotDoProfessor (instalador one-dir)" ^
     --latest
 echo.
 echo =============================================
@@ -180,7 +167,36 @@ pause
 exit /b 0
 
 :build_all
-call :build_exe
-call :build_installer
+call :build_exe_silent
+echo.
+call :build_installer_silent
+echo.
 call :github_release
 exit /b 0
+
+:build_installer_silent
+set "NSIS_PATH="
+if exist "C:\Program Files (x86)\NSIS\makensis.exe" (
+    set "NSIS_PATH=C:\Program Files (x86)\NSIS\makensis.exe"
+)
+if exist "C:\Program Files\NSIS\makensis.exe" (
+    set "NSIS_PATH=C:\Program Files\NSIS\makensis.exe"
+)
+where makensis >nul 2>nul
+if %errorlevel% equ 0 (
+    set "NSIS_PATH=makensis"
+)
+if "%NSIS_PATH%"=="" (
+    echo NSIS nao encontrado!
+    exit /b 1
+)
+for /f "delims=" %%V in (VERSION.txt) do set "VER=%%V"
+echo [NSIS] Gerando instalador v%VER%...
+"%NSIS_PATH%" installer.nsi
+if exist "dist\BotDoProfessor-Setup-v%VER%.exe" (
+    echo [NSIS] Instalador gerado: dist\BotDoProfessor-Setup-v%VER%.exe
+) else (
+    echo ERRO: Falha ao gerar instalador.
+    exit /b 1
+)
+goto :eof

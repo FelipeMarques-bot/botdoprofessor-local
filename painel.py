@@ -254,36 +254,81 @@ _LIGHT_CSS = """
 
 _DARK_THEME_CSS = """
 <style>
-    .stApp, [data-testid="stAppViewContainer"] { background: radial-gradient(circle at top, #0f172a, #020617) !important; color: #e2e8f0; }
-    [data-testid="stHeader"] { background-color: transparent; }
-    [data-testid="stSidebar"], [data-testid="stSidebarContent"] { background: radial-gradient(circle at top, #020617, #010409) !important; border-right: 1px solid rgba(148, 163, 184, 0.18) !important; }
-    .stApp :is(p, span, label, li, summary, .stMarkdown, [data-testid="stWidgetLabel"]) { color: #c0c0d0 !important; }
-    .stApp :is(h1, h2, h3, h4, h5, h6) { color: #e8e8f0 !important; }
-    [data-testid="stSidebar"] :is(p, span, label, li, summary, .stMarkdown) { color: #b0b0c0 !important; }
-    .stButton button[kind="primary"], .stButton button[kind="primary"] * { color: #ffffff !important; }
-    .stButton button:not([kind="primary"]), .stButton button:not([kind="primary"]) * { color: #e2e8f0 !important; }
-    div[data-testid="stMetric"] { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 12px; }
-    div[data-testid="stMetric"]:hover { box-shadow: 0 20px 40px -30px rgba(129, 140, 248, 0.9); }
+    .stApp, [data-testid="stAppViewContainer"],
+    [data-testid="stMain"], [data-testid="stMainBlockContainer"],
+    [data-testid="stAppViewBlockContainer"], section.main, .main {
+        background: radial-gradient(circle at top, #0f172a, #020617) !important;
+        color: #e2e8f0 !important;
+    }
+    [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {
+        background: transparent !important;
+    }
+    [data-testid="stBottom"], [data-testid="stBottomBlockContainer"], [data-testid="stBottom"] > div {
+        background: #0b1120 !important;
+    }
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"], [data-testid="stSidebarUserContent"] {
+        background: radial-gradient(circle at top, #020617, #010409) !important;
+        border-right: 1px solid rgba(148, 163, 184, 0.18) !important;
+    }
+    .stApp :is(p, span, label, li, summary, [data-testid="stWidgetLabel"]) { color: #dfe3ee !important; }
+    .stApp :is(h1, h2, h3, h4, h5, h6) { color: #eef0f8 !important; }
+    [data-testid="stSidebar"] :is(p, span, label, li, summary) { color: #c8cddd !important; }
+    [data-testid="stSidebar"] .stMarkdown h3 { color: #93a0b8 !important; }
+
+    /* Botoes: sem isso o secondaryBackgroundColor do tema base (claro) vaza branco */
+    .stButton button, .stDownloadButton button, .stFormSubmitButton button,
+    [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-secondaryFormSubmit"] {
+        background: #232838 !important;
+        border: 1px solid #3a4157 !important;
+        color: #e2e8f0 !important;
+    }
+    .stButton button:hover, .stDownloadButton button:hover, .stFormSubmitButton button:hover,
+    [data-testid="stBaseButton-secondary"]:hover, [data-testid="stBaseButton-secondaryFormSubmit"]:hover {
+        background: #2f3648 !important;
+        border-color: #55607d !important;
+    }
+    .stButton button *, .stDownloadButton button *, .stFormSubmitButton button * { color: inherit !important; }
+    .stButton button[kind="primary"], .stDownloadButton button[kind="primary"],
+    .stFormSubmitButton button[kind="primary"],
+    [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] {
+        background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%) !important;
+        border: 1px solid transparent !important;
+        color: #ffffff !important;
+    }
+    .stButton button[kind="primary"]:hover, .stDownloadButton button[kind="primary"]:hover,
+    .stFormSubmitButton button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%) !important;
+    }
+    .stButton button[kind="primary"] *, .stDownloadButton button[kind="primary"] *,
+    .stFormSubmitButton button[kind="primary"] * { color: #ffffff !important; }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%) !important;
+        border: 1px solid rgba(148, 163, 184, 0.25) !important; border-radius: 12px;
+    }
+    div[data-testid="stMetric"] :is(p, span, label) { color: #e2e8f0 !important; }
     .main-header { background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 55%, #c084fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
     .sub-header { color: #94a3b8 !important; }
     .card { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); border: 1px solid rgba(148, 163, 184, 0.25); }
-    [data-testid="stExpander"] details > summary { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); color: #e2e8f0; }
-    .stTextInput input, .stTextArea textarea, .stSelectbox > div > div { background-color: rgba(15,23,42,0.9) !important; color: #e2e8f0 !important; border-color: rgba(148, 163, 184, 0.4) !important; }
-    [data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
-    .main-header { background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; background-clip: text; }
-    .sub-header { color: #888; }
-    .card { background: #1e2130; border-color: #2d3040; }
-    .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] { background-color: #262a3a; color: #e0e0e0; border-color: #3a3d50; }
-    .st-bd, .st-cf, .st-cg, .st-ch, .st-ci, .st-cj { background-color: #1e2130; color: #e0e0e0; }
-    .st-dg, .st-dh, .st-di, .st-dj, .st-dk, .st-dl { background-color: #262a3a; color: #e0e0e0; }
-    .stMarkdown, .stText, p, span, label { color: #c0c0d0; }
-    h1, h2, h3, h4, h5, h6 { color: #e8e8f0; }
-    .st-bb, .st-bc, .st-bd, .st-be, .st-bf, .st-bg, .st-bh { background-color: #262a3a; }
-    .st-cx, .st-cy, .st-cz, .st-d0, .st-d1, .st-d2 { border-color: #3a3d50; }
-    .stAlert { background-color: #1e2130; color: #e0e0e0; }
-    section[data-testid="stSidebar"] { background-color: #12151f; }
-    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] p { color: #b0b0c0; }
+    .card:hover { box-shadow: 0 10px 40px -18px rgba(129, 140, 248, 0.7); }
+
+    [data-testid="stExpander"] { border: 1px solid rgba(148, 163, 184, 0.22) !important; }
+    [data-testid="stExpander"] details, [data-testid="stExpander"] details > summary {
+        background: #131a2b !important; color: #e2e8f0 !important;
+    }
+    .stTextInput input, .stTextArea textarea, .stNumberInput input,
+    .stSelectbox div[data-baseweb="select"] > div, .stMultiSelect div[data-baseweb="select"] > div {
+        background-color: #1b2233 !important; color: #e2e8f0 !important;
+        border-color: rgba(148, 163, 184, 0.35) !important;
+    }
+    [data-baseweb="popover"] :is(li, div, span), [role="option"] { color: #e2e8f0 !important; }
+    [data-baseweb="popover"] ul { background: #1b2233 !important; }
+    [data-testid="stFileUploader"] section, [data-testid="stFileUploaderDropzone"] { background: #131a2b !important; }
+    [data-testid="stTabs"] button[role="tab"] { color: #c8cddd !important; }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] { color: #8ab4ff !important; }
+    code, pre { background: #131a2b !important; color: #e2e8f0 !important; }
+    hr { border-color: rgba(148, 163, 184, 0.25) !important; }
+    [data-testid="stDataFrame"], [data-testid="stTable"] { border-radius: 12px; overflow: hidden; }
     .link-entry { background: #1a1f35; border-left-color: #3b82f6; }
 </style>
 """

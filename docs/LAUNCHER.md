@@ -48,6 +48,14 @@ rede) e a falha deixa de ser possível nesse caminho.
 
 ## Execução do painel fora do diretório de extração (`_MEI`)
 
+> **Nota (v1.4.57):** o build migrou de **onefile** para **one-dir**
+> (`dist\BotDoProfessor\BotDoProfessor.exe` + `_internal\`), distribuído pelo
+> instalador NSIS. Com isso a abertura ficou instantânea (sem extração a cada
+> execução, ~10s até o painel) e sem janela de terminal. O mecanismo abaixo
+> continua válido (o bundle interno ainda tem `.pyd` da 3.11 e o painel roda
+> do venv 3.12), mas o diretório de origem agora é o `_internal\` fixo da
+> instalação, não mais um temp.
+
 **Causa raiz dos erros de "python311.dll conflicts" e "LookupError: unknown
 encoding: idna" nos usuários:** o executável é compilado com Python 3.11 e o
 PyInstaller (onefile) extrai em `%TEMP%\_MEIxxxxx` um ambiente completo da 3.11,

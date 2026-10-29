@@ -203,18 +203,49 @@ _LIGHT_CSS = """
 <style>
     /* Tema claro forcado: nao depende do tema detectado pelo Streamlit/navegador.
        Sem isso, SOs em modo escuro deixavam o sidebar claro com letras claras. */
-    .stApp, [data-testid="stAppViewContainer"] { background: #fafbfc !important; }
-    [data-testid="stHeader"] { background: transparent !important; }
-    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
+    .stApp, [data-testid="stAppViewContainer"],
+    [data-testid="stMain"], [data-testid="stMainBlockContainer"],
+    [data-testid="stAppViewBlockContainer"], section.main, .main {
+        background: #fafbfc !important;
+    }
+    [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {
+        background: #ffffff !important;
+        color: #1a1a2e !important;
+    }
+    [data-testid="stBottom"], [data-testid="stBottomBlockContainer"], [data-testid="stBottom"] > div {
+        background: #ffffff !important;
+    }
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"], [data-testid="stSidebarUserContent"] {
         background: radial-gradient(circle at top, #f8fafc, #f1f5f9) !important;
         border-right: 1px solid rgba(148, 163, 184, 0.25) !important;
     }
-    .stApp :is(p, span, label, li, summary, .stMarkdown, [data-testid="stWidgetLabel"]) { color: #1a1a2e !important; }
+    .stApp :is(p, span, label, li, summary, [data-testid="stWidgetLabel"]) { color: #1a1a2e !important; }
     .stApp :is(h1, h2, h3, h4, h5, h6) { color: #0f172a !important; }
     [data-testid="stSidebar"] :is(p, span, label, li, summary, .stMarkdown) { color: #1a1a2e !important; }
     [data-testid="stSidebar"] :is(h1, h2, h3, h4, h5, h6) { color: #0f172a !important; }
     [data-testid="stSidebar"] .stMarkdown h3 { color: #64748b !important; }
+    .stTextInput input, .stTextArea textarea, .stNumberInput input {
+        background: #ffffff !important; color: #1a1a2e !important;
+    }
+    .stSelectbox div[data-baseweb="select"] > div,
+    .stMultiSelect div[data-baseweb="select"] > div,
+    div[data-baseweb="select"] > div {
+        background: #ffffff !important; color: #1a1a2e !important;
+    }
+    [data-baseweb="popover"] :is(li, div, span), [role="option"] { color: #1a1a2e !important; }
+    [data-testid="stExpander"] details, [data-testid="stExpander"] details > summary {
+        background: #ffffff !important; color: #1a1a2e !important;
+    }
+    [data-testid="stFileUploader"] section, [data-testid="stFileUploaderDropzone"] {
+        background: #ffffff !important;
+    }
+    [data-testid="stDataFrame"], [data-testid="stTable"] { background: #ffffff !important; }
+    [data-testid="stTabs"] button[role="tab"], [data-testid="stTabs"] button[role="tab"] * { color: #1a1a2e !important; }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] { color: #1f6feb !important; }
+    code, pre { background: #f1f5f9 !important; color: #0f172a !important; }
+    hr { border-color: rgba(148, 163, 184, 0.35) !important; }
     div[data-testid="stMetric"] { background: #ffffff !important; }
+    div[data-testid="stMetric"] :is(p, span, label) { color: #1a1a2e !important; }
     .link-entry { background: #f0f4ff !important; }
     .stButton button[kind="primary"], .stButton button[kind="primary"] * { color: #ffffff !important; }
     .stButton button:not([kind="primary"]), .stButton button:not([kind="primary"]) * { color: #1f2430 !important; }

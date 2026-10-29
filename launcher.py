@@ -358,6 +358,14 @@ def get_painel_path():
                 if not dst.exists() or src.stat().st_mtime != dst.stat().st_mtime:
                     shutil.copy2(src, dst)
                     copied += 1
+            # O Streamlit roda com cwd=APP_DIR, entao o config de tema
+            # (.streamlit/config.toml) precisa ficar na raiz de APP_DIR.
+            streamlit_src = bundled / ".streamlit"
+            streamlit_dst = APP_DIR / ".streamlit"
+            if streamlit_src.is_dir():
+                if not streamlit_dst.exists() or _newest_mtime(streamlit_src) != _newest_mtime(streamlit_dst):
+                    shutil.copytree(streamlit_src, streamlit_dst, dirs_exist_ok=True)
+                    copied += 1
             if copied:
                 log(f"Arquivos do painel sincronizados em {app_dir}")
             painel = app_dir / "painel.py"

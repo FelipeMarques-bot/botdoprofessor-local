@@ -201,17 +201,36 @@ _BASE_CSS = """
 
 _LIGHT_CSS = """
 <style>
-    .stApp { background: #fafbfc; color: #1a1a2e; }
-    div[data-testid="stMetric"] { background: #ffffff; }
-    .link-entry { background: #f0f4ff; }
+    /* Tema claro forcado: nao depende do tema detectado pelo Streamlit/navegador.
+       Sem isso, SOs em modo escuro deixavam o sidebar claro com letras claras. */
+    .stApp, [data-testid="stAppViewContainer"] { background: #fafbfc !important; }
+    [data-testid="stHeader"] { background: transparent !important; }
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
+        background: radial-gradient(circle at top, #f8fafc, #f1f5f9) !important;
+        border-right: 1px solid rgba(148, 163, 184, 0.25) !important;
+    }
+    .stApp :is(p, span, label, li, summary, .stMarkdown, [data-testid="stWidgetLabel"]) { color: #1a1a2e !important; }
+    .stApp :is(h1, h2, h3, h4, h5, h6) { color: #0f172a !important; }
+    [data-testid="stSidebar"] :is(p, span, label, li, summary, .stMarkdown) { color: #1a1a2e !important; }
+    [data-testid="stSidebar"] :is(h1, h2, h3, h4, h5, h6) { color: #0f172a !important; }
+    [data-testid="stSidebar"] .stMarkdown h3 { color: #64748b !important; }
+    div[data-testid="stMetric"] { background: #ffffff !important; }
+    .link-entry { background: #f0f4ff !important; }
+    .stButton button[kind="primary"], .stButton button[kind="primary"] * { color: #ffffff !important; }
+    .stButton button:not([kind="primary"]), .stButton button:not([kind="primary"]) * { color: #1f2430 !important; }
 </style>
 """
 
 _DARK_THEME_CSS = """
 <style>
-    .stApp { background: radial-gradient(circle at top, #0f172a, #020617); color: #e2e8f0; }
+    .stApp, [data-testid="stAppViewContainer"] { background: radial-gradient(circle at top, #0f172a, #020617) !important; color: #e2e8f0; }
     [data-testid="stHeader"] { background-color: transparent; }
-    [data-testid="stSidebar"] { background: radial-gradient(circle at top, #020617, #010409); border-right: 1px solid rgba(148, 163, 184, 0.18); }
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] { background: radial-gradient(circle at top, #020617, #010409) !important; border-right: 1px solid rgba(148, 163, 184, 0.18) !important; }
+    .stApp :is(p, span, label, li, summary, .stMarkdown, [data-testid="stWidgetLabel"]) { color: #c0c0d0 !important; }
+    .stApp :is(h1, h2, h3, h4, h5, h6) { color: #e8e8f0 !important; }
+    [data-testid="stSidebar"] :is(p, span, label, li, summary, .stMarkdown) { color: #b0b0c0 !important; }
+    .stButton button[kind="primary"], .stButton button[kind="primary"] * { color: #ffffff !important; }
+    .stButton button:not([kind="primary"]), .stButton button:not([kind="primary"]) * { color: #e2e8f0 !important; }
     div[data-testid="stMetric"] { background: linear-gradient(180deg, rgba(30,41,59,0.9) 0%, rgba(15,23,42,0.9) 100%); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 12px; }
     div[data-testid="stMetric"]:hover { box-shadow: 0 20px 40px -30px rgba(129, 140, 248, 0.9); }
     .main-header { background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 55%, #c084fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
@@ -845,6 +864,8 @@ def salvar_config():
         "seq_periodo_fim": st.session_state.get("seq_periodo_fim", ""),
         "seq_n_aulas": st.session_state.get("seq_n_aulas", 4),
         "seq_drive_links": st.session_state.get("seq_drive_links", []),
+        "portal_selecionado": st.session_state.get("portal_selecionado", "SGE"),
+        "dark_mode": bool(st.session_state.get("dark_mode", False)),
     }
     for key in _SENSITIVE_CONFIG_KEYS:
         value = config.get(key, "")
@@ -862,6 +883,33 @@ def salvar_config():
         pass
     st.session_state.config_path = str(config_path)
     return str(config_path)
+
+
+def _auto_salvar_prefs():
+    """Persiste preferencias de UI (tema, portal, filtros) sem exigir clique.
+
+    Roda como on_change dos widgets: le o valor direto das chaves dos widgets
+    porque as chaves "de trabalho" (escola, turma, ...) so sao atualizadas
+    depois, no corpo do script.
+    """
+    _pares = {
+        "escola": ("escola_opcoes", "escola_input"),
+        "turma": ("turma_opcoes", "turma_input"),
+        "turno": ("turno_select",),
+        "trimestre": ("trimestre_select",),
+        "fonte": ("fonte_select",),
+        "portal_selecionado": ("portal_selecionar",),
+        "dark_mode": ("dark_check",),
+    }
+    for destino, origens in _pares.items():
+        for origem in origens:
+            if origem in st.session_state:
+                st.session_state[destino] = st.session_state[origem]
+                break
+    try:
+        salvar_config()
+    except Exception:  # noqa: BLE001 - preferencia nao pode derrubar o painel
+        pass
 
 
 def _desproteger_config(config: dict) -> dict:
@@ -1162,6 +1210,7 @@ with st.sidebar:
             options=portal_options,
             index=portal_index,
             key="portal_selecionar",
+            on_change=_auto_salvar_prefs,
             help="SGE ou Professor Online: bot já conhece o acesso. Portais aprendidos: a IA local já aprendeu o acesso. Novo Portal: a IA local aprende o acesso na primeira vez. Auto: detecta o portal pela escola filtrada."
         )
         st.session_state.portal_selecionado = portal_selecionado
@@ -1292,20 +1341,22 @@ with st.sidebar:
             "3) Abra a página do seu boletim no Notion, clique nos '...' > 'Conexões' > adicione sua integração; "
             "4) O **ID da página** são os 32 caracteres no final da URL da página."
         )
-        notion_token = st.text_input(
-            "Chave do Notion (começa com secret_)",
-            value=st.session_state.get("notion_token", ""),
-            key="notion_token_input",
-            type="password",
-        )
-        st.session_state.notion_token = notion_token
-
-        root_page_id = st.text_input(
-            "ID da página raiz (32 caracteres)",
-            value=st.session_state.get("root_page_id", ""),
-            key="root_page_id_input",
-        )
-        st.session_state.root_page_id = root_page_id
+        with st.form("form_notion_keys", border=False):
+            notion_token = st.text_input(
+                "Chave do Notion (começa com secret_)",
+                value=st.session_state.get("notion_token", ""),
+                key="notion_token_input",
+                type="password",
+            )
+            root_page_id = st.text_input(
+                "ID da página raiz (32 caracteres)",
+                value=st.session_state.get("root_page_id", ""),
+                key="root_page_id_input",
+            )
+            if st.form_submit_button("Aplicar chaves", use_container_width=True):
+                st.session_state.notion_token = notion_token.strip()
+                st.session_state.root_page_id = root_page_id.strip()
+                st.success("Chaves do Notion aplicadas.")
 
     st.markdown("---")
     ai_provider_options = ["local", "gemini", "openai", "anthropic"]
@@ -1437,6 +1488,7 @@ with st.sidebar:
             }.get(x, x),
             index=0,
             key="fonte_select",
+            on_change=_auto_salvar_prefs,
         )
         st.session_state.fonte = fonte
 
@@ -1683,6 +1735,7 @@ with st.sidebar:
                     "Escola",
                     options=[""] + _escolas_disp,
                     key="escola_opcoes",
+                    on_change=_auto_salvar_prefs,
                     help="Opções vindas da tabela do painel.",
                 )
                 st.session_state["escola_input"] = escola
@@ -1690,6 +1743,7 @@ with st.sidebar:
                 escola = st.text_input(
                     "Escola",
                     key="escola_input",
+                    on_change=_auto_salvar_prefs,
                     placeholder="vazio = todas as escolas",
                 )
             st.session_state.escola = escola
@@ -1699,6 +1753,7 @@ with st.sidebar:
                     "Turma",
                     options=[""] + _turmas_disp,
                     key="turma_opcoes",
+                    on_change=_auto_salvar_prefs,
                     help="Opções vindas da tabela do painel.",
                 )
                 st.session_state["turma_input"] = turma
@@ -1706,13 +1761,14 @@ with st.sidebar:
                 turma = st.text_input(
                     "Turma (ex: 6o Ano)",
                     key="turma_input",
+                    on_change=_auto_salvar_prefs,
                     placeholder="vazio = todas as turmas",
                 )
             st.session_state.turma = turma
         with col_f2:
-            turno = st.selectbox("Turno", options=["", "Matutino", "Vespertino", "Noturno"], key="turno_select")
+            turno = st.selectbox("Turno", options=["", "Matutino", "Vespertino", "Noturno"], key="turno_select", on_change=_auto_salvar_prefs)
             st.session_state.turno = turno
-            trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select")
+            trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select", on_change=_auto_salvar_prefs)
             st.session_state.trimestre = trimestre
 
         # Com a tabela do painel carregada, Turno/Trimestre selecionados nos
@@ -2121,7 +2177,7 @@ with st.sidebar:
 
     with st.expander("Modo escuro"):
         st.markdown("Alterna entre tema claro e escuro da interface.")
-        dark_mode = st.checkbox("Usar tema escuro", value=st.session_state.dark_mode, key="dark_check")
+        dark_mode = st.checkbox("Usar tema escuro", value=st.session_state.dark_mode, key="dark_check", on_change=_auto_salvar_prefs)
         st.session_state.dark_mode = dark_mode
     salvar = st.button("Salvar Configuração")
 
@@ -2141,6 +2197,8 @@ with st.sidebar:
 # === TEMA DINAMICO ===
 if st.session_state.get("dark_mode", False):
     st.markdown(_DARK_THEME_CSS, unsafe_allow_html=True)
+else:
+    st.markdown(_LIGHT_CSS, unsafe_allow_html=True)
 
 # === ÁREA PRINCIPAL ===
 st.markdown('<div class="main-header">Bot do Professor - Automação de Notas</div>', unsafe_allow_html=True)

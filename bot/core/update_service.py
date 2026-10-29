@@ -60,8 +60,8 @@ def parse_version(version: str):
     return tuple(parts) or (0,)
 
 
-def _read_remote_version() -> str:
-    """Le o version.json publicado no bucket. Retorna '' se nao existir."""
+def _read_remote_manifest() -> dict:
+    """Le o version.json publicado no bucket. Retorna {} se nao existir."""
     client = _get_client()
     resp = client.get_object(
         Bucket=os.environ["STORAGE_BUCKET"],
@@ -70,7 +70,23 @@ def _read_remote_version() -> str:
     body = resp.get("Body")
     raw = body.read().decode("utf-8", errors="replace") if body else ""
     data = json.loads(raw)
-    return str(data.get("version", "") or "").strip()
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _object_sha256() -> str:
+    """SHA-256 publicado nos metadados do .exe (fallback de manifestos antigos)."""
+    try:
+        client = _get_client()
+        head = client.head_object(
+            Bucket=os.environ["STORAGE_BUCKET"],
+            Key=os.environ.get("STORAGE_OBJECT", "BotDoProfessor.exe"),
+        )
+        meta = head.get("Metadata") or {}
+        return str(meta.get("sha256", "") or "").strip().lower()
+    except Exception:  # pragma: no cover - depende de rede/credenciais
+        return ""
 
 
 def check_update(license_key: str, current_version: str):
@@ -78,7 +94,7 @@ def check_update(license_key: str, current_version: str):
 
     Retorna (result, error). Se `error` nao for None, nao ha decisao.
     `result` tem o formato:
-      {"update": bool, "version": str, "download_url": str|None}
+      {"update": bool, "version": str, "download_url": str|None, "sha256": str}
     """
     if not license_key:
         return None, "Chave de licenca ausente. Acesse o link enviado por email."
@@ -91,18 +107,21 @@ def check_update(license_key: str, current_version: str):
         return None, result.get("error", "Licenca invalida ou expirada.")
 
     try:
-        remote_version = _read_remote_version()
+        manifest = _read_remote_manifest()
     except Exception as e:  # pragma: no cover - depende de rede/credenciais
         return None, f"Erro ao ler a versao publicada: {e}"
 
+    remote_version = str(manifest.get("version", "") or "").strip()
     if not remote_version:
-        return {"update": False, "version": "", "download_url": None}, None
+        return {"update": False, "version": "", "download_url": None, "sha256": ""}, None
 
     local = parse_version(current_version)
     remote = parse_version(remote_version)
 
     if remote <= local:
-        return {"update": False, "version": remote_version, "download_url": None}, None
+        return {"update": False, "version": remote_version, "download_url": None, "sha256": ""}, None
+
+    sha256 = str(manifest.get("sha256", "") or "").strip().lower() or _object_sha256()
 
     try:
         ttl = int(os.environ.get("DOWNLOAD_URL_TTL", "600"))
@@ -123,4 +142,4 @@ def check_update(license_key: str, current_version: str):
     except Exception as e:  # pragma: no cover - depende de rede/credenciais
         return None, f"Erro ao preparar o download: {e}"
 
-    return {"update": True, "version": remote_version, "download_url": url}, None
+    return {"update": True, "version": remote_version, "download_url": url, "sha256": sha256}, None

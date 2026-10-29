@@ -1,16 +1,17 @@
-"""Envia o binario atual (dist/BotDoProfessor.exe) para o bucket R2 privado.
+﻿"""Envia o binario atual (dist/BotDoProfessor.exe) para o bucket R2 privado.
 
 Uso:
   python upload_binario.py [caminho_do_exe]
 
-Alem do .exe, publica um version.json com a versao de VERSION.txt. O launcher
-(ver launcher.py) consulta /api/check-update, que ler esse arquivo para saber
-se existe versao mais nova.
+Alem do .exe, publica um version.json com a versao de VERSION.txt e o SHA-256
+do binario. O launcher (ver launcher.py) consulta /api/check-update, que le
+esse arquivo para saber se existe versao mais nova e valida o download.
 
 Pre-requisito: variaveis de ambiente STORAGE_* configuradas no .env
 (ver .env.example). Depois que o .exe estiver no bucket, o download so
 e liberado via /api/download com chave de licenca valida.
 """
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +30,14 @@ def _local_version() -> str:
     return "0.0.0"
 
 
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "dist/BotDoProfessor.exe"
 
@@ -45,6 +54,8 @@ def main():
     obj = os.environ.get("STORAGE_OBJECT", "BotDoProfessor.exe")
     version_obj = os.environ.get("STORAGE_VERSION_OBJECT", "version.json")
     version = _local_version()
+    sha256 = _sha256(path)
+    print(f"SHA-256: {sha256}")
 
     import boto3
 
@@ -57,12 +68,22 @@ def main():
     )
 
     print(f"Enviando {path} -> s3://{os.environ['STORAGE_BUCKET']}/{obj} ...")
-    client.upload_file(path, os.environ["STORAGE_BUCKET"], obj, ExtraArgs={"ContentType": "application/x-msdownload"})
+    client.upload_file(
+        path,
+        os.environ["STORAGE_BUCKET"],
+        obj,
+        ExtraArgs={
+            "ContentType": "application/x-msdownload",
+            "Metadata": {"sha256": sha256, "version": version},
+        },
+    )
     size = os.path.getsize(path)
     print(f"Upload concluido: {size} bytes")
 
     version_body = json.dumps({
         "version": version,
+        "sha256": sha256,
+        "size": size,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
     client.put_object(

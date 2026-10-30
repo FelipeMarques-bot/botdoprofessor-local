@@ -1,4 +1,4 @@
-name: Publicar BotDoProfessor (Build + R2 + Release)
+name: Publicar BotDoProfessor (Build one-dir + NSIS + R2 + Release)
 
 on:
   workflow_dispatch:
@@ -21,6 +21,8 @@ on:
       - "launcher.py"
       - "app.py"
       - "requirements*.txt"
+      - "BotDoProfessor.spec"
+      - "installer.nsi"
       - "VERSION.txt"
 
 permissions:
@@ -72,48 +74,44 @@ jobs:
 
           print(f"Versao: {current} -> {new_ver}")
 
-      - name: Gerar .exe (PyInstaller)
-        run: |
-          python -m PyInstaller `
-            --onefile `
-            --name "BotDoProfessor" `
-            --noconfirm `
-            --clean `
-            --add-data "painel.py;." `
-            --add-data "autofix.py;." `
-            --add-data "lancar_notas_sge.py;." `
-            --add-data "lancar_professor_online.py;." `
-            --add-data "aprender_novo_portal.py;." `
-            --add-data "lancar_sequencia_didatica_sge.py;." `
-            --add-data "leitor_planilhas.py;." `
-            --add-data "ai_assist.py;." `
-            --add-data "status_store.py;." `
-            --add-data "lancar_chamada_sge.py;." `
-            --add-data "interpretar_pedido.py;." `
-            --add-data "bot;bot" `
-            --add-data "docs;docs" `
-            --add-data ".env.example;." `
-            --add-data "VERSION.txt;." `
-            --hidden-import "streamlit" `
-            --hidden-import "playwright" `
-            --hidden-import "playwright.sync_api" `
-            --hidden-import "openpyxl" `
-            --hidden-import "pandas" `
-            --hidden-import "google.genai" `
-            --hidden-import "openai" `
-            --hidden-import "anthropic" `
-            --hidden-import "requests" `
-            --hidden-import "dotenv" `
-            launcher.py
+      - name: Gerar app one-dir (PyInstaller via spec)
+        run: python -m PyInstaller --noconfirm --clean BotDoProfessor.spec
 
-      - name: Verificar .exe
+      - name: Verificar app
         shell: bash
         run: |
-          if [ ! -f dist/BotDoProfessor.exe ]; then
-            echo "ERRO: .exe nao gerado"
+          if [ ! -f dist/BotDoProfessor/BotDoProfessor.exe ]; then
+            echo "ERRO: exe one-dir nao gerado"
             exit 1
           fi
-          echo "Tamanho: $(wc -c < dist/BotDoProfessor.exe) bytes"
+          echo "Tamanho: $(wc -c < dist/BotDoProfessor/BotDoProfessor.exe) bytes"
+
+      - name: Sincronizar versao do instalador
+        shell: bash
+        run: |
+          sed -i "s/!define APP_VERSION \"[^\"]*\"/!define APP_VERSION \"${{ steps.version.outputs.new }}\"/" installer.nsi
+          grep "APP_VERSION" installer.nsi
+
+      - name: Instalar NSIS
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+          if (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
+            echo "NSIS instalado"
+          } else {
+            echo "ERRO: makensis nao encontrado apos instalacao"
+            exit 1
+          }
+
+      - name: Gerar instalador NSIS
+        run: |
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+          if (-not (Test-Path "dist\BotDoProfessor-Setup-v${{ steps.version.outputs.new }}.exe")) {
+            echo "ERRO: Setup nao gerado"
+            exit 1
+          }
+          echo "Setup gerado"
 
       - name: Validar secrets de storage
         shell: bash
@@ -149,7 +147,7 @@ jobs:
           fi
           echo "Secrets de storage OK (${STORAGE_ENDPOINT:0:30}...)"
 
-      - name: Enviar ao Cloudflare R2
+      - name: Enviar instalador ao Cloudflare R2
         env:
           STORAGE_ENDPOINT: ${{ secrets.STORAGE_ENDPOINT }}
           STORAGE_ACCESS_KEY: ${{ secrets.STORAGE_ACCESS_KEY }}
@@ -158,14 +156,14 @@ jobs:
           STORAGE_OBJECT: ${{ secrets.STORAGE_OBJECT || 'BotDoProfessor.exe' }}
           STORAGE_VERSION_OBJECT: ${{ secrets.STORAGE_VERSION_OBJECT || 'version.json' }}
           STORAGE_REGION: ${{ secrets.STORAGE_REGION || 'auto' }}
-        run: python upload_binario.py
+        run: python upload_binario.py "dist\BotDoProfessor-Setup-v${{ steps.version.outputs.new }}.exe"
 
       - name: Commit versao no repositorio
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION.txt
+          git add VERSION.txt installer.nsi
           if ! git diff --cached --quiet; then
             git commit -m "chore: bump version to ${{ steps.version.outputs.new }} [skip ci]"
             git push
@@ -182,11 +180,11 @@ jobs:
           body: |
             ## v${{ steps.version.outputs.new }}
 
-            **Download:** O `.exe` é baixado automaticamente pelo launcher na próxima abertura.
+            **Download:** o instalador é baixado automaticamente pelo launcher na próxima abertura.
 
             ### Como atualizar
-            - Clientes com v1.4.41+: atualização automática (launcher baixa na próxima abertura)
-            - Clientes anteriores: baixe o `.exe` manualmente via `/api/download`
-          files: dist/BotDoProfessor.exe
+            - Clientes com v1.4.57+: atualização automática silenciosa (instalador NSIS `/S`)
+            - Clientes anteriores: podem haver prompts de confirmação na primeira transição
+          files: dist/BotDoProfessor-Setup-v${{ steps.version.outputs.new }}.exe
           draft: false
           prerelease: false

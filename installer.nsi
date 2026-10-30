@@ -2,12 +2,14 @@
 ; Anti-virus friendly: NSIS e reconhecido por todos os grandes AVs
 ; Gera: BotDoProfessor-Setup-vX.X.exe
 
+Unicode true
+
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 
 ; === CONFIGURACOES ===
 !define APP_NAME "BotDoProfessor"
-!define APP_VERSION "1.4.57"
+!define APP_VERSION "1.4.59"
 !define APP_PUBLISHER "BotDoProfessor"
 !define APP_URL "https://github.com/FelipeMarques-bot/botdoprofessor-local"
 !define INSTALL_DIR "$LOCALAPPDATA\BotDoProfessor"
@@ -16,15 +18,15 @@ Name "${APP_NAME} v${APP_VERSION}"
 OutFile "dist\BotDoProfessor-Setup-v${APP_VERSION}.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKCU "Software\${APP_NAME}" "InstallDir"
-RequestExecutionLevel admin
+RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 ; === INTERFACE ===
 ;!define MUI_ICON "icon.ico"
 ;!define MUI_UNICON "icon.ico"
 !define MUI_ABORTWARNING
-!define MUI_WELCOMEPAGE_TITLE "BotDoProfessor - Instalacao"
-!define MUI_WELCOMEPAGE_TEXT "Este assistente vai instalar o BotDoProfessor no seu computador.$\n$\nO programa automatiza o lancamento de notas no portal do professor.$\n$\nClique Avancar para continuar."
+!define MUI_WELCOMEPAGE_TITLE "BotDoProfessor — Instalação"
+!define MUI_WELCOMEPAGE_TEXT "Este assistente vai instalar o BotDoProfessor no seu computador.$\n$\nO programa automatiza o lançamento de notas no portal do professor.$\n$\nClique em Avançar para continuar."
 
 ; === PAGINAS ===
 !insertmacro MUI_PAGE_WELCOME

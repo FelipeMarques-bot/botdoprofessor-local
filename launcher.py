@@ -255,7 +255,7 @@ def download_portable_python(splash):
         log("Python portavel ja existe")
         return True
 
-    splash.update("Baixando Python...", "Arquivo de ~11MB, rapido na primeira vez")
+    splash.update("Baixando Python...", "Arquivo de ~11MB, rápido na primeira vez")
     zip_path = os.path.join(tempfile.gettempdir(), f"python-{PYTHON_VERSION}-embed.zip")
     try:
         urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
@@ -603,7 +603,7 @@ def _save_license_cache(key, plan, expires_at):
 def _show_license_dialog():
     import tkinter as tk
     root = tk.Tk()
-    root.title("BotDoProfessor — Ativar Licenca")
+    root.title("BotDoProfessor — Ativar Licença")
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     w, h = 540, 430
@@ -616,10 +616,10 @@ def _show_license_dialog():
     tk.Label(root, text="BotDoProfessor",
              font=("Segoe UI", 18, "bold"), fg="white", bg=bg
              ).pack(pady=(25, 2))
-    tk.Label(root, text="Ative sua licenca para continuar",
+    tk.Label(root, text="Ative sua licença para continuar",
              font=("Segoe UI", 10), fg="#94a3b8", bg=bg
              ).pack()
-    tk.Label(root, text="Chave de licenca:",
+    tk.Label(root, text="Chave de licença:",
              font=("Segoe UI", 10, "bold"), fg="white", bg=bg
              ).pack(pady=(20, 5))
     key_var = tk.StringVar()
@@ -635,7 +635,7 @@ def _show_license_dialog():
     def validate():
         key = key_var.get().strip().upper()
         if not key:
-            error_var.set("Digite a chave de licenca")
+            error_var.set("Digite a chave de licença")
             return
         error_var.set("Validando...")
         root.update()
@@ -645,7 +645,7 @@ def _show_license_dialog():
             _save_license_cache(key, data.get("plan", ""), data.get("expires_at", ""))
             root.destroy()
         else:
-            error_var.set(data.get("error", "Chave invalida ou expirada"))
+            error_var.set(data.get("error", "Chave inválida ou expirada"))
 
     def buy():
         import webbrowser
@@ -771,7 +771,7 @@ def _check_server_update(license_key, local_version):
 
 def _download_update(splash, url, version, expected_sha256):
     """Baixa o novo exe e so o aceita se o SHA-256 bater com o manifesto."""
-    splash.update("Atualizando, aguarde um momento!", f"Baixando nova versao v{version}...")
+    splash.update("Atualizando, aguarde um momento!", f"Baixando nova versão v{version}...")
     splash.set_progress(0.02)
     tmp = NEW_EXE_FILE.with_suffix(".part")
     expected = (expected_sha256 or "").strip().lower()
@@ -795,7 +795,7 @@ def _download_update(splash, url, version, expected_sha256):
                     downloaded += len(chunk)
                     if total:
                         splash.set_progress(0.02 + 0.88 * (downloaded / total))
-                    splash.update("Atualizando, aguarde um momento!", f"Baixando nova versao v{version}...")
+                    splash.update("Atualizando, aguarde um momento!", f"Baixando nova versão v{version}...")
         if not tmp.exists() or tmp.stat().st_size == 0:
             raise ValueError("Download vazio")
 
@@ -1016,7 +1016,7 @@ def _try_supervised_swap(splash):
         )
         log("Swap: relancando nova versao")
 
-        splash.update("Atualizando, aguarde um momento!", "Reabrindo com a nova versao...")
+        splash.update("Atualizando, aguarde um momento!", "Reabrindo com a nova versão...")
         deadline = time.time() + 60
         while time.time() < deadline:
             time.sleep(3)
@@ -1069,11 +1069,11 @@ def maybe_apply_update(splash, license_key):
 
     if _payload_is_nsis_installer(NEW_EXE_FILE):
         log("Payload e instalador NSIS — instalando silenciosamente")
-        splash.update("Atualizando, aguarde um momento!", "Instalando a nova versao...")
+        splash.update("Atualizando, aguarde um momento!", "Instalando a nova versão...")
         splash.set_progress(0.95)
         if _launch_installer_update(splash):
             log("Instalador disparado — encerrando versao atual")
-            splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
+            splash.update("Atualizando, aguarde um momento!", "O programa será reaberto sozinho")
             time.sleep(1.0)
             try:
                 splash.close()
@@ -1083,11 +1083,11 @@ def maybe_apply_update(splash, license_key):
         log("Nao foi possivel instalar — usando versao atual")
         return True
 
-    splash.update("Atualizando, aguarde um momento!", "Finalizando instalacao...")
+    splash.update("Atualizando, aguarde um momento!", "Finalizando instalação...")
     splash.set_progress(0.95)
     if _try_supervised_swap(splash):
         log("Swap supervisorado concluido — encerrando versao atual")
-        splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
+        splash.update("Atualizando, aguarde um momento!", "O programa será reaberto sozinho")
         time.sleep(1.0)
         try:
             splash.close()
@@ -1096,7 +1096,7 @@ def maybe_apply_update(splash, license_key):
         sys.exit(0)
     if _launch_updater(splash):
         log("Atualizador disparado — encerrando versao atual")
-        splash.update("Atualizando, aguarde um momento!", "O programa sera reaberto sozinho")
+        splash.update("Atualizando, aguarde um momento!", "O programa será reaberto sozinho")
         time.sleep(1.0)
         try:
             splash.close()
@@ -1174,9 +1174,9 @@ def main():
             splash.close()
             show_error_box(
                 "BotDoProfessor",
-                "Nao foi possivel encontrar ou baixar Python.\n\n"
+                "Não foi possível encontrar ou baixar Python.\n\n"
                 "Instale o Python: https://www.python.org/downloads/\n"
-                "Marque 'Add Python to PATH' durante a instalacao."
+                "Marque 'Add Python to PATH' durante a instalação."
             )
             sys.exit(1)
 
@@ -1262,7 +1262,7 @@ def main():
         if need_rebuild:
             _force_delete_venv()
             log("Criando venv novo...")
-            splash.update("Configurando ambiente...", "Criando virtual environment (1/4)")
+            splash.update("Configurando ambiente...", "Criando ambiente virtual (1/4)")
             splash.set_progress(0.1)
             if not create_venv(python):
                 splash.close()
@@ -1274,21 +1274,21 @@ def main():
                 _force_delete_venv()
                 if not create_venv(python):
                     splash.close()
-                    show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual (2a tentativa).")
+                    show_error_box("BotDoProfessor", "Falha ao criar ambiente virtual (2ª tentativa).")
                     sys.exit(1)
 
-            splash.update("Preparando instalacao...", "Limpando cache de pacotes")
+            splash.update("Preparando instalação...", "Limpando cache de pacotes")
             splash.set_progress(0.15)
             clear_pip_cache(VENV_PIP)
 
-            splash.update("Instalando dependencias...", "Baixando pacotes necessarios (2/4)")
+            splash.update("Instalando dependências...", "Baixando pacotes necessários (2/4)")
             splash.set_progress(0.2)
             if not install_requirements(VENV_PIP):
                 splash.close()
-                show_error_box("BotDoProfessor", "Falha ao instalar dependencias.\nVerifique sua conexao com a internet.")
+                show_error_box("BotDoProfessor", "Falha ao instalar dependências.\nVerifique sua conexão com a internet.")
                 sys.exit(1)
 
-            splash.update("Verificando instalacao...", "Testando pacotes instalados")
+            splash.update("Verificando instalação...", "Testando pacotes instalados")
             splash.set_progress(0.35)
             install_ok = subprocess.run(
                 [str(VENV_PYTHON), "-c",
@@ -1308,11 +1308,11 @@ def main():
                     sys.exit(1)
                 log("Reinstalacao concluida")
 
-            splash.update("Instalando navegador...", "Chromium para automacao (3/4)")
+            splash.update("Instalando navegador...", "Chromium para automação (3/4)")
             splash.set_progress(0.6)
             install_playwright_chromium(str(VENV_PYTHON))
 
-            splash.update("Configurando IA local...", "Ollama + modelo de visao (4/4)")
+            splash.update("Configurando IA local...", "Ollama + modelo de visão (4/4)")
             splash.set_progress(0.8)
             threading.Thread(target=setup_ollama_background, daemon=True).start()
 
@@ -1325,7 +1325,7 @@ def main():
         painel_path = get_painel_path()
         if not painel_path:
             splash.close()
-            show_error_box("BotDoProfessor", "Arquivo do painel nao encontrado.")
+            show_error_box("BotDoProfessor", "Arquivo do painel não encontrado.")
             sys.exit(1)
 
         if not VENV_PYTHON.exists():
@@ -1353,10 +1353,10 @@ def main():
             splash.close()
             show_error_box(
                 "BotDoProfessor",
-                f"Ambiente Python corrompido: Python 3.11 e 3.12 estao em conflito.\n\n"
-                f"Remova da variavel PATH do Windows qualquer pasta contendo 'Python311'\n"
+                f"Ambiente Python corrompido: Python 3.11 e 3.12 estão em conflito.\n\n"
+                f"Remova da variável PATH do Windows qualquer pasta contendo 'Python311'\n"
                 f"e deixe apenas a pasta Python312.\n\n"
-                f"Apos corrigir, delete a pasta {VENV_DIR}\ne execute o programa novamente."
+                f"Após corrigir, delete a pasta {VENV_DIR}\ne execute o programa novamente."
             )
             sys.exit(1)
 
@@ -1402,7 +1402,7 @@ def main():
             creationflags=NO_WINDOW,
         )
 
-        splash.update("Aguardando painel...", "Verificando se o servidor esta pronto")
+        splash.update("Aguardando painel...", "Verificando se o servidor está pronto")
         splash.set_progress(0.95)
 
         ok, err_msg = wait_for_streamlit(proc, port, timeout=90, splash=splash)
@@ -1417,7 +1417,7 @@ def main():
             splash.close()
             show_error_box(
                 "BotDoProfessor",
-                f"O painel nao abriu.\n\n"
+                f"O painel não abriu.\n\n"
                 f"Detalhes: {err_msg}\n\n"
                 f"Log completo: {LOG_FILE}\n\n"
                 f"Tente abrir manualmente: http://localhost:{port}"

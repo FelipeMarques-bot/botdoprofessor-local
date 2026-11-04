@@ -2169,16 +2169,35 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
             _log(logger, f"[FILTRO] Descartado por '{key}': esperado='{expected}' (norm='{expected_norm}'), valor='{value}' (norm='{value_norm}')")
         return result
 
-    resultado = [
-        r
-        for r in registros
-        if match(r.escola, "escola")
-        and match(r.turno, "turno")
-        and match(r.turma, "turma")
-        and match(r.trimestre, "trimestre")
-        and match(r.atividade, "atividade")
-        and match_date(r.data_realizacao, "data_realizacao")
-    ]
+    resultado = []
+    descartes: Counter = Counter()
+    for r in registros:
+        if not match(r.escola, "escola"):
+            descartes["escola"] += 1
+            continue
+        if not match(r.turno, "turno"):
+            descartes["turno"] += 1
+            continue
+        if not match(r.turma, "turma"):
+            descartes["turma"] += 1
+            continue
+        if not match(r.trimestre, "trimestre"):
+            descartes["trimestre"] += 1
+            continue
+        if not match(r.atividade, "atividade"):
+            descartes["atividade"] += 1
+            continue
+        if not match_date(r.data_realizacao, "data_realizacao"):
+            descartes["data_realizacao"] += 1
+            continue
+        resultado.append(r)
+    if descartes:
+        resumo = ", ".join(f"{n} por '{k}'" for k, n in descartes.most_common())
+        _log(
+            logger,
+            f"[FILTRO] {len(registros) - len(resultado)} registro(s) descartado(s): {resumo}. "
+            f"Isso e esperado quando o filtro pede so o dia da atividade: os registros de outras datas/turmas ficam de fora."
+        )
     _log(logger, f"[FILTRO] Registros apos filtro: {len(resultado)}")
     return resultado
 
@@ -3032,7 +3051,7 @@ def _login_sge(page, cpf: str, senha: str, logger: Optional[LogFn]) -> None:
     if not senha:
         raise LancamentoError("Senha do portal vazia. Informe a senha na barra lateral.")
     if _looks_like_placeholder_senha(senha):
-        _log(logger, "AVISO: a senha parece ser de teste/placeholder. Confirme se e a senha REAL do portal (www.sge8147.com.br).")
+        _log(logger, "AVISO (dica, ignora se for a senha real da escola): a senha usada e uma das senhas simples comuns de teste (ex.: 123456). Se a senha do portal e mesmo essa, pode seguir.")
 
     max_attempts = 4
     last_exception = None
@@ -3482,8 +3501,10 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
     if not turma_num and re.search(r"\d", contexto.turma or ""):
         _log(
             logger,
-            f"[CONTEXTO] AVISO: numero da turma nao identificado em '{contexto.turma}'; "
-            "a primeira turma do turno/trimestre pode ser aberta.",
+            f"[CONTEXTO] AVISO: numero da turma nao identificado em '{contexto.turma}'. "
+            "Existe mais de uma turma com o mesmo ano/turno? Informe o numero: "
+            "'6º Ano|1', 'Turma 1', '6º1' ou '6º Ano 1'. Enquanto isso, a tela mostra "
+            "qual turma abriu no log 'Avaliacao aberta ...' — confira se a Turma e a que voce quer.",
         )
 
     if _attempt_open_assessment(page, turma_num, trimestre_num, turno_norm, logger):
@@ -3614,12 +3635,17 @@ def _extract_date_from_gridagenda_row(page, matched_element) -> str:
 
 
 def _normalize_sge_date(raw: str) -> str:
-    """Normaliza data do SGE (DD/MM/AA ou DD/MM/AAAA) para DD/MM/AAAA."""
+    """Normaliza data do SGE (DD/MM/AA, DD/MM ou DD/MM/AAAA) para DD/MM/AAAA."""
     raw = (raw or "").strip()
     if not raw or raw.startswith("-"):
         return ""
     m = re.match(r"(\d{2})/(\d{2})/(\d{2,4})", raw)
     if not m:
+        # Data curta da tela (dd/mm): completa com o ano corrente, pois
+        # _data_linha_confere compara dia/mes de forma segura.
+        m_curta = re.match(r"^(\d{2})/(\d{2})$", raw)
+        if m_curta:
+            return f"{m_curta.group(1)}/{m_curta.group(2)}/{datetime.now().year}"
         return ""
     dia, mes, ano = m.group(1), m.group(2), m.group(3)
     if len(ano) == 2:
@@ -3782,6 +3808,36 @@ def _grade_entry_indicators_visible(page) -> bool:
         except Exception:  # noqa: BLE001
             continue
     return False
+
+
+def _ler_data_sge_da_grade(page) -> str:
+    """Le a data da atividade aberta no SGE (grade de lancamento).
+
+    Fontes: input hidden _AVALIACAOPROFDT e spans visiveis com a data, em
+    qualquer frame. Vazio = nao foi possivel ler (cruzamento da GRIDAGENDA
+    cobre o caso).
+    """
+    for scope in _iter_scopes(page):
+        try:
+            dt_input = scope.locator("input[name='_AVALIACAOPROFDT']")
+            if dt_input.count() > 0:
+                val = _normalize_sge_date(dt_input.first.input_value(timeout=500) or "")
+                if val:
+                    return val
+        except Exception:  # noqa: BLE001
+            continue
+    # Fallback: span/td visivel anexado ao rotulo da atividade com data.
+    for scope in _iter_scopes(page):
+        try:
+            span = scope.locator("#span__AVALIACAO")
+            if span.count() > 0:
+                texto = (span.first.inner_text(timeout=500) or "")
+                m = re.search(r"\b(\d{2}/\d{2}(?:/\d{4})?)\b", texto)
+                if m:
+                    return _normalize_sge_date(m.group(1))
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
 
 
 def _select_activity(
@@ -4000,7 +4056,7 @@ def _select_activity(
                 _log(logger, f"[GRID-SCAN] MATCH nome+data: '{aceito['text']}' (pos {aceito['posicao']}, {data_atividade})")
                 posicao = _tentar_clicar_item(aceito)
                 if posicao is not None:
-                    return True, "", posicao
+                    return True, _ler_data_sge_da_grade(page), posicao
             _log(
                 logger,
                 f"[GRID-SCAN] HOMONIMO-CHECK: nenhum candidato '{atividade}' com a data esperada "
@@ -4020,7 +4076,7 @@ def _select_activity(
                 _log(logger, f"[GRID-SCAN] MATCH encontrado: {texto!r}")
                 posicao = _tentar_clicar_item(item)
                 if posicao is not None:
-                    return True, "", posicao
+                    return True, _ler_data_sge_da_grade(page), posicao
 
         # Fallback por POSICAO: quando nenhuma avaliacao da GRIDAGENDA casa com o
         # NOME da atividade, usa a posicao derivada de 'Status lancamento N' do
@@ -4057,13 +4113,13 @@ def _select_activity(
                     _log(logger, f"[GRID-SCAN-POSICAO] Nome '{atividade}' nao casou; usando posicao {posicao_fallback} da GRIDAGENDA ({texto_posicao!r}).")
                     posicao = _tentar_clicar_item(item_posicao)
                     if posicao is not None:
-                        return True, "", posicao
+                        return True, _ler_data_sge_da_grade(page), posicao
 
     # Fallback: tentar clicar no texto da atividade diretamente
     if _click_text_any_scope(page, atividade):
         page.wait_for_timeout(250)
         if _esperar_grade_lancamento():
-            return True, "", 0
+            return True, _ler_data_sge_da_grade(page), 0
 
     if _normalize(atividade) == "avaliacao" and _is_student_grid_visible(page):
         return True, "", 0

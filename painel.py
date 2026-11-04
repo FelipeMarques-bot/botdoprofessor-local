@@ -1605,9 +1605,9 @@ with st.sidebar:
         st.caption("Entre execuções o bot reaproveita o portal já aberto, sem repetir login. Trocou de portal ou de senha? A sessão é renovada automaticamente.")
 
         if (senha or "").strip().lower() in {"123456", "12345678", "12345", "123", "senha", "sua_senha", "teste", "test", "password"}:
-            st.warning(
-                "A senha atual parece ser de **teste/placeholder**. Para o login funcionar, informe "
-                "a senha REAL do portal e o CPF completo (11 digitos, apenas números)."
+            st.info(
+                "A senha usada é uma senha simples comum de teste (ex.: 123456). "
+                "Se essa é mesmo a senha do portal, pode seguir — este aviso é só uma conferência."
             )
 
         if portal_selecionado == "Novo Portal":
@@ -2069,6 +2069,11 @@ with st.sidebar:
                     key="turma_input",
                     on_change=_auto_salvar_prefs,
                     placeholder="vazio = todas as turmas",
+                    help=(
+                        "Existem turmas paralelas (6º Ano - Turma 1 e Turma 2)? "
+                        "Informe o numero: '6º Ano|2', 'Turma 2', '6º2' ou '6º Ano 2' — "
+                        "assim o bot abre a turma certa em vez da primeira do turno."
+                    ),
                 )
             st.session_state.turma = turma
         with col_f2:

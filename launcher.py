@@ -526,7 +526,7 @@ def setup_ollama_background():
     try:
         subprocess.Popen(
             [exe, "serve"],
-            creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
+            creationflags=NO_WINDOW,  # sem DETACHED_PROCESS: nao abre console na tela
         )
     except Exception:
         pass
@@ -926,9 +926,12 @@ def _launch_updater(splash):
         updater_bat.write_text(content, encoding="ascii", errors="replace")
         log(f"Updater criado: {updater_bat}")
         cmd = ["cmd", "/c", str(updater_bat)]
+        # Somente CREATE_NO_WINDOW: combinar DETACHED_PROCESS com
+        # CREATE_NO_WINDOW faz o Windows abrir um console visivel (o 'flash'
+        # de terminal que aparece durante a atualizacao).
         subprocess.Popen(
             cmd,
-            creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
+            creationflags=NO_WINDOW,
             close_fds=True,
         )
         return True
@@ -994,7 +997,7 @@ def _launch_installer_update(splash):
         cmd = ["cmd", "/c", str(installer_bat)]
         subprocess.Popen(
             cmd,
-            creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW,
+            creationflags=NO_WINDOW,  # sozinho: evita console piscando na tela
             close_fds=True,
         )
         return True
@@ -1042,7 +1045,9 @@ def _try_supervised_swap(splash):
         log("Swap: nova versao posicionada no caminho original")
 
         log_size = LOG_FILE.stat().st_size if LOG_FILE.exists() else 0
-        flags = subprocess.DETACHED_PROCESS | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        # Sem DETACHED_PROCESS: junto com NO_WINDOW o Windows abre um console
+        # rapido na tela ao relancar a nova versao apos a atualizacao.
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         subprocess.Popen(
             [current_exe, "--updated"],
             creationflags=flags | NO_WINDOW,

@@ -17,7 +17,7 @@ import time
 import urllib.request
 import urllib.error
 import csv
-from datetime import datetime, timezone
+from datetime import date as _date_cls, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2158,10 +2158,11 @@ with st.sidebar:
                         key="seq_titulo_documento",
                         placeholder="Sequência - Matemática",
                     )
-                    st.text_input(
-                        "Período início (dd/mm/aaaa)",
-                        key="seq_periodo_inicio",
-                        placeholder="01/03/2026",
+                    _date_input_calendario(
+                        "Período início",
+                        "seq_periodo_inicio",
+                        "seq_periodo_inicio_picker",
+                        help_text="Data do primeiro dia do periodo (escolha no calendario).",
                     )
                 with col_g2:
                     st.number_input(
@@ -2169,10 +2170,11 @@ with st.sidebar:
                         min_value=1, max_value=40, value=4,
                         key="seq_n_aulas",
                     )
-                    st.text_input(
-                        "Período fim (dd/mm/aaaa)",
-                        key="seq_periodo_fim",
-                        placeholder="31/03/2026",
+                    _date_input_calendario(
+                        "Período fim",
+                        "seq_periodo_fim",
+                        "seq_periodo_fim_picker",
+                        help_text="Data do ultimo dia do periodo (escolha no calendario).",
                     )
 
         if tipo == "chamada":
@@ -2248,12 +2250,12 @@ with st.sidebar:
                     )
                     st.session_state.avaliacao_nome = avaliacao_nome
                 with col_ia2:
-                    avaliacao_data = st.text_input(
-                        "Data da atividade (dd/mm/aaaa)",
-                        key="avaliacao_data_input",
-                        help="Data de realização para o bot localizar/validar no portal."
+                    st.session_state.avaliacao_data = _date_input_calendario(
+                        "Data da atividade",
+                        "avaliacao_data",
+                        "avaliacao_data_picker",
+                        help_text="Data de realização para o bot localizar/validar no portal (escolha no calendario).",
                     )
-                    st.session_state.avaliacao_data = avaliacao_data
 
                     lista_alunos = st.text_area(
                         "Lista real de alunos da turma (opcional) — um nome por linha",
@@ -2338,12 +2340,12 @@ with st.sidebar:
                     )
                     st.session_state.avaliacao_nome = avaliacao_nome
                 with col_a2:
-                    avaliacao_data = st.text_input(
-                        "Data da avaliação (dd/mm/aaaa)",
-                        key="avaliacao_data_atalho_input",
-                        help="Data de realização para validação. Se vazio, usa a data do Notion."
+                    st.session_state.avaliacao_data = _date_input_calendario(
+                        "Data da avaliação",
+                        "avaliacao_data",
+                        "avaliacao_data_atalho_picker",
+                        help_text="Data de realização para validação. Se vazio, usa a data do Notion (escolha no calendario).",
                     )
-                    st.session_state.avaliacao_data = avaliacao_data
 
             lote = st.checkbox(
                 "Modo Lote: processar todas as escolas, turmas e trimestres",
@@ -2483,6 +2485,36 @@ with st.sidebar:
 
 
 # === TEMA DINAMICO ===
+def _date_input_calendario(label: str, string_key: str, picker_key: str, help_text: str = ""):
+    """date_input com calendario que mantem a string antiga em session_state[string_key].
+
+    Reduz erro de digitacao: o usuario escolhe a data no calendario e o valor
+    persiste como 'dd/mm/aaaa' nas chaves usadas por todo o codigo existente.
+    """
+    raw = (st.session_state.get(string_key) or "").strip()
+    valor_atual = None
+    for _fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            valor_atual = datetime.strptime(raw, _fmt).date()
+            break
+        except ValueError:
+            continue
+
+    sel = st.date_input(
+        label,
+        value=valor_atual,  # None = campo vazio (mesma semantica do text_input)
+        key=picker_key,
+        format="DD/MM/YYYY",
+        help=help_text or None,
+    )
+    if sel is None:
+        st.session_state[string_key] = ""
+    else:
+        try:
+            st.session_state[string_key] = sel.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return st.session_state.get(string_key, "")
 def _aplicar_tema_base_streamlit():
     """Alinha o theme.* do Streamlit com dark_mode a cada rerun.
 
@@ -2710,7 +2742,9 @@ def _confirmar_envio_dialog(resumo: tuple) -> None:
     if _c1.button("Sim, enviar agora", type="primary", use_container_width=True):
         st.session_state.confirmar_envio = True
         st.session_state.executar_agora = True
-        st.session_state.pop("scroll_to_execucao", None)
+        # Volta a secao Execucao visivel apos confirmar (a janela fecha e o
+        # app re-renderiza no topo da pagina; a ancora roda no proximo rerun).
+        st.session_state.scroll_to_execucao = True
         st.rerun()
     if _c2.button("Cancelar, voltar ao Lançamento", use_container_width=True):
         st.session_state.scroll_to_execucao = True

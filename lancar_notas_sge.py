@@ -3646,6 +3646,34 @@ def _dates_match(sge_date: str, notion_date: str) -> bool:
     return sge_dt.date() == notion_dt.date()
 
 
+def _data_linha_confere(row_date: str, data_atividade: str) -> bool:
+    """Cruzamento ESTRITO nome+data na GRIDAGENDA (anti-homonimo).
+
+    Diferente de _dates_match (tolerante: vazia/nao-parseavel = confere), aqui
+    qualquer divergencia DEVE bloquear. A linha pode trazer data curta
+    'dd/mm' (ano da edicao corrente) ou completa 'dd/mm/aaaa'.
+
+    Retorna False quando nao ha como comparar com confianca — homonimo do
+    mes anterior ('21/10' vs '04/11/2026') NUNCA pode passar por 'confere'.
+    """
+    if not row_date or not data_atividade:
+        return False
+    row_txt = row_date.strip()
+    data_dt = _parse_date(data_atividade)
+    if data_dt is None:
+        return False
+
+    match_curta = re.match(r"^(\d{1,2})/(\d{1,2})$", row_txt)
+    if match_curta:
+        dia, mes = int(match_curta.group(1)), int(match_curta.group(2))
+        return (dia, mes) == (data_dt.day, data_dt.month)
+
+    row_dt = _parse_date(row_txt)
+    if row_dt is None:
+        return False
+    return row_dt.date() == data_dt.date()
+
+
 def _activity_match(target: str, link_text: str) -> bool:
     """Verifica se o texto do link corresponde a atividade desejada."""
     t = _normalize(target)
@@ -3944,11 +3972,12 @@ def _select_activity(
         for it in candidatos:
             rd = _data_da_linha(it)
             if data_atividade:
+                confere = _data_linha_confere(rd, data_atividade)
                 _log(
                     logger,
                     f"[GRID-SCAN] Candidato '{it['text']}' (pos {it['posicao']}) "
                     f"data_na_linha={rd or '(indisponivel)'} vs esperada={data_atividade} → "
-                    + ("CONFERE" if (not rd or _dates_match(rd, data_atividade)) else "DIVERGE"),
+                    + ("CONFERE" if confere else "DIVERGE"),
                 )
             else:
                 _log(logger, f"[GRID-SCAN] Candidato '{it['text']}' (pos {it['posicao']}).")
@@ -3964,7 +3993,7 @@ def _select_activity(
                 rd = _data_da_linha(it)
                 if not rd:
                     continue
-                if _dates_match(rd, data_atividade):
+                if _data_linha_confere(rd, data_atividade):
                     aceito = it
                     break
             if aceito is not None:
@@ -4017,7 +4046,7 @@ def _select_activity(
                 elif (
                     data_atividade
                     and (rd := _data_da_linha(item_posicao))
-                    and not _dates_match(rd, data_atividade)
+                    and not _data_linha_confere(rd, data_atividade)
                 ):
                     _log(
                         logger,
@@ -4158,7 +4187,7 @@ def _prescan_pode_pular(contexto: ContextoTurma, atividade: str, data_atividade:
         else:
             continue
         if _activity_match(atividade, nome_t):
-            if not data_t or _dates_match(data_t, data_atividade):
+            if _data_linha_confere(data_t, data_atividade):
                 return int(posicao_t)
             return 0
     return 0

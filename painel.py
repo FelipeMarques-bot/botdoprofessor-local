@@ -2700,17 +2700,37 @@ def _confirmar_envio_dialog(resumo: tuple) -> None:
         if _linha.endswith(": ``") or _linha.endswith(": ''"):
             continue
         st.markdown(f"- {_linha}")
+    _df_envio = st.session_state.get("df")
+    if _df_envio is not None and hasattr(_df_envio, "empty") and not _df_envio.empty:
+        st.markdown("**Dados completos que vão para o portal:**")
+        st.dataframe(_df_envio, use_container_width=True, height=min(340, 48 + 30 * len(_df_envio)), hide_index=True)
+        st.caption(f"Colunas: {', '.join(map(str, _df_envio.columns))} | Linhas: {len(_df_envio)}")
     st.caption("Depois do envio, revise as notas gravadas no portal (aba Pendências e o próprio portal).")
     _c1, _c2 = st.columns(2)
     if _c1.button("Sim, enviar agora", type="primary", use_container_width=True):
         st.session_state.confirmar_envio = True
         st.session_state.executar_agora = True
+        st.session_state.pop("scroll_to_execucao", None)
         st.rerun()
-    if _c2.button("Cancelar", use_container_width=True):
+    if _c2.button("Cancelar, voltar ao Lançamento", use_container_width=True):
+        st.session_state.scroll_to_execucao = True
         st.rerun()
 
 # === EXECUÇÃO (stepper + botao + gate) ===
-st.markdown('<div class="main-header">Execução</div>', unsafe_allow_html=True)
+# Volta o scroll para ca quando a janela de confirmacao/dados e fechada,
+# sem exigir clique fora da janela.
+if st.session_state.pop("scroll_to_execucao", False):
+    try:
+        st.components.v1.html(
+            "<script>"
+            "const alvo = document.getElementById('anc-execucao');"
+            "if (alvo) alvo.scrollIntoView({behavior:'smooth', block:'start'});"
+            "</script>",
+            height=0,
+        )
+    except Exception:
+        pass
+st.markdown('<div class="main-header" id="anc-execucao">Execução</div>', unsafe_allow_html=True)
 
 dry_run = False
 
@@ -2765,7 +2785,22 @@ with col_btn1:
         f"**Turma:** {st.session_state.get('turma', '') or 'todas'}",
         f"**Turno:** {st.session_state.get('turno', '') or 'todos'}",
         f"**Trimestre:** {st.session_state.get('trimestre', '') or 'todos'}",
+        f"**Origem dos dados:** {st.session_state.get('fonte', '') or 'default'}",
+        f"**Tipo de lancamento:** {st.session_state.get('tipo', '') or 'default'}",
     ]
+    if _ativ_nome := (st.session_state.get("avaliacao_nome", "") or "").strip():
+        _resumo_envio.append(f"**Atividade (nome usado):** {_ativ_nome}")
+    if _ativ_data := (st.session_state.get("avaliacao_data", "") or "").strip():
+        _resumo_envio.append(f"**Data da atividade:** {_ativ_data}")
+    if _seq_titulo := (st.session_state.get("seq_titulo_documento", "") or "").strip():
+        _resumo_envio.append(f"**Sequencia - titulo do documento:** {_seq_titulo}")
+    if _seq_inicio := (st.session_state.get("seq_periodo_inicio", "") or "").strip():
+        _resumo_envio.append(
+            f"**Sequencia - periodo doc:** {_seq_inicio} a {st.session_state.get('seq_periodo_fim', '') or '?'}"
+        )
+    _usuario_login = st.session_state.get("sge_cpf", "") or ""
+    if _usuario_login and portal_ativo not in ("Professor Online", "Novo Portal"):
+        _resumo_envio.append(f"**Login portal:** {_usuario_login}")
     _df_atual = st.session_state.get("df")
     if _df_atual is not None and hasattr(_df_atual, "empty") and not _df_atual.empty:
         _resumo_envio.append(f"**Registros na tabela:** {len(_df_atual)}")

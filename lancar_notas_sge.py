@@ -3756,7 +3756,14 @@ def _grade_entry_indicators_visible(page) -> bool:
     return False
 
 
-def _select_activity(page, atividade: str, logger: Optional[LogFn], posicao_fallback: int = 0, outras_atividades: Optional[List[str]] = None) -> Tuple[bool, str, int]:
+def _select_activity(
+    page,
+    atividade: str,
+    logger: Optional[LogFn],
+    posicao_fallback: int = 0,
+    outras_atividades: Optional[List[str]] = None,
+    data_atividade: str = "",
+) -> Tuple[bool, str, int]:
     _log(logger, f"Selecionando avaliacao: {atividade}")
 
     max_grid_retries = 2
@@ -3824,7 +3831,7 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn], posicao_fall
     if agenda_scope is not None:
         agenda = agenda_scope.locator("table#GRIDAGENDA")
     if agenda is not None and agenda.count() > 0:
-        js_elements = agenda.evaluate("""
+        js_result = agenda.evaluate("""
             (table) => {
                 const out = [];
                 let posicao = 0;
@@ -3852,10 +3859,33 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn], posicao_fall
                         out.push({tag: el.tagName.toLowerCase(), text, posicao, rowIdx: el.closest('tr')?.rowIndex ?? -1});
                     }
                 }
-                return out;
+                // Data visivel em cada linha (dd/mm) para cruzar nome + data
+                const rowDates = {};
+                for (const tr of table.querySelectorAll('tr')) {
+                    const txt = (tr.textContent || '').trim();
+                    const m = txt.match(/\\b(\\d{2}\\/\\d{2}(?:\\/\\d{4})?)\\b/);
+                    if (m) {
+                        const r = tr.rowIndex ?? -1;
+                        if (r >= 0) rowDates[r] = m[1];
+                    }
+                }
+                return {elements: out, rowDates};
             }
         """)
+        js_elements = []
+        row_dates: Dict[int, str] = {}
+        if isinstance(js_result, dict):
+            js_elements = list(js_result.get("elements") or [])
+            raw_dates = js_result.get("rowDates") or {}
+            try:
+                row_dates = {int(k): str(v) for k, v in dict(raw_dates).items()}
+            except Exception:  # noqa: BLE001
+                row_dates = {}
+        elif isinstance(js_result, list):
+            js_elements = list(js_result)
         _log(logger, f"[GRID-SCAN] {len(js_elements)} elemento(s) encontrados na GRIDAGENDA via JS.")
+        if row_dates:
+            _log(logger, f"[GRID-SCAN] Datas por linha da GRIDAGENDA: {dict(sorted(row_dates.items())[:12])}")
 
         def _tentar_clicar_item(item) -> Optional[int]:
             """Tenta clicar em um item da GRIDAGENDA (por seletor, JS ou texto).
@@ -3904,6 +3934,54 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn], posicao_fall
             return None
 
         # Matching em Python (rapido, sem chamadas ao DOM)
+        def _data_da_linha(item) -> str:
+            try:
+                return row_dates.get(int(item.get("rowIdx", -1)), "")
+            except Exception:  # noqa: BLE001
+                return ""
+
+        candidatos = [it for it in js_elements if it.get("text") and _activity_match(atividade, it["text"])]
+        for it in candidatos:
+            rd = _data_da_linha(it)
+            if data_atividade:
+                _log(
+                    logger,
+                    f"[GRID-SCAN] Candidato '{it['text']}' (pos {it['posicao']}) "
+                    f"data_na_linha={rd or '(indisponivel)'} vs esperada={data_atividade} → "
+                    + ("CONFERE" if (not rd or _dates_match(rd, data_atividade)) else "DIVERGE"),
+                )
+            else:
+                _log(logger, f"[GRID-SCAN] Candidato '{it['text']}' (pos {it['posicao']}).")
+
+        # Cruzamento nome+data: se existe uma data esperada e a linha mostra uma
+        # data visivel (ex.: mes anterior com mesma descricao), homonimos nao
+        # podem ser usados como match (falso positivo portal). Se a grade nao
+        # mostra datas, mantemos o match por nome (comportamento antigo).
+        datas_reveladas = [rd for it in candidatos if (rd := _data_da_linha(it))]
+        if data_atividade and datas_reveladas:
+            aceito = None
+            for it in candidatos:
+                rd = _data_da_linha(it)
+                if not rd:
+                    continue
+                if _dates_match(rd, data_atividade):
+                    aceito = it
+                    break
+            if aceito is not None:
+                _log(logger, f"[GRID-SCAN] MATCH nome+data: '{aceito['text']}' (pos {aceito['posicao']}, {data_atividade})")
+                posicao = _tentar_clicar_item(aceito)
+                if posicao is not None:
+                    return True, "", posicao
+            _log(
+                logger,
+                f"[GRID-SCAN] HOMONIMO-CHECK: nenhum candidato '{atividade}' com a data esperada "
+                f"({data_atividade}); datas visiveis divergem. Homonimo bloqueado por data.",
+            )
+            # Nao cai no fallback por posicao: com homonimo de data diferente,
+            # posicao derivada de 'Status lancamento N' pode apontar para a
+            # atividade errada (mesma linha antiga).
+            return False, "", 0
+
         for item in js_elements:
             texto = item["text"]
             if not texto:
@@ -3936,6 +4014,16 @@ def _select_activity(page, atividade: str, logger: Optional[LogFn], posicao_fall
                         break
                 if conflito:
                     _log(logger, f"[GRID-SCAN-POSICAO] Fallback BLOQUEADO: posicao {posicao_fallback} e '{texto_posicao}', que casa com a atividade '{conflito}'. Nao vou clicar.")
+                elif (
+                    data_atividade
+                    and (rd := _data_da_linha(item_posicao))
+                    and not _dates_match(rd, data_atividade)
+                ):
+                    _log(
+                        logger,
+                        f"[GRID-SCAN-POSICAO] Fallback BLOQUEADO por data: posicao {posicao_fallback} "
+                        f"('{texto_posicao}') e de {rd}, mas a atividade esperada e de {data_atividade}.",
+                    )
                 else:
                     _log(logger, f"[GRID-SCAN-POSICAO] Nome '{atividade}' nao casou; usando posicao {posicao_fallback} da GRIDAGENDA ({texto_posicao!r}).")
                     posicao = _tentar_clicar_item(item_posicao)
@@ -3995,18 +4083,38 @@ def _scan_gridagenda_order(page, contexto: ContextoTurma, logger: Optional[LogFn
                         let pos = 0;
                         for (const a of table.querySelectorAll('a')) {
                             const t = (a.textContent || '').trim();
-                            if (t) { pos++; out.push([t, pos]); }
+                            if (t) { pos++; out.push([t, pos, a.closest('tr')?.rowIndex ?? -1]); }
                         }
                         for (const td of table.querySelectorAll('td[onclick], td[style*="cursor:pointer"]')) {
                             const t = (td.textContent || '').trim();
-                            if (t) { pos++; out.push([t, pos]); }
+                            if (t) { pos++; out.push([t, pos, td.closest('tr')?.rowIndex ?? -1]); }
                         }
-                        return out;
+                        const rowDates = {};
+                        for (const tr of table.querySelectorAll('tr')) {
+                            const txt = (tr.textContent || '').trim();
+                            const m = txt.match(/\\b(\\d{2}\\/\\d{2}(?:\\/\\d{4})?)\\b/);
+                            if (m) {
+                                const r = tr.rowIndex ?? -1;
+                                if (r >= 0) rowDates[r] = m[1];
+                            }
+                        }
+                        return {elements: out, rowDates};
                     }
                 """)
+                row_dates_pre: Dict[int, str] = {}
+                if isinstance(elems, dict):
+                    raw_dates = elems.get("rowDates") or {}
+                    try:
+                        row_dates_pre = {int(k): str(v) for k, v in dict(raw_dates).items()}
+                    except Exception:  # noqa: BLE001
+                        row_dates_pre = {}
+                    elems = list(elems.get("elements") or [])
                 for item in elems or []:
                     try:
-                        order.append((str(item[0]).strip(), int(item[1])))
+                        nome_i, pos_i, row_i = str(item[0]).strip(), int(item[1]), int(item[2])
+                        # Guarda tambem a data da linha (quando existe) para cruzar
+                        # nome+data e nao pular bloco por homonimo do mes anterior.
+                        order.append((nome_i, pos_i, row_dates_pre.get(row_i, "")))
                     except Exception:  # noqa: BLE001
                         continue
                 _log(logger, f"[GRID-PRE-SCAN] {len(order)} avaliacao(oes) na GRIDAGENDA de {contexto.turma}: {[f'{n}@{p}' for n, p in order]}")
@@ -4020,9 +4128,39 @@ def _scan_gridagenda_order(page, contexto: ContextoTurma, logger: Optional[LogFn
 def _posicao_do_pre_scan(contexto: ContextoTurma, atividade: str) -> int:
     """Posicao da atividade na GRIDAGENDA pre-scanneada (0 se nao encontrada)."""
     key = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
-    for nome, posicao in _sge_grade_order_cache.get(key, []):
-        if _activity_match(atividade, nome):
-            return posicao
+    for item in _sge_grade_order_cache.get(key, []):
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        nome_t, posicao_t = item[0], item[1]
+        if _activity_match(atividade, nome_t):
+            return int(posicao_t)
+    return 0
+
+
+def _prescan_pode_pular(contexto: ContextoTurma, atividade: str, data_atividade: str) -> int:
+    """Posicao do pre-scan que pode ser usada para pular o bloco (0 = nao pode).
+
+    Com cruzamento nome+data: se a grade mostra datas e a linha casada por nome
+    tem data DIFERENTE da esperada, e homonimo do mes anterior — NAO pular
+    (o proprio _select_activity tambem bloqueara o clique).
+    """
+    key = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
+    datas_nomes = [dt for (_, _, dt) in _sge_grade_order_cache.get(key, []) if dt]
+    if not (data_atividade and datas_nomes):
+        return _posicao_do_pre_scan(contexto, atividade)
+    key2 = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
+    for item in _sge_grade_order_cache.get(key2, []):
+        if isinstance(item, (tuple, list)):
+            if len(item) >= 3:
+                nome_t, posicao_t, data_t = item[0], item[1], item[2]
+            else:
+                nome_t, posicao_t, data_t = item[0], item[1], ""
+        else:
+            continue
+        if _activity_match(atividade, nome_t):
+            if not data_t or _dates_match(data_t, data_atividade):
+                return int(posicao_t)
+            return 0
     return 0
 
 
@@ -6121,7 +6259,7 @@ def _revisar_blocos_apos_lancamento(
             if m_rev:
                 posicao_fallback_rev = int(m_rev.group(1))
                 break
-        atividade_encontrada, _data_sge, posicao_grid = _select_activity(page, atividade, logger=logger, posicao_fallback=posicao_fallback_rev)
+        atividade_encontrada, _data_sge, posicao_grid = _select_activity(page, atividade, logger=logger, posicao_fallback=posicao_fallback_rev, data_atividade=data_realizacao)
         if not atividade_encontrada:
             _log(logger, f"[REVISAO] Atividade '{atividade}' nao reencontrada. Nao foi possivel re-auditar.")
             resumo["falhas"] += len(itens)
@@ -6353,6 +6491,13 @@ def executar_lancamento(
             if not _sge_grade_order_cache.get((escola, turno, turma, trimestre)):
                 _scan_gridagenda_order(page, contexto, logger=logger)
             posicao_prescan = _posicao_do_pre_scan(contexto, atividade)
+            if posicao_prescan > 0 and not _prescan_pode_pular(contexto, atividade, data_mais_comum):
+                _log(
+                    logger,
+                    f"[PRE-SCAN] '{atividade}' casou por nome, mas a data da linha difere de "
+                    f"{data_mais_comum} (possivel homonimo do mes anterior). Nao vou pular nem clicar por nome.",
+                )
+                posicao_prescan = 0
             if posicao_prescan > 0:
                 status_prescan = f"Status lancamento {posicao_prescan}"
                 todos_lancados = bool(itens) and all(
@@ -6402,7 +6547,7 @@ def executar_lancamento(
                     posicao_fallback = int(m_fb.group(1))
                     break
             outras_atividades = sorted({k[4] for k in grouped if k[:4] == key[:4] and k[4] != atividade})
-            atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=logger, posicao_fallback=posicao_fallback, outras_atividades=outras_atividades)
+            atividade_encontrada, data_sge, posicao_grid = _select_activity(page, atividade, logger=logger, posicao_fallback=posicao_fallback, outras_atividades=outras_atividades, data_atividade=data_mais_comum)
             if not atividade_encontrada:
                 _log(logger, f"Aviso: atividade '{atividade}' nao encontrada no SGE. Pulando bloco.")
                 for reg in itens:

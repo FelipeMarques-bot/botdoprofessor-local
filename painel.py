@@ -43,6 +43,24 @@ _SENSITIVE_CONFIG_KEYS = (
     "anthropic_key",
 )
 
+# Chaves que NAO podem ser persistidas no config.json (informacao de
+# lancamento): devem comecar vazias a cada execucao.
+_CONFIG_NAO_PERSISTIDAS = (
+    "fonte",
+    "escola",
+    "turno",
+    "turma",
+    "trimestre",
+    "avaliacao_nome",
+    "avaliacao_data",
+    "tipo",
+    "seq_titulo_documento",
+    "seq_periodo_inicio",
+    "seq_periodo_fim",
+    "seq_n_aulas",
+    "seq_drive_links",
+)
+
 
 def _ler_versao() -> str:
     """Le a versao do VERSION.txt (fonte unica), com fallback fixo."""
@@ -420,7 +438,76 @@ _DARK_THEME_CSS = """
     code, pre { background: #131a2b !important; color: #e2e8f0 !important; }
     hr { border-color: rgba(148, 163, 184, 0.25) !important; }
     [data-testid="stDataFrame"], [data-testid="stTable"] { border-radius: 12px; overflow: hidden; }
-    .link-entry { background: #1a1f35; border-left-color: #3b82f6; }
+    .link-entry { background: #1a1f35 !important; border-left-color: #3b82f6; }
+
+    /* Variaveis do tema: o launcher forca o tema base CLARO do Streamlit
+       (--background-color: #fff etc.), o que deixava fundos brancos vazarem
+       em varios widgets com texto claro do nosso CSS. Sobrescrevemos as
+       variaveis para o modo escuro de verdade. */
+    :root {
+        --primary-color: #2563eb !important;
+        --background-color: #0f172a !important;
+        --secondary-background-color: #1b2233 !important;
+        --tertiary-background-color: #131a2b !important;
+        --text-color: #e2e8f0 !important;
+        --text-color-important: #f1f5f9 !important;
+        --link-color: #8ab4ff !important;
+    }
+
+    /* Popovers/menus/tooltip/dialog/calendario: painel flutuante branco
+       (secondaryBackgroundColor do tema claro) com texto claro = ilegivel. */
+    [data-baseweb="popover"], [data-baseweb="popover"] > div,
+    [data-baseweb="popper"], [data-baseweb="menu"],
+    [data-baseweb="tooltip"], [data-baseweb="calendar"],
+    [data-baseweb="popover"] [role="tooltip"],
+    [data-testid="stTooltip"], [data-testid="stTooltipHovered"],
+    [data-testid="stToast"], [role="dialog"],
+    div[data-testid="stDialog"], .stFormSubmitButton div[data-baseweb="popover"],
+    div[data-testid="stDateInput"] div[data-baseweb="popover"],
+    div[data-testid="stTimeInput"] div[data-baseweb="popover"] {
+        background: #1b2233 !important;
+        color: #e2e8f0 !important;
+        border-color: #3a4157 !important;
+    }
+    [data-baseweb="popover"] * { border-color: #3a4157 !important; }
+    [data-baseweb="popover"] input, [data-baseweb="popover"] input::placeholder {
+        background: #232b40 !important; color: #e2e8f0 !important;
+    }
+    [data-baseweb="popover"] li:hover, [data-baseweb="popover"] [role="option"]:hover,
+    [data-baseweb="calendar"] td:hover {
+        background: #2a3145 !important; color: #eef1f7 !important;
+    }
+
+    /* Checkbox/radio: caixa clara do tema claro vira escura */
+    [data-baseweb="checkbox"] > div, [data-baseweb="radio"] > div {
+        background-color: transparent !important;
+    }
+
+    /* Tabelas HTML (st.table / markdown) e captions */
+    .stApp table, .stApp th, .stApp td {
+        background-color: transparent !important;
+        color: #dfe3ee !important;
+        border-color: #34405c !important;
+    }
+    .stApp small, .stApp em { color: #aeb6c8 !important; }
+
+    /* Containers visuais diversos que herdavam fundo claro */
+    div[data-testid="stDataFrameResizable"], .stDataFrame,
+    div[data-testid="stJson"], span[data-testid="stFileUploaderFileName"],
+    div[data-testid="stEmptyStateBlock"], div[data-testid="stStatusWidget"] {
+        background-color: #1b2233 !important; color: #e2e8f0 !important;
+    }
+    .stAlert { background-color: #131a2b !important; color: #e2e8f0 !important; border: 1px solid #3a4157 !important; }
+    div[data-testid="stDateInput"] input, div[data-testid="stTimeInput"] input {
+        background-color: #1b2233 !important; color: #e2e8f0 !important;
+    }
+    div[data-testid="stNumberInput"] button {
+        background-color: #232b40 !important; border-color: #3a4157 !important; color: #e2e8f0 !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] details,
+    [data-testid="stSidebar"] [data-testid="stExpander"] details > summary {
+        background: #0f1421 !important;
+    }
 </style>
 """
 
@@ -1004,6 +1091,10 @@ def _ler_arquivo_texto(path: str) -> str:
 
 
 def salvar_config():
+    # Somente credenciais/servicos e preferencias de exibicao sao persistidos.
+    # Informacao de lancamento (escola/turno/turma, fonte, tipo, campos da
+    # sequencia, links do Drive) NAO pode voltar preenchida de uma execucao
+    # anterior - fica em st.session_state apenas.
     config = {
         "sge_url": st.session_state.get("sge_url", ""),
         "sge_cpf": st.session_state.get("sge_cpf", ""),
@@ -1018,19 +1109,6 @@ def salvar_config():
         "anthropic_model": st.session_state.get("anthropic_model", "claude-sonnet-4-20250514"),
         "ai_provider": st.session_state.get("ai_provider", "local"),
         "ollama_model": st.session_state.get("ollama_model", "llama3.2-vision"),
-        "fonte": st.session_state.get("fonte", "notion"),
-        "escola": st.session_state.get("escola", ""),
-        "turno": st.session_state.get("turno", ""),
-        "turma": st.session_state.get("turma", ""),
-        "trimestre": st.session_state.get("trimestre", ""),
-        "avaliacao_nome": st.session_state.get("avaliacao_nome", ""),
-        "avaliacao_data": st.session_state.get("avaliacao_data", ""),
-        "tipo": st.session_state.get("tipo", "notas"),
-        "seq_titulo_documento": st.session_state.get("seq_titulo_documento", ""),
-        "seq_periodo_inicio": st.session_state.get("seq_periodo_inicio", ""),
-        "seq_periodo_fim": st.session_state.get("seq_periodo_fim", ""),
-        "seq_n_aulas": st.session_state.get("seq_n_aulas", 4),
-        "seq_drive_links": st.session_state.get("seq_drive_links", []),
         "portal_selecionado": st.session_state.get("portal_selecionado", "SGE"),
         "dark_mode": bool(st.session_state.get("dark_mode", False)),
     }
@@ -1049,6 +1127,20 @@ def salvar_config():
     except OSError:
         pass
     st.session_state.config_path = str(config_path)
+    return str(config_path)
+
+
+def _gravar_config_limpa(config: dict) -> str:
+    """Reescreve o config.json mantendo apenas as chaves persistidas."""
+    config_dir = Path.home() / ".sge_bot"
+    config_dir.mkdir(exist_ok=True)
+    config_path = config_dir / "config.json"
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    try:
+        os.chmod(config_path, 0o600)
+    except OSError:
+        pass
     return str(config_path)
 
 
@@ -1103,7 +1195,22 @@ def carregar_config():
                 with open(path, "r", encoding="utf-8") as f:
                     config = json.load(f)
                 if isinstance(config, dict):
-                    return _desproteger_config(config)
+                    config = _desproteger_config(config)
+                    # Migração: configs antigas guardavam informação de
+                    # lançamento (fonte/tipo/escola/turno/seq_*). Remove e
+                    # regrava apenas com as chaves persistidas de verdade.
+                    excedentes = [
+                        k for k in config if k in _CONFIG_NAO_PERSISTIDAS
+                    ]
+                    if excedentes:
+                        for k in excedentes:
+                            config.pop(k, None)
+                        try:
+                            _gravar_config_limpa(config)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return config
+                return {}
             except (json.JSONDecodeError, IOError):
                 try:
                     from dotenv import load_dotenv

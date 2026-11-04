@@ -2483,6 +2483,36 @@ with st.sidebar:
 
 
 # === TEMA DINAMICO ===
+def _aplicar_tema_base_streamlit():
+    """Alinha o theme.* do Streamlit com dark_mode a cada rerun.
+
+    Alem do CSS, isso troca a base (dark/light) que alimenta componentes
+    desenhados em canvas (st.dataframe/st.data_editor), dropdowns nativos,
+    tooltips e date pickers — partes que CSS puro nao consegue escurecer.
+    As args --theme.* do launcher servem de default; aqui sobrescrevemos
+    em runtime conforme o checkbox do painel.
+    """
+    dark = bool(st.session_state.get("dark_mode", False))
+    paleta = (
+        ("dark", "#0f172a", "#1b2233", "#e4e9f2")
+        if dark
+        else ("light", "#ffffff", "#f4f6fb", "#1f2430")
+    )
+    try:
+        from streamlit import config as _st_config
+
+        base_atual = _st_config.get_option("theme.base")
+        if base_atual != paleta[0]:
+            _st_config.set_option("theme.base", paleta[0], "runtime-painel")
+            _st_config.set_option("theme.backgroundColor", paleta[1], "runtime-painel")
+            _st_config.set_option("theme.secondaryBackgroundColor", paleta[2], "runtime-painel")
+            _st_config.set_option("theme.textColor", paleta[3], "runtime-painel")
+            _st_config.set_option("theme.primaryColor", "#1f6feb", "runtime-painel")
+    except Exception:
+        pass
+
+
+_aplicar_tema_base_streamlit()
 if st.session_state.get("dark_mode", False):
     st.markdown(_DARK_THEME_CSS, unsafe_allow_html=True)
 else:

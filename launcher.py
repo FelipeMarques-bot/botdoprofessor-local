@@ -542,6 +542,42 @@ def load_config():
     return {}
 
 
+def _tema_args_para_streamlit():
+    """Argumentos de tema do Streamlit conforme dark_mode salvo pelo painel.
+
+    O painel grava "dark_mode" em ~/.sge_bot/config.json (e em config.json do
+    app em versoes antigas). Impossivel injetar isso via CSS depois: elementos
+    desenhados em canvas (st.dataframe/st.data_editor) e dropdowns nativos se
+    guiam pelo theme.base — por isso o launcher precisa passar dark explicito.
+    """
+    dark_mode = False
+    for cfg_file in (Path.home() / ".sge_bot" / "config.json", CONFIG_FILE):
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f) or {}
+            dark_mode = bool(cfg.get("dark_mode", False))
+            if dark_mode:
+                break
+        except Exception:
+            continue
+
+    if dark_mode:
+        return [
+            "--theme.base", "dark",
+            "--theme.primaryColor", "#1f6feb",
+            "--theme.backgroundColor", "#0f172a",
+            "--theme.secondaryBackgroundColor", "#1b2233",
+            "--theme.textColor", "#e4e9f2",
+        ]
+    return [
+        "--theme.base", "light",
+        "--theme.primaryColor", "#1f6feb",
+        "--theme.backgroundColor", "#ffffff",
+        "--theme.secondaryBackgroundColor", "#f4f6fb",
+        "--theme.textColor", "#1f2430",
+    ]
+
+
 def _validate_license_online(key):
     data = json.dumps({"license_key": key.strip().upper()}).encode("utf-8")
     last_error = None
@@ -1385,16 +1421,14 @@ def main():
             os.environ.get("SystemRoot", "C:\\Windows"),
         ])
         proc = subprocess.Popen(
-            [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
-             "--server.headless", "true",
-             "--server.address", "127.0.0.1",
-             "--server.port", str(port),
-             "--browser.gatherUsageStats", "false",
-             "--theme.base", "light",
-             "--theme.primaryColor", "#1f6feb",
-             "--theme.backgroundColor", "#ffffff",
-             "--theme.secondaryBackgroundColor", "#f4f6fb",
-             "--theme.textColor", "#1f2430"],
+            (
+                [str(VENV_PYTHON), "-m", "streamlit", "run", painel_path,
+                 "--server.headless", "true",
+                 "--server.address", "127.0.0.1",
+                 "--server.port", str(port),
+                 "--browser.gatherUsageStats", "false"]
+                + _tema_args_para_streamlit()
+            ),
             cwd=str(APP_DIR),
             stdout=streamlit_log,
             stderr=streamlit_log,

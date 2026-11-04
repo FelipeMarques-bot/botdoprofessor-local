@@ -62,6 +62,38 @@ _CONFIG_NAO_PERSISTIDAS = (
 )
 
 
+def _date_input_calendario(label: str, string_key: str, picker_key: str, help_text: str = ""):
+    """date_input com calendario que mantem a string antiga em session_state[string_key].
+
+    Reduz erro de digitacao: o usuario escolhe a data no calendario e o valor
+    persiste como 'dd/mm/aaaa' nas chaves usadas por todo o codigo existente.
+    """
+    raw = (st.session_state.get(string_key) or "").strip()
+    valor_atual = None
+    for _fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            valor_atual = datetime.strptime(raw, _fmt).date()
+            break
+        except ValueError:
+            continue
+
+    sel = st.date_input(
+        label,
+        value=valor_atual,  # None = campo vazio (mesma semantica do text_input)
+        key=picker_key,
+        format="DD/MM/YYYY",
+        help=help_text or None,
+    )
+    if sel is None:
+        st.session_state[string_key] = ""
+    else:
+        try:
+            st.session_state[string_key] = sel.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return st.session_state.get(string_key, "")
+
+
 def _ler_versao() -> str:
     """Le a versao do VERSION.txt (fonte unica), com fallback fixo."""
     try:
@@ -2485,36 +2517,6 @@ with st.sidebar:
 
 
 # === TEMA DINAMICO ===
-def _date_input_calendario(label: str, string_key: str, picker_key: str, help_text: str = ""):
-    """date_input com calendario que mantem a string antiga em session_state[string_key].
-
-    Reduz erro de digitacao: o usuario escolhe a data no calendario e o valor
-    persiste como 'dd/mm/aaaa' nas chaves usadas por todo o codigo existente.
-    """
-    raw = (st.session_state.get(string_key) or "").strip()
-    valor_atual = None
-    for _fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-        try:
-            valor_atual = datetime.strptime(raw, _fmt).date()
-            break
-        except ValueError:
-            continue
-
-    sel = st.date_input(
-        label,
-        value=valor_atual,  # None = campo vazio (mesma semantica do text_input)
-        key=picker_key,
-        format="DD/MM/YYYY",
-        help=help_text or None,
-    )
-    if sel is None:
-        st.session_state[string_key] = ""
-    else:
-        try:
-            st.session_state[string_key] = sel.strftime("%d/%m/%Y")
-        except Exception:
-            pass
-    return st.session_state.get(string_key, "")
 def _aplicar_tema_base_streamlit():
     """Alinha o theme.* do Streamlit com dark_mode a cada rerun.
 

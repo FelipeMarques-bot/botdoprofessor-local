@@ -1381,6 +1381,11 @@ def _click_cell_action_by_header(row, header_key: str, prefer_arrow: bool = Fals
 
 
 def _row_for_periodo(page, data_inicio: str, data_fim: str):
+    if not data_inicio or not data_fim:
+        # Sem datas nao ha como procurar a linha por periodo: devolver None
+        # evita casar com a PRIMEIRA linha da grade por acidente ('' in text
+        # e sempre verdade) e reportar anexo/situacao num planejamento outro.
+        return None
     dd_i = data_inicio[:5]
     dd_f = data_fim[:5]
     found = None
@@ -1409,6 +1414,78 @@ def _row_for_periodo(page, data_inicio: str, data_fim: str):
                 found = row
 
     return found
+
+
+def _texto_situacao_da_linha(row) -> str:
+    """Le o texto da coluna Situacao de uma linha do GRIDPLANEJADO."""
+    js = """
+    () => {
+        const tr = rowEl;
+        const table = tr.closest('table');
+        if (!table) return '';
+        const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
+        const headerRow = Array.from(table.querySelectorAll('tr')).find((r) => {
+            const text = normalize(r.textContent || '');
+            return text.includes('periodo') && text.includes('situacao');
+        });
+        if (!headerRow) return '';
+        const heads = Array.from(headerRow.querySelectorAll('th, td'));
+        let colIdx = -1;
+        for (let i = 0; i < heads.length; i++) {
+            if (normalize(heads[i].textContent || '').includes('situ')) { colIdx = i; break; }
+        }
+        if (colIdx < 0) return '';
+        const cells = Array.from(tr.querySelectorAll('td, th'));
+        if (colIdx >= cells.length) return '';
+        return (cells[colIdx].textContent || '').trim().slice(0, 80);
+    }
+    """
+    try:
+        return str(row.evaluate(js.replace("rowEl", "el")))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _dump_grid_state(page, contexto, prefixo_arquivo: str = "", logger=None) -> None:
+    """Diagnostico da grade de planejamentos: loga as linhas e salva evidencia.
+
+    Sempre loga (preciso para auditar o que o SGE realmente mostrou). Quando
+    `prefixo_arquivo` e informado, grava screenshot + HTML em SGE_DEBUG_DIR.
+    """
+    textos = []
+    for scope in _iter_scopes(page):
+        try:
+            grid = scope.locator("table[id='GRIDPLANEJADO']")
+            if grid.count() == 0:
+                continue
+            rows = grid.locator("> tbody > tr")
+            total = rows.count()
+        except Exception:  # noqa: BLE001
+            continue
+        for idx in range(min(total, 6)):
+            try:
+                t = _normalize(rows.nth(idx).inner_text(timeout=300))
+            except Exception:  # noqa: BLE001
+                continue
+            if t:
+                textos.append(t[:160])
+        break
+    escola = getattr(contexto, "escola", "") or ""
+    resumo = (f"grade GRIDPLANEJADO nao encontrada" if not textos
+              else f"grade com {len(textos)} linha(s)")
+    _log(logger, f"[verif] {escola}: {resumo}")
+    for i, t in enumerate(textos):
+        _log(logger, f"[verif] {escola} linha {i + 1}: {t}")
+    if prefixo_arquivo:
+        debug_dir = os.environ.get("SGE_DEBUG_DIR", "artifacts/sge-login")
+        os.makedirs(debug_dir, exist_ok=True)
+        nome_base = f"evidencia_{prefixo_arquivo}_{(escola or 'sge').replace(' ', '_')}"
+        try:
+            page.screenshot(path=os.path.join(debug_dir, f"{nome_base}.png"), full_page=True)
+            with open(os.path.join(debug_dir, f"{nome_base}.html"), "w", encoding="utf-8") as f:
+                f.write(page.content())
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _click_anexo_icon_on_row(row) -> bool:
@@ -1621,6 +1698,12 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     # o periodo letivo que o proprio SGE expoe no titulo da pagina.
     data_inicio = registro.periodo_inicio
     data_fim = registro.periodo_fim
+    if not data_inicio or not data_fim:
+        _log(
+            logger,
+            "[periodo] AVISO: registro sem periodo doc (inicio/fim vazios). "
+            "O bot usara o periodo letivo identificado pelo SGE (abaixo).",
+        )
     try:
         pl_inicio, pl_fim, pl_tri = _periodo_letivo_do_sge(page, logger=logger)
         if pl_inicio and pl_fim:
@@ -1675,6 +1758,11 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
     page.wait_for_timeout(2500)
 
+    # Diagnostico: o que a grade realmente mostra apos o Confirmar. Caso o
+    # SGE tenha 'aceitado' sem criar (ou criado com datas diferentes), as
+    # linhas logadas aqui mostram a verdade.
+    _dump_grid_state(page, contexto, "pos_confirmar", logger=logger)
+
     # Verifica se o planejamento foi criado de fato: o form TABDADOSPLANEJAMENTO
     # deve estar oculto (display:none) e GRIDPLANEJADO visivel.
     form_visivel = False
@@ -1712,9 +1800,10 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
             page.screenshot(path=os.path.join(debug_dir, f"falha_row_{contexto.escola}.png"), full_page=True)
             with open(os.path.join(debug_dir, f"falha_row_{contexto.escola}.html"), "w", encoding="utf-8") as f:
                 f.write(page.content())
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         raise LancamentoError("Planejamento criado, mas linha por periodo nao foi localizada para anexar arquivo.")
+    _log(logger, f"[ok] linha do planejamento localizada ({data_inicio} a {data_fim}).")
 
     if not _click_anexo_icon_on_row(row):
         raise LancamentoError("Nao foi possivel abrir coluna Anexos da linha criada.")
@@ -1756,8 +1845,24 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     page.wait_for_timeout(1500)
 
     row = _row_for_periodo(page, data_inicio, data_fim)
+    escola_flux = getattr(contexto, "escola", "") or ""
     if row is not None:
         ok_situacao = _ativar_situacao_da_linha(row)
+        if ok_situacao:
+            page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(2000)
+            row_pos = _row_for_periodo(page, data_inicio, data_fim)
+            situ_txt = _texto_situacao_da_linha(row_pos or row)
+            _log(logger, f"[verif] {escola_flux} coluna Situacao apos ativar: '{situ_txt or '(vazia)'}'.")
+            if not situ_txt:
+                _dump_grid_state(page, contexto, "pos_situacao", logger=logger)
+    else:
+        _log(
+            logger,
+            f"[verif] {escola_flux} linha do planejamento NAO foi encontrada antes de ativar a situacao; "
+            "ativacao nao confirmada.",
+        )
+        _dump_grid_state(page, contexto, "pos_situacao", logger=logger)
 
     _click_inicio(page)
     return ok_planejamento, ok_anexo, ok_situacao
@@ -1985,6 +2090,12 @@ def executar_lancamento_sequencia(
     if not dry_run:
         notion_status = Client(auth=NOTION_TOKEN)
         for pid, info in status_map.items():
+            if not pid or not str(pid).strip():
+                # Registros montados a partir de Google Drive/Excel/CSV nao tem
+                # page_id no Notion: marcar como Publicado daria 'Invalid
+                # request URL' (o que aparecia no log tratando sucesso como
+                # falha). Sem page_id nao ha o que marcar.
+                continue
             if info["ok"] == info["total"] and info["total"] > 0:
                 try:
                     notion_status.pages.update(

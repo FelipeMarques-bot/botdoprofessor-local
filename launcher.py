@@ -760,7 +760,46 @@ def _set_utf8():
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
+def _matar_streamlits_stale():
+    """Encerra processos streamlit antigos que continuam na porta do painel.
+
+    No Windows, varios streamlits conseguem "escutar" a mesma porta: o
+    navegador cai no PRIMEIRO que vinculou (o mais antigo) e o professor
+    executa codigo velho mesmo depois de atualizar. Mata os processos de
+    streamlit apontando para APP_DIR/app antes de subir o painel novo,
+    garantindo que o codigo em execucao seja sempre o da versao atual.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        import psutil
+    except ImportError:
+        log("psutil indisponivel; nao foi possivel conferir streamlits antigos.")
+        return
+    alvo_app = str(APP_DIR / "app").lower()
+    antigos = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmd_l = " ".join(proc.info["cmdline"] or []).lower()
+            if "streamlit" in cmd_l and "run" in cmd_l and alvo_app in cmd_l:
+                if proc.info["pid"] != os.getpid():
+                    antigos.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    mortos = 0
+    for proc in antigos:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+            mortos += 1
+        except Exception:
+            pass
+    if mortos:
+        log(f"{mortos} processo(s) streamlit antigo(s) encerrado(s) antes de iniciar o painel novo.")
+
+
 def _hide_console():
+
     if os.name == "nt":
         try:
             import ctypes
@@ -1406,6 +1445,7 @@ def main():
         log("Iniciando Streamlit...")
 
         port = 8501
+        _matar_streamlits_stale()
         streamlit_log = open(str(LOG_DIR / "streamlit.log"), "w", encoding="utf-8")
         clean_env = os.environ.copy()
         if getattr(sys, "frozen", False):

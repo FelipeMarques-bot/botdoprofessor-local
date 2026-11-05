@@ -1691,34 +1691,39 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
     page.wait_for_timeout(2000)
 
-    # Chuva de datas: o SGE rejeita silenciosamente periodos FORA do
-    # trimestre letivo (formulario permanece visivel apos Confirmar). O
-    # periodo do documento (ex.: '31/08 a 25/09') pode cair fora do
-    # trimestre (ex.: 3o trimestre = 03/09 a 09/12). Por isso priorizamos
-    # o periodo letivo que o proprio SGE expoe no titulo da pagina.
+    # O SGE rejeita silenciosamente periodos FORA do trimestre letivo
+    # (formulario permanece visivel apos Confirmar). MAS o professor escolhe
+    # o periodo do planejamento no painel/documento: a data informada tem
+    # PRIORIDADE. O periodo letivo do SGE (lido do titulo da pagina) so entra
+    # em dois casos: registro sem periodo doc, ou SGE rejeitar as datas
+    # informadas (fallback tentado logo apos o primeiro Confirmar).
     data_inicio = registro.periodo_inicio
     data_fim = registro.periodo_fim
-    if not data_inicio or not data_fim:
+    periodo_doc_informado = bool(data_inicio and data_fim)
+    if periodo_doc_informado:
+        _log(logger, f"[periodo] Usando as datas INFORMADAS no planejamento: {data_inicio} a {data_fim}.")
+    else:
         _log(
             logger,
             "[periodo] AVISO: registro sem periodo doc (inicio/fim vazios). "
             "O bot usara o periodo letivo identificado pelo SGE (abaixo).",
         )
+    pl_inicio, pl_fim, pl_tri = "", "", None
     try:
         pl_inicio, pl_fim, pl_tri = _periodo_letivo_do_sge(page, logger=logger)
-        if pl_inicio and pl_fim:
-            contexto_tri = _extract_first_number(contexto.trimestre)
-            if contexto_tri and pl_tri and str(contexto_tri) != str(pl_tri):
-                _log(
-                    logger,
-                    f"[periodo] ALERTA: pagina exibe {pl_tri}o trimestre, mas contexto espera "
-                    f"{contexto_tri}o. Nao vou usar o periodo do SGE para nao criar no "
-                    f"trimestre errado; seguindo com as datas do documento.",
-                )
-            else:
-                data_inicio, data_fim = pl_inicio, pl_fim
     except Exception:  # noqa: BLE001
         pass
+    if not periodo_doc_informado and pl_inicio and pl_fim:
+        contexto_tri = _extract_first_number(contexto.trimestre)
+        if contexto_tri and pl_tri and str(contexto_tri) != str(pl_tri):
+            _log(
+                logger,
+                f"[periodo] ALERTA: pagina exibe {pl_tri}o trimestre, mas contexto espera "
+                f"{contexto_tri}o. Nao vou usar o periodo do SGE para nao criar no "
+                "trimestre errado; seguindo com as datas do documento.",
+            )
+        else:
+            data_inicio, data_fim = pl_inicio, pl_fim
 
     # Guarda extra: ano da data fim com provavel digito errado (ex.: '2016'
     # em vez de '2026') faz o SGE rejeitar com 'Data Inicio maior que Data
@@ -1778,9 +1783,30 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
             page.screenshot(path=os.path.join(debug_dir, f"falha_confirmar_{contexto.escola}.png"), full_page=True)
             with open(os.path.join(debug_dir, f"falha_confirmar_{contexto.escola}.html"), "w", encoding="utf-8") as f:
                 f.write(page.content())
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
-        erro_sge = _erro_visivel_sge(page)
+        # Fallback: as datas INFORMADAS podem estar fora do trimestre letivo
+        # (SGE rejeita em silencio). Tenta UMA vez com o periodo letivo que o
+        # proprio SGE mostra no titulo — so se o doc tinha periodo informado.
+        if periodo_doc_informado and pl_inicio and pl_fim:
+            _log(
+                logger,
+                f"[periodo] SGE nao aceitou as datas informadas ({data_inicio} a {data_fim}). "
+                f"Tentando novamente com o periodo letivo do SGE: {pl_inicio} a {pl_fim}.",
+            )
+            data_inicio, data_fim = pl_inicio, pl_fim
+            periodo_doc_informado = False
+            if _set_periodo_and_aulas(page, data_inicio, data_fim, registro.n_aulas):
+                if _click_confirmar(page):
+                    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+                    page.wait_for_timeout(2500)
+                    _dump_grid_state(page, contexto, "pos_confirmar_fallback", logger=logger)
+                    try:
+                        form_visivel = page.locator("table[id='TABDADOSPLANEJAMENTO']").is_visible(timeout=1000)
+                    except Exception:  # noqa: BLE001
+                        pass
+        if form_visivel:
+            erro_sge = _erro_visivel_sge(page)
         detalhe = f" SGE: {erro_sge}." if erro_sge else ""
         dica = ""
         if "data" in detalhe.lower() and ("fim" in detalhe.lower() or "maior" in detalhe.lower()):

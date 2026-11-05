@@ -2731,31 +2731,10 @@ with tab_plan:
             "(Origem dos Dados) para editar as notas nesta aba."
         )
 
-# === DIALOGO DE CONFIRMACAO DE ENVIO ===
-@st.dialog("Confirmar envio ao portal")
-def _confirmar_envio_dialog(resumo: tuple) -> None:
-    st.markdown("Você está enviando **de verdade** para o portal. Confira o resumo:")
-    for _linha in resumo:
-        if _linha.endswith(": ``") or _linha.endswith(": ''"):
-            continue
-        st.markdown(f"- {_linha}")
-    _df_envio = st.session_state.get("df")
-    if _df_envio is not None and hasattr(_df_envio, "empty") and not _df_envio.empty:
-        st.markdown("**Dados completos que vão para o portal:**")
-        st.dataframe(_df_envio, use_container_width=True, height=min(340, 48 + 30 * len(_df_envio)), hide_index=True)
-        st.caption(f"Colunas: {', '.join(map(str, _df_envio.columns))} | Linhas: {len(_df_envio)}")
-    st.caption("Depois do envio, revise as notas gravadas no portal (aba Pendências e o próprio portal).")
-    _c1, _c2 = st.columns(2)
-    if _c1.button("Sim, enviar agora", type="primary", use_container_width=True):
-        st.session_state.confirmar_envio = True
-        st.session_state.executar_agora = True
-        # Volta a secao Execucao visivel apos confirmar (a janela fecha e o
-        # app re-renderiza no topo da pagina; a ancora roda no proximo rerun).
-        st.session_state.scroll_to_execucao = True
-        st.rerun()
-    if _c2.button("Cancelar, voltar ao Lançamento", use_container_width=True):
-        st.session_state.scroll_to_execucao = True
-        st.rerun()
+# === CONFIRMACAO DE ENVIO ===
+# Janela modal (@st.dialog) se provou instavel nesta versao de Streamlit:
+# ficava aberta apos o professor confirmar. A confirmacao agora e um
+# painel INLINE que aparece sob o botao e some sozinho apos o envio.
 
 # === EXECUÇÃO (stepper + botao + gate) ===
 # Volta o scroll para ca quando a janela de confirmacao/dados e fechada,
@@ -2852,13 +2831,13 @@ with col_btn1:
             _resumo_envio.append("**Revisão da imagem:** ⚠️ ainda NÃO confirmada")
 
     executar_btn = st.button(
-        "ENVIAR NOTAS AO PORTAL",
+        "ENVIAR INFORMAÇÕES AO PORTAL",
         type="primary",
         disabled=(not pode_executar or st.session_state.executando),
         use_container_width=True,
     )
     if executar_btn:
-        _confirmar_envio_dialog(tuple(_resumo_envio))
+        st.session_state.mostrar_confirmacao = True
 
 with col_btn2:
     ajuda_btn = st.button("Ajuda / Tutorial", use_container_width=True)
@@ -2875,6 +2854,35 @@ if ajuda_btn:
     7. **Executar**: Clique no botão, confira o resumo e confirme. Depois acompanhe os logs
     8. **Importante**: Sempre revise as notas lançadas no portal ao final
     """)
+
+# === PAINEL INLINE DE CONFIRMACAO DE ENVIO ===
+# Aparece ao clicar em ENVIAR INFORMAÇÕES AO PORTAL; fecha sozinho apos
+# confirmar (a execucao comeca direto, sem janela modal travada na tela).
+if st.session_state.get("mostrar_confirmacao") and not st.session_state.get("executando"):
+    with st.container(border=True):
+        st.markdown("### Confirmar envio ao portal")
+        st.markdown("Você está enviando **de verdade** para o portal. Confira o resumo:")
+        for _linha in _resumo_envio:
+            if _linha.endswith(": ``") or _linha.endswith(": ''"):
+                continue
+            st.markdown(f"- {_linha}")
+        _df_envio = st.session_state.get("df")
+        if _df_envio is not None and hasattr(_df_envio, "empty") and not _df_envio.empty:
+            st.markdown("**Dados completos que vão para o portal:**")
+            st.dataframe(_df_envio, use_container_width=True, height=min(340, 48 + 30 * len(_df_envio)), hide_index=True)
+            st.caption(f"Colunas: {', '.join(map(str, _df_envio.columns))} | Linhas: {len(_df_envio)}")
+        st.caption("Depois do envio, revise as notas gravadas no portal (aba Pendências e o próprio portal).")
+        _cc1, _cc2 = st.columns(2)
+        if _cc1.button("Sim, enviar agora", type="primary", use_container_width=True):
+            st.session_state.mostrar_confirmacao = False
+            st.session_state.confirmar_envio = True
+            st.session_state.executar_agora = True
+            st.session_state.scroll_to_execucao = True
+            st.rerun()
+        if _cc2.button("Cancelar, voltar ao Lançamento", use_container_width=True):
+            st.session_state.mostrar_confirmacao = False
+            st.session_state.scroll_to_execucao = True
+            st.rerun()
 
 # === EXECUÇÃO ===
 _rev_aplicar = st.session_state.pop("revisao_aplicar", False)
@@ -3430,8 +3438,10 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                         _read_existing_grade_for_student,
                         _classificar_leitura,
                         _confirm_save,
-                        HEADLESS,
                     )
+                    # Modo visualizacao em tempo real: ler direto da caixinha do
+                    # painel (tambem evita pegar constante de importacao antiga).
+                    HEADLESS = bool(st.session_state.get("headless_mode", True))
                     from status_store import StatusStore
 
                     status_store_path = fonte_path or os.path.join(_revisao_dir(), "retentar_ausentes")

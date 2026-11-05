@@ -120,6 +120,19 @@ PORTAL_LOGIN_FALLBACK_URLS = [
 ]
 SGE_LOGIN_URL = os.environ.get("SGE_LOGIN_URL", DEFAULT_SGE_LOGIN_URL)
 HEADLESS = os.environ.get("HEADLESS", "1") == "1"
+
+
+def _atualizar_headless_do_env() -> bool:
+    """Re-ler HEADLESS do ambiente EM CADA execucao.
+
+    O modulo e importado UMA vez pelo Streamlit (streamlit guarda o estado do
+    processo entre reruns): o comportamento do painel mudou de antigamente —
+    quem desmarcar 'Rodar em segundo plano' com valor de importacao antigo —
+    sobrescrevendo HEADLESS na hora de abrir o browser, ignora a caixinha.
+    """
+    global HEADLESS
+    HEADLESS = os.environ.get("HEADLESS", "1") == "1"
+    return HEADLESS
 NAV_TIMEOUT_MS = int(os.environ.get("NAV_TIMEOUT_MS", "20000"))
 ACTION_TIMEOUT_MS = int(os.environ.get("ACTION_TIMEOUT_MS", "5000"))
 
@@ -6444,6 +6457,7 @@ def executar_lancamento(
     buscar_por_primeiro_nome: bool = False,
 ) -> Dict[str, int]:
     _log(logger, f"Runtime ref/sha: {os.environ.get('GITHUB_REF_NAME', 'local')} / {os.environ.get('GITHUB_SHA', 'local')[:7]}")
+    _atualizar_headless_do_env()
     global _PRIMEIRO_NOME_MATCH_ENABLED
     _PRIMEIRO_NOME_MATCH_ENABLED = bool(buscar_por_primeiro_nome)
     if _PRIMEIRO_NOME_MATCH_ENABLED:

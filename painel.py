@@ -3867,6 +3867,27 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 periodo_inicio = st.session_state.get("seq_periodo_inicio", "").strip()
                 periodo_fim = st.session_state.get("seq_periodo_fim", "").strip()
                 titulo_base = st.session_state.get("seq_titulo_documento", "").strip() or "Sequencia Didatica"
+                # Periodo escrito DENTRO do titulo (ex.: 'Sequencia didatica 12 -
+                # 26/10 a 20/11') vale como datas do doc quando os campos de
+                # periodo ficam vazios; sem isso o bot usaria o trimestre do SGE.
+                if (not periodo_inicio or not periodo_fim) and titulo_base:
+                    m_ped = re.search(
+                        r"(\d{1,2}/\d{1,2})(?:/\d{2,4})?\s*(?:a|ate|-|to)\s*(\d{1,2}/\d{1,2})(?:/\d{2,4})?",
+                        titulo_base,
+                        re.IGNORECASE,
+                    )
+                    if m_ped:
+                        anoAtual = datetime.now().year
+
+                        def _data_com_ano(_ped: str) -> str:
+                            _dd, _mm = _ped.split("/")
+                            return f"{int(_dd):02d}/{int(_mm):02d}/{anoAtual}"
+
+                        if not periodo_inicio:
+                            periodo_inicio = _data_com_ano(m_ped.group(1))
+                        if not periodo_fim:
+                            periodo_fim = _data_com_ano(m_ped.group(2))
+                        log_progress(f"Periodo extraido do titulo '{titulo_base}': {periodo_inicio} a {periodo_fim}.")
                 n_aulas = int(st.session_state.get("seq_n_aulas", 4) or 4)
 
                 registros = []

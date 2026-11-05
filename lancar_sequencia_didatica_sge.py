@@ -1699,6 +1699,24 @@ def _executar_fluxo_plano_aulas(page, contexto: ContextoPlano, registro: Sequenc
     # informadas (fallback tentado logo apos o primeiro Confirmar).
     data_inicio = registro.periodo_inicio
     data_fim = registro.periodo_fim
+    # Datas escritas dentro do titulo do doc (ex.: 'Sequencia didatica 12 -
+    # 26/10 a 20/11') contam como periodo do documento quando as colunas de
+    # periodo ficam vazias.
+    if (not data_inicio or not data_fim) and registro.titulo_documento:
+        m_ped = re.search(
+            r"(\d{1,2}/\d{1,2})(?:/\d{2,4})?\s*(?:a|ate|-|to)\s*(\d{1,2}/\d{1,2})(?:/\d{2,4})?",
+            registro.titulo_documento,
+            re.IGNORECASE,
+        )
+        if m_ped:
+            anoAtual = datetime.now().year
+            if not data_inicio:
+                _dd, _mm = m_ped.group(1).split("/")
+                data_inicio = f"{int(_dd):02d}/{int(_mm):02d}/{anoAtual}"
+            if not data_fim:
+                _dd, _mm = m_ped.group(2).split("/")
+                data_fim = f"{int(_dd):02d}/{int(_mm):02d}/{anoAtual}"
+            _log(logger, f"[periodo] Datas extraidas do titulo do doc: {data_inicio} a {data_fim}.")
     periodo_doc_informado = bool(data_inicio and data_fim)
     if periodo_doc_informado:
         _log(logger, f"[periodo] Usando as datas INFORMADAS no planejamento: {data_inicio} a {data_fim}.")

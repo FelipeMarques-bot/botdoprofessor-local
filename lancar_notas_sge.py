@@ -2135,8 +2135,8 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
     _log(logger, f"[FILTRO] Filtro aplicado: {filtro}")
     _log(logger, f"[FILTRO] Registros antes do filtro: {len(registros)}")
 
-    def match(value: str, key: str) -> bool:
-        expected = filtro.get(key)
+    def match(value: str, key: str, filtro_atual: Dict[str, str]) -> bool:
+        expected = filtro_atual.get(key)
         if not expected:
             return True
         if key == "turma":
@@ -2163,8 +2163,8 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
             return d
         return _normalize(d)
 
-    def match_date(value: str, key: str) -> bool:
-        expected = filtro.get(key)
+    def match_date(value: str, key: str, filtro_atual: Dict[str, str]) -> bool:
+        expected = filtro_atual.get(key)
         if not expected:
             return True
         # Se o registro nao tem data, nao filtra por data (deixa passar)
@@ -2182,35 +2182,58 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
             _log(logger, f"[FILTRO] Descartado por '{key}': esperado='{expected}' (norm='{expected_norm}'), valor='{value}' (norm='{value_norm}')")
         return result
 
-    resultado = []
-    descartes: Counter = Counter()
-    for r in registros:
-        if not match(r.escola, "escola"):
-            descartes["escola"] += 1
-            continue
-        if not match(r.turno, "turno"):
-            descartes["turno"] += 1
-            continue
-        if not match(r.turma, "turma"):
-            descartes["turma"] += 1
-            continue
-        if not match(r.trimestre, "trimestre"):
-            descartes["trimestre"] += 1
-            continue
-        if not match(r.atividade, "atividade"):
-            descartes["atividade"] += 1
-            continue
-        if not match_date(r.data_realizacao, "data_realizacao"):
-            descartes["data_realizacao"] += 1
-            continue
-        resultado.append(r)
-    if descartes:
-        resumo = ", ".join(f"{n} por '{k}'" for k, n in descartes.most_common())
+    def aplicar(filtro_atual: Dict[str, str]) -> List[RegistroNota]:
+        resultado: List[RegistroNota] = []
+        descartes: Counter = Counter()
+        for r in registros:
+            if not match(r.escola, "escola", filtro_atual):
+                descartes["escola"] += 1
+                continue
+            if not match(r.turno, "turno", filtro_atual):
+                descartes["turno"] += 1
+                continue
+            if not match(r.turma, "turma", filtro_atual):
+                descartes["turma"] += 1
+                continue
+            if not match(r.trimestre, "trimestre", filtro_atual):
+                descartes["trimestre"] += 1
+                continue
+            if not match(r.atividade, "atividade", filtro_atual):
+                descartes["atividade"] += 1
+                continue
+            if not match_date(r.data_realizacao, "data_realizacao", filtro_atual):
+                descartes["data_realizacao"] += 1
+                continue
+            resultado.append(r)
+        if descartes:
+            resumo = ", ".join(f"{n} por '{k}'" for k, n in descartes.most_common())
+            _log(
+                logger,
+                f"[FILTRO] {len(registros) - len(resultado)} registro(s) descartado(s): {resumo}."
+            )
+        return resultado
+
+    resultado = aplicar(filtro)
+
+    # Se a combinacao atividade + data nao casou nada, a data informada pode
+    # estar errada/desatualizada (ex.: data de outra atividade ou de uma
+    # execucao anterior). O nome da atividade ja identifica a coluna no SGE e
+    # a data correta vem do Notion, entao refaz o filtro sem a data.
+    if not resultado and filtro.get("atividade") and filtro.get("data_realizacao"):
+        filtro_sem_data = {k: v for k, v in filtro.items() if k != "data_realizacao"}
         _log(
             logger,
-            f"[FILTRO] {len(registros) - len(resultado)} registro(s) descartado(s): {resumo}. "
-            f"Isso e esperado quando o filtro pede so o dia da atividade: os registros de outras datas/turmas ficam de fora."
+            f"[FILTRO] Nenhum registro casou atividade + data ({filtro['data_realizacao']}). "
+            f"Refazendo o filtro apenas pela atividade '{filtro['atividade']}'..."
         )
+        resultado = aplicar(filtro_sem_data)
+        if resultado:
+            datas = sorted({r.data_realizacao for r in resultado if r.data_realizacao})
+            _log(
+                logger,
+                f"[FILTRO] AVISO: a data informada ({filtro['data_realizacao']}) nao corresponde ao Notion. "
+                f"Usando a data da atividade: {', '.join(datas) if datas else 'sem data'}."
+            )
     _log(logger, f"[FILTRO] Registros apos filtro: {len(resultado)}")
     return resultado
 
@@ -6475,15 +6498,32 @@ def executar_lancamento(
     # o browser e novo e pode abrir na tela de selecao de escola).
     _reset_navigation_cache()
 
-    registros = carregar_notas_notion(logger=logger, filtro=filtro)
-    _log(logger, f"Total de notas carregadas do Notion: {len(registros)}")
-    if registros:
-        for r in registros[:5]:
+    registros_notion = carregar_notas_notion(logger=logger, filtro=filtro)
+    _log(logger, f"Total de notas carregadas do Notion: {len(registros_notion)}")
+    if registros_notion:
+        for r in registros_notion[:5]:
             _log(logger, f"  [DEBUG] Aluno='{r.aluno}' Atividade='{r.atividade}' Data='{r.data_realizacao}' Status='{r.notion_status_prop}' Nota={r.nota}")
-    registros = _filtrar_registros(registros, filtro, logger=logger)
+    registros = _filtrar_registros(registros_notion, filtro, logger=logger)
 
     if not registros:
-        raise LancamentoError("Nenhuma nota encontrada para o filtro selecionado.")
+        dicas = sorted({
+            f"'{r.atividade}' (data: {r.data_realizacao or 'sem data'})"
+            for r in registros_notion
+            if r.atividade
+        })
+        detalhe = ""
+        if dicas:
+            visiveis = dicas[:8]
+            restantes = len(dicas) - len(visiveis)
+            if restantes > 0:
+                visiveis.append(f"... e mais {restantes}")
+            detalhe = (
+                " Atividades disponiveis no Notion para esse contexto: "
+                + "; ".join(visiveis) + "."
+            )
+        raise LancamentoError(
+            "Nenhuma nota encontrada para o filtro selecionado." + detalhe
+        )
 
     grouped = _group_for_launch(registros)
     total_blocos = len(grouped)

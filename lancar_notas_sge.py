@@ -2239,6 +2239,17 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
                 f"({', '.join(datas_notion) if datas_notion else 'sem data'}). "
                 f"Usando a data informada para validar a grade."
             )
+
+    # A data informada no filtro e a referencia do usuario: preenche os
+    # registros sem data (Notion com 'Data realizacao' vazia) para que o
+    # cruzamento nome+data da GRIDAGENDA consiga separar atividades homonimas
+    # (mesmo nome, datas diferentes).
+    data_filtro = filtro.get("data_realizacao")
+    if data_filtro:
+        data_filtro_norm = _normalize_date(data_filtro)
+        for r in resultado:
+            if not r.data_realizacao:
+                r.data_realizacao = data_filtro_norm
     _log(logger, f"[FILTRO] Registros apos filtro: {len(resultado)}")
     return resultado
 
@@ -3299,6 +3310,24 @@ def _voltar_apos_pagina_errada(page, logger: Optional[LogFn]) -> None:
 
 
 
+def _voltar_para_gridagenda(page, logger: Optional[LogFn] = None) -> bool:
+    """Volta da grade de lancamento para a GRIDAGENDA apos abrir a atividade
+    errada (homonimo). Retorna True se a GRIDAGENDA reapareceu."""
+    try:
+        page.go_back(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        page.wait_for_timeout(600)
+    except Exception:  # noqa: BLE001
+        try:
+            page.go_back(timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(600)
+        except Exception:  # noqa: BLE001
+            return False
+    if _find_gridagenda_scope(page, timeout_ms=4000) is None:
+        _log(logger, "[GRID-SCAN] Nao consegui voltar para a GRIDAGENDA apos homonimo.")
+        return False
+    return True
+
+
 def _attempt_open_assessment(
     page,
     turma_num: str,
@@ -3908,7 +3937,6 @@ def _select_activity(
                 if span_atual.count() > 0:
                     texto_atual = (span_atual.first.inner_text(timeout=2000) or "").strip()
                     if texto_atual and _activity_match(atividade, texto_atual):
-                        _log(logger, f"[PRE-CHECK] Atividade '{atividade}' ja esta aberta.")
                         posicao = 0
                         try:
                             posicao_input = scope.locator("input[name*='_POSICAO_0001']")
@@ -3923,7 +3951,16 @@ def _select_activity(
                                 data_sge = _normalize_sge_date(dt_input.first.input_value(timeout=500) or "")
                         except Exception:
                             pass
-                        return True, data_sge, posicao
+                        # Homonimo: mesmo nome em outra data nao serve.
+                        if data_atividade and data_sge and not _dates_match(data_sge, data_atividade):
+                            _log(
+                                logger,
+                                f"[PRE-CHECK] Atividade aberta '{texto_atual}' tem data {data_sge}, "
+                                f"esperada {data_atividade}. Ignorando e procurando na GRIDAGENDA.",
+                            )
+                        else:
+                            _log(logger, f"[PRE-CHECK] Atividade '{atividade}' ja esta aberta.")
+                            return True, data_sge, posicao
             except Exception:
                 pass
 
@@ -4065,7 +4102,16 @@ def _select_activity(
             except Exception:  # noqa: BLE001
                 return ""
 
-        candidatos = [it for it in js_elements if it.get("text") and _activity_match(atividade, it["text"])]
+        candidatos = []
+        _vistos_cand = set()
+        for it in js_elements:
+            if not it.get("text") or not _activity_match(atividade, it["text"]):
+                continue
+            _chave_cand = (it["text"], it.get("rowIdx"))
+            if _chave_cand in _vistos_cand:
+                continue
+            _vistos_cand.add(_chave_cand)
+            candidatos.append(it)
         for it in candidatos:
             rd = _data_da_linha(it)
             if data_atividade:
@@ -4079,18 +4125,17 @@ def _select_activity(
             else:
                 _log(logger, f"[GRID-SCAN] Candidato '{it['text']}' (pos {it['posicao']}).")
 
-        # Cruzamento nome+data: se existe uma data esperada e a linha mostra uma
-        # data visivel (ex.: mes anterior com mesma descricao), homonimos nao
-        # podem ser usados como match (falso positivo portal). Se a grade nao
-        # mostra datas, mantemos o match por nome (comportamento antigo).
+        # Cruzamento nome+data: com atividades homonimas (mesmo nome, datas
+        # diferentes), a primeira da grade pode nao ser a certa. Se a linha
+        # mostra data, ela decide; se nao mostra, o candidato e aberto e a data
+        # e conferida na tela de lancamento (ver loop abaixo).
         datas_reveladas = [rd for it in candidatos if (rd := _data_da_linha(it))]
+        candidatos_para_clicar = list(candidatos)
         if data_atividade and datas_reveladas:
             aceito = None
             for it in candidatos:
                 rd = _data_da_linha(it)
-                if not rd:
-                    continue
-                if _data_linha_confere(rd, data_atividade):
+                if rd and _data_linha_confere(rd, data_atividade):
                     aceito = it
                     break
             if aceito is not None:
@@ -4098,26 +4143,48 @@ def _select_activity(
                 posicao = _tentar_clicar_item(aceito)
                 if posicao is not None:
                     return True, _ler_data_sge_da_grade(page), posicao
+            # Datas visiveis divergem: nao abrir os homonimos conhecidos. Os
+            # candidatos sem data na linha ainda podem ser conferidos na tela.
+            candidatos_para_clicar = [it for it in candidatos if not _data_da_linha(it)]
+            if not candidatos_para_clicar:
+                _log(
+                    logger,
+                    f"[GRID-SCAN] HOMONIMO-CHECK: nenhum candidato '{atividade}' com a data esperada "
+                    f"({data_atividade}); datas visiveis divergem. Homonimo bloqueado por data.",
+                )
+                # Nao cai no fallback por posicao: com homonimo de data
+                # diferente, a posicao de 'Status lancamento N' pode apontar
+                # para a atividade errada (mesma linha antiga).
+                return False, "", 0
             _log(
                 logger,
-                f"[GRID-SCAN] HOMONIMO-CHECK: nenhum candidato '{atividade}' com a data esperada "
-                f"({data_atividade}); datas visiveis divergem. Homonimo bloqueado por data.",
+                "[GRID-SCAN] HOMONIMO-CHECK: datas visiveis divergem; tentando candidato(s) sem data na linha.",
             )
-            # Nao cai no fallback por posicao: com homonimo de data diferente,
-            # posicao derivada de 'Status lancamento N' pode apontar para a
-            # atividade errada (mesma linha antiga).
-            return False, "", 0
 
         for item in js_elements:
             texto = item["text"]
-            if not texto:
+            if texto:
+                _log(logger, f"[GRID-SCAN] {item['tag']}[pos={item['posicao']}] texto={texto!r}")
+        for item in candidatos_para_clicar:
+            texto = item["text"]
+            _log(logger, f"[GRID-SCAN] MATCH encontrado: {texto!r}")
+            posicao = _tentar_clicar_item(item)
+            if posicao is None:
                 continue
-            _log(logger, f"[GRID-SCAN] {item['tag']}[pos={item['posicao']}] texto={texto!r}")
-            if _activity_match(atividade, texto):
-                _log(logger, f"[GRID-SCAN] MATCH encontrado: {texto!r}")
-                posicao = _tentar_clicar_item(item)
-                if posicao is not None:
-                    return True, _ler_data_sge_da_grade(page), posicao
+            data_aberta = _ler_data_sge_da_grade(page)
+            if data_atividade and data_aberta and not _dates_match(data_aberta, data_atividade):
+                _log(
+                    logger,
+                    f"[GRID-SCAN] Homonimo: '{texto}' (pos {posicao}) abriu {data_aberta}, "
+                    f"esperado {data_atividade}. Voltando para tentar o proximo candidato.",
+                )
+                if not _voltar_para_gridagenda(page, logger=logger):
+                    break
+                agenda_scope = _find_gridagenda_scope(page, timeout_ms=4000)
+                if agenda_scope is None:
+                    break
+                continue
+            return True, data_aberta, posicao
 
         # Fallback por POSICAO: quando nenhuma avaliacao da GRIDAGENDA casa com o
         # NOME da atividade, usa a posicao derivada de 'Status lancamento N' do
@@ -4160,7 +4227,16 @@ def _select_activity(
     if _click_text_any_scope(page, atividade):
         page.wait_for_timeout(250)
         if _esperar_grade_lancamento():
-            return True, _ler_data_sge_da_grade(page), 0
+            data_aberta = _ler_data_sge_da_grade(page)
+            if data_atividade and data_aberta and not _dates_match(data_aberta, data_atividade):
+                _log(
+                    logger,
+                    f"[GRID-SCAN] Fallback por texto abriu {data_aberta}, esperado {data_atividade}. "
+                    f"Recusando homonimo.",
+                )
+                _voltar_para_gridagenda(page, logger=logger)
+            else:
+                return True, data_aberta, 0
 
     if _normalize(atividade) == "avaliacao" and _is_student_grid_visible(page):
         return True, "", 0
@@ -4271,11 +4347,13 @@ def _prescan_pode_pular(contexto: ContextoTurma, atividade: str, data_atividade:
     (o proprio _select_activity tambem bloqueara o clique).
     """
     key = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
-    datas_nomes = [dt for (_, _, dt) in _sge_grade_order_cache.get(key, []) if dt]
+    itens_grade = _sge_grade_order_cache.get(key, [])
+    datas_nomes = [dt for (_, _, dt) in itens_grade if dt]
     if not (data_atividade and datas_nomes):
         return _posicao_do_pre_scan(contexto, atividade)
-    key2 = (contexto.escola, contexto.turno, contexto.turma, contexto.trimestre)
-    for item in _sge_grade_order_cache.get(key2, []):
+    # Percorre TODOS os homonimos: com duas atividades de mesmo nome em datas
+    # diferentes, a primeira pode nao ser a certa — usa a que casa com a data.
+    for item in itens_grade:
         if isinstance(item, (tuple, list)):
             if len(item) >= 3:
                 nome_t, posicao_t, data_t = item[0], item[1], item[2]
@@ -4283,10 +4361,10 @@ def _prescan_pode_pular(contexto: ContextoTurma, atividade: str, data_atividade:
                 nome_t, posicao_t, data_t = item[0], item[1], ""
         else:
             continue
-        if _activity_match(atividade, nome_t):
-            if _data_linha_confere(data_t, data_atividade):
-                return int(posicao_t)
-            return 0
+        if not _activity_match(atividade, nome_t):
+            continue
+        if _data_linha_confere(data_t, data_atividade):
+            return int(posicao_t)
     return 0
 
 
@@ -6635,13 +6713,22 @@ def executar_lancamento(
             if not _sge_grade_order_cache.get((escola, turno, turma, trimestre)):
                 _scan_gridagenda_order(page, contexto, logger=logger)
             posicao_prescan = _posicao_do_pre_scan(contexto, atividade)
-            if posicao_prescan > 0 and not _prescan_pode_pular(contexto, atividade, data_mais_comum):
-                _log(
-                    logger,
-                    f"[PRE-SCAN] '{atividade}' casou por nome, mas a data da linha difere de "
-                    f"{data_mais_comum} (possivel homonimo do mes anterior). Nao vou pular nem clicar por nome.",
-                )
-                posicao_prescan = 0
+            if posicao_prescan > 0:
+                posicao_por_data = _prescan_pode_pular(contexto, atividade, data_mais_comum)
+                if posicao_por_data <= 0:
+                    _log(
+                        logger,
+                        f"[PRE-SCAN] '{atividade}' casou por nome, mas nenhuma linha com essa data "
+                        f"({data_mais_comum}) foi encontrada (possivel homonimo do mes anterior). "
+                        f"Nao vou pular nem clicar por nome.",
+                    )
+                elif posicao_por_data != posicao_prescan:
+                    _log(
+                        logger,
+                        f"[PRE-SCAN] Homonimo: '{atividade}' esta na posicao {posicao_prescan}, mas a "
+                        f"data {data_mais_comum} corresponde a posicao {posicao_por_data}. Usando a posicao da data.",
+                    )
+                posicao_prescan = posicao_por_data
             if posicao_prescan > 0:
                 status_prescan = f"Status lancamento {posicao_prescan}"
                 todos_lancados = bool(itens) and all(

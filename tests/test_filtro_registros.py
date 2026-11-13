@@ -74,6 +74,18 @@ def test_data_informada_prevalece_sobre_a_do_notion():
     assert {r.data_realizacao for r in out} == {"2026-10-23"}
 
 
+def test_registro_sem_data_recebe_a_data_informada():
+    """Notion sem 'Data realizacao': a data do filtro alimenta o cruzamento
+    nome+data da GRIDAGENDA (homonimos com mesmo nome e datas diferentes)."""
+    regs = [_reg("21-Atividade avaliativa individual", "", "A")]
+    out = _filtrar_registros(
+        regs,
+        _filtro(atividade="21-Atividade avaliativa individual", data_realizacao="23/10/2026"),
+    )
+    assert [r.aluno for r in out] == ["A"]
+    assert out[0].data_realizacao == "2026-10-23"
+
+
 def test_atividade_inexistente_continua_vazio():
     regs = [_reg("5 - Aula Prática", "23/10/2026", "C")]
     out = _filtrar_registros(

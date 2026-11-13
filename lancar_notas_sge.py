@@ -2215,10 +2215,11 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
 
     resultado = aplicar(filtro)
 
-    # Se a combinacao atividade + data nao casou nada, a data informada pode
-    # estar errada/desatualizada (ex.: data de outra atividade ou de uma
-    # execucao anterior). O nome da atividade ja identifica a coluna no SGE e
-    # a data correta vem do Notion, entao refaz o filtro sem a data.
+    # Se a combinacao atividade + data nao casou nada, o pareamento do Notion
+    # pode estar invertido/desatualizado (ex.: duas atividades com as datas
+    # trocadas). O nome da atividade identifica a coluna no SGE, mas a data
+    # informada pelo usuario e a referencia para validar a grade, entao refaz
+    # o filtro apenas pela atividade e assume a data informada.
     if not resultado and filtro.get("atividade") and filtro.get("data_realizacao"):
         filtro_sem_data = {k: v for k, v in filtro.items() if k != "data_realizacao"}
         _log(
@@ -2228,11 +2229,15 @@ def _filtrar_registros(registros: List[RegistroNota], filtro: Optional[Dict[str,
         )
         resultado = aplicar(filtro_sem_data)
         if resultado:
-            datas = sorted({r.data_realizacao for r in resultado if r.data_realizacao})
+            data_informada = _normalize_date(filtro["data_realizacao"])
+            datas_notion = sorted({r.data_realizacao for r in resultado if r.data_realizacao})
+            for r in resultado:
+                r.data_realizacao = data_informada
             _log(
                 logger,
-                f"[FILTRO] AVISO: a data informada ({filtro['data_realizacao']}) nao corresponde ao Notion. "
-                f"Usando a data da atividade: {', '.join(datas) if datas else 'sem data'}."
+                f"[FILTRO] AVISO: a data informada ({filtro['data_realizacao']}) nao corresponde ao Notion "
+                f"({', '.join(datas_notion) if datas_notion else 'sem data'}). "
+                f"Usando a data informada para validar a grade."
             )
     _log(logger, f"[FILTRO] Registros apos filtro: {len(resultado)}")
     return resultado

@@ -58,6 +58,22 @@ def test_data_errada_cai_para_filtro_por_atividade():
     assert [r.aluno for r in out] == ["A", "B"]
 
 
+def test_data_informada_prevalece_sobre_a_do_notion():
+    """Caso real (6o vespertino): Notion tem as datas invertidas entre as
+    atividades; a data digitada pelo usuario e a que vale na validacao."""
+    regs = [
+        _reg("21-Atividade avaliativa individual", "2026-11-06", "A"),
+        _reg("21-Atividade avaliativa individual", "2026-11-06", "B"),
+        _reg("5 - Aula Prática", "2026-10-23", "C"),
+    ]
+    out = _filtrar_registros(
+        regs,
+        _filtro(atividade="21-Atividade avaliativa individual", data_realizacao="23/10/2026"),
+    )
+    assert [r.aluno for r in out] == ["A", "B"]
+    assert {r.data_realizacao for r in out} == {"2026-10-23"}
+
+
 def test_atividade_inexistente_continua_vazio():
     regs = [_reg("5 - Aula Prática", "23/10/2026", "C")]
     out = _filtrar_registros(

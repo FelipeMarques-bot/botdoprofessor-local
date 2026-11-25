@@ -23,6 +23,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
+try:
+    os.chdir(Path(__file__).resolve().parent)
+except OSError:
+    pass
+
 from autofix import attempt_autofix, apply_fix
 from bot.security.crypto import (
     is_protected_value,
@@ -575,9 +580,20 @@ def log(msg: str):
         pass
 
 
+def _artifacts_dir() -> str:
+    for base in (os.path.dirname(os.path.abspath(__file__)), os.path.expanduser("~")):
+        candidato = os.path.join(base, "artifacts")
+        try:
+            os.makedirs(candidato, exist_ok=True)
+            return candidato
+        except OSError:
+            continue
+    return os.path.join(os.path.expanduser("~"), "artifacts")
+
+
 def _start_log_file() -> str:
     """Cria (ou retorna) o arquivo de log persistente da execução atual."""
-    log_dir = os.path.join(os.getcwd(), "artifacts", "logs")
+    log_dir = os.path.join(_artifacts_dir(), "logs")
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = os.path.join(log_dir, f"execucao_{timestamp}.log")
@@ -853,7 +869,7 @@ def _sincronizar_status_painel(status_store) -> None:
 
 
 def _revisao_dir() -> str:
-    d = os.path.join(os.getcwd(), "artifacts", "revisao")
+    d = os.path.join(_artifacts_dir(), "revisao")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -3153,7 +3169,7 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                 cpf=st.session_state.get("np_cpf", ""),
                 senha=st.session_state.get("np_senha", ""),
                 portal_name=st.session_state.get("portal_nome_value", ""),
-                outdir=os.environ.get("NP_OUTDIR", "artifacts/novo-portal"),
+                outdir=os.environ.get("NP_OUTDIR", os.path.join(_artifacts_dir(), "novo-portal")),
                 max_minutes=60,
                 logger=log_progress,
             )

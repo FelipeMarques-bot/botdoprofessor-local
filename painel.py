@@ -2089,6 +2089,18 @@ with st.sidebar:
             trimestre = st.selectbox("Trimestre", options=["", "1o Trimestre", "2o Trimestre", "3o Trimestre"], key="trimestre_select", on_change=_auto_salvar_prefs)
             st.session_state.trimestre = trimestre
 
+        if st.session_state.get("fonte", "") == "planilha":
+            st.checkbox(
+                "Casar planilha com o SGE (turma única)",
+                key="casar_planilha_sge",
+                help=(
+                    "Usa Escola/Turma da tabela nos filtros (ex.: 9°1 e 9°2). "
+                    "Se so houver um turno nos dados filtrados, preenche automaticamente. "
+                    "Se a turma da tabela nao existir no SGE mas o portal tiver apenas "
+                    "uma turma disponivel, lanca as notas nela."
+                ),
+            )
+
         # Com a tabela do painel carregada, Turno/Trimestre selecionados nos
         # filtros preenchem as CELULAS VAZIAS correspondentes SOMENTE nas
         # linhas que casam com os demais filtros (Escola/Turma), para o turno
@@ -2908,6 +2920,12 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
     log("Iniciando execução...")
 
+    from lancar_notas_sge import _set_aceitar_turma_unica
+    _set_aceitar_turma_unica(
+        st.session_state.get("fonte", "") == "planilha"
+        and bool(st.session_state.get("casar_planilha_sge", False))
+    )
+
     # === RESOLVE PORTAL (Auto: detecta pela escola registrada) ===
     portal_escolhido = st.session_state.get("portal_selecionado", "SGE")
     portal_resolvido = portal_escolhido
@@ -3337,7 +3355,8 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
                 elif fonte == "planilha":
                     fonte_path = _PAINEL_SOURCE_PATH
-                    from leitor_planilhas import linhas_para_registros, filtrar_linhas_por_filtros
+                    from leitor_planilhas import linhas_para_registros, filtrar_linhas_por_filtros, turno_unico_entre_linhas
+                    casar_planilha = bool(st.session_state.get("casar_planilha_sge", False))
                     linhas_fonte, _descartadas = filtrar_linhas_por_filtros(
                         st.session_state.get("planilha_linhas", []),
                         {
@@ -3347,7 +3366,12 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
                             "trimestre": st.session_state.get("trimestre", ""),
                         },
                         logger=log_progress,
+                        casar_planilha=casar_planilha,
                     )
+                    if casar_planilha and not st.session_state.get("turno", ""):
+                        _turno_unico = turno_unico_entre_linhas(linhas_fonte, logger=log_progress)
+                        if _turno_unico:
+                            st.session_state.turno = _turno_unico
                     registros = linhas_para_registros(
                         linhas_fonte,
                         defaults={

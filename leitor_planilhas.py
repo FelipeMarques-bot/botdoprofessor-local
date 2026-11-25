@@ -1220,19 +1220,49 @@ def linhas_para_registros(
     return registros
 
 
+def _numero_turma_planilha(valor: str) -> str:
+    txt = _normalize(valor)
+    match = re.search(r"turma\s*(\d+)", txt)
+    if match:
+        return match.group(1)
+    match = re.search(r"\|\s*(\d+)\s*$", txt)
+    if match:
+        return match.group(1)
+    match = re.match(r"^\s*(\d{1,2})\s*(?:o|[-_/ .])\s*(\d{1,2})\s*$", txt)
+    return match.group(2) if match else ""
+
+
+def turno_unico_entre_linhas(
+    linhas: List[Dict[str, Any]],
+    logger: Optional[LogFn] = None,
+) -> str:
+    turnos: List[str] = []
+    for ln in linhas:
+        valor = str(ln.get("turno") or "").strip()
+        if valor and valor not in turnos:
+            turnos.append(valor)
+    if len(turnos) != 1:
+        return ""
+    for ln in linhas:
+        if not str(ln.get("turno") or "").strip():
+            ln["turno"] = turnos[0]
+    if logger:
+        logger(f"[TURNO] Unico turno encontrado na planilha: '{turnos[0]}'. Preenchendo linhas vazias.")
+    return turnos[0]
+
+
 def filtrar_linhas_por_filtros(
     linhas: List[Dict[str, Any]],
     filtros: Dict[str, str],
     logger: Optional[LogFn] = None,
+    casar_planilha: bool = False,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Mantem apenas as linhas que casam com os filtros ATIVOS do painel.
 
-    Os filtros do painel tambem preenchem campos vazios em
-    linhas_para_registros; aqui eles passam a RESTRINGIR: se o professor
-    selecionar Escola/Turno/Turma/Trimestre, linhas de outras escolas/turmas
-    sao ignoradas no lancamento. Comparacao tolerante (minusculas, sem
-    acentos, '6º1' = '6°1'). Campo vazio na linha herda o proprio filtro e
-    portanto sempre casa. Retorna (linhas_mantidas, qtd_descartada).
+    Comparacao tolerante (minusculas, sem acentos, '6º1' = '6°1'). Com
+    casar_planilha=True, Escola casa por contem e Turma pelo numero da turma
+    ('9°2' = 'Turma 2'). Campo vazio na linha herda o filtro.
+    Retorna (linhas_mantidas, qtd_descartada).
     """
     ativos = {c: _normalize(v) for c, v in (filtros or {}).items() if _normalize(v)}
     if not ativos:
@@ -1243,9 +1273,16 @@ def filtrar_linhas_por_filtros(
         ok = True
         for campo, alvo in ativos.items():
             valor_linha = _normalize(str(ln.get(campo) or "")) or alvo
-            if valor_linha != alvo:
-                ok = False
-                break
+            if valor_linha == alvo:
+                continue
+            if casar_planilha and campo == "escola" and (alvo in valor_linha or valor_linha in alvo):
+                continue
+            if casar_planilha and campo == "turma":
+                numero_linha = _numero_turma_planilha(valor_linha)
+                if numero_linha and numero_linha == _numero_turma_planilha(alvo):
+                    continue
+            ok = False
+            break
         if ok:
             mantidas.append(ln)
         else:

@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from leitor_planilhas import filtrar_linhas_por_filtros
+from leitor_planilhas import filtrar_linhas_por_filtros, turno_unico_entre_linhas
 
 
 def _linha(escola="", turno="", turma="", trimestre="", aluno="Aluno Teste"):
@@ -85,6 +85,47 @@ class TestFiltrarLinhasPorFiltros(unittest.TestCase):
         linhas = [_linha(escola="Tancredo")]
         filtrar_linhas_por_filtros(linhas, {"escola": "Anna Alves"})
         self.assertEqual(len(linhas), 1)
+
+
+class TestCasarPlanilhaComSge(unittest.TestCase):
+    def test_turma_compacta_casa_turma_por_extenso(self):
+        linhas = [
+            _linha(turma="9º Ano - Turma 2", aluno="A"),
+            _linha(turma="9º Ano - Turma 1", aluno="B"),
+        ]
+        mantidas, descartadas = filtrar_linhas_por_filtros(
+            linhas, {"turma": "9°2"}, casar_planilha=True,
+        )
+        self.assertEqual(descartadas, 1)
+        self.assertEqual([ln["aluno"] for ln in mantidas], ["A"])
+
+    def test_sem_opcao_exigia_igualdade_exata(self):
+        linhas = [_linha(turma="9º Ano - Turma 2")]
+        mantidas, descartadas = filtrar_linhas_por_filtros(linhas, {"turma": "9°2"})
+        self.assertEqual(mantidas, [])
+        self.assertEqual(descartadas, 1)
+
+    def test_escola_por_contem(self):
+        linhas = [
+            _linha(escola="Escola Municipal Mulde", aluno="A"),
+            _linha(escola="Tancredo", aluno="B"),
+        ]
+        mantidas, descartadas = filtrar_linhas_por_filtros(
+            linhas, {"escola": "Mulde"}, casar_planilha=True,
+        )
+        self.assertEqual(descartadas, 1)
+        self.assertEqual([ln["aluno"] for ln in mantidas], ["A"])
+
+    def test_turno_unico_preenche_vazios(self):
+        linhas = [_linha(turno="Vespertino"), _linha(turno="")]
+        turno = turno_unico_entre_linhas(linhas)
+        self.assertEqual(turno, "Vespertino")
+        self.assertEqual([ln["turno"] for ln in linhas], ["Vespertino", "Vespertino"])
+
+    def test_turno_multiplo_nao_preenche(self):
+        linhas = [_linha(turno="Matutino"), _linha(turno="Vespertino")]
+        self.assertEqual(turno_unico_entre_linhas(linhas), "")
+        self.assertEqual(linhas[1]["turno"], "Vespertino")
 
 
 class TestValoresDistintos(unittest.TestCase):

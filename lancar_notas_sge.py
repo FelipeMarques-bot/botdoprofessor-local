@@ -3599,6 +3599,17 @@ def _open_assessment_for_context(page, contexto: ContextoTurma, logger: Optional
         if _attempt_open_assessment(page, turma_num, trimestre_num, turno_norm, logger):
             return True
         _turmas_no_portal = _listar_turmas_no_grid(page)
+        if (
+            _ACEITAR_TURMA_UNICA_ENABLED
+            and len(_turmas_no_portal) == 1
+            and _attempt_open_assessment(page, "", trimestre_num, turno_norm, logger)
+        ):
+            _log(
+                logger,
+                f"[TURMA-UNICA] Turma '{contexto.turma}' nao existe no SGE; "
+                f"usando a unica turma disponivel no portal: '{_turmas_no_portal[0]}'.",
+            )
+            return True
         if _turmas_no_portal:
             _log(
                 logger,
@@ -4561,6 +4572,14 @@ def _set_primeiro_nome_match(enabled: bool) -> None:
     """
     global _PRIMEIRO_NOME_MATCH_ENABLED
     _PRIMEIRO_NOME_MATCH_ENABLED = bool(enabled)
+
+
+_ACEITAR_TURMA_UNICA_ENABLED: bool = False
+
+
+def _set_aceitar_turma_unica(enabled: bool) -> None:
+    global _ACEITAR_TURMA_UNICA_ENABLED
+    _ACEITAR_TURMA_UNICA_ENABLED = bool(enabled)
 
 
 def _collect_student_slots(scope) -> List[Dict[str, str]]:
@@ -6568,8 +6587,9 @@ def executar_lancamento(
 ) -> Dict[str, int]:
     _log(logger, f"Runtime ref/sha: {os.environ.get('GITHUB_REF_NAME', 'local')} / {os.environ.get('GITHUB_SHA', 'local')[:7]}")
     _atualizar_headless_do_env()
-    global _PRIMEIRO_NOME_MATCH_ENABLED
+    global _PRIMEIRO_NOME_MATCH_ENABLED, _ACEITAR_TURMA_UNICA_ENABLED
     _PRIMEIRO_NOME_MATCH_ENABLED = bool(buscar_por_primeiro_nome)
+    _ACEITAR_TURMA_UNICA_ENABLED = False
     if _PRIMEIRO_NOME_MATCH_ENABLED:
         _log(logger, "[NOME-MATCH] Casamento por primeiro nome ATIVADO (desambigua com 2o/3o nome).")
     cpf = _resolve_env_credential(SGE_CPF, "SGE_CPF", logger=logger, digits_only=True)

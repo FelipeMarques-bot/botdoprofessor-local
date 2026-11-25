@@ -2920,11 +2920,16 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
     log("Iniciando execução...")
 
-    from lancar_notas_sge import _set_aceitar_turma_unica
-    _set_aceitar_turma_unica(
-        st.session_state.get("fonte", "") == "planilha"
-        and bool(st.session_state.get("casar_planilha_sge", False))
-    )
+    try:
+        from lancar_notas_sge import _set_aceitar_turma_unica
+    except ImportError:
+        _set_aceitar_turma_unica = None
+        log("[AVISO] Modulo lancar_notas_sge desatualizado em memoria. Reinicie o painel para usar 'casar planilha com o SGE'.")
+    if _set_aceitar_turma_unica is not None:
+        _set_aceitar_turma_unica(
+            st.session_state.get("fonte", "") == "planilha"
+            and bool(st.session_state.get("casar_planilha_sge", False))
+        )
 
     # === RESOLVE PORTAL (Auto: detecta pela escola registrada) ===
     portal_escolhido = st.session_state.get("portal_selecionado", "SGE")
@@ -3355,20 +3360,35 @@ if st.session_state.pop("executar_agora", False) or st.session_state.pop("autofi
 
                 elif fonte == "planilha":
                     fonte_path = _PAINEL_SOURCE_PATH
-                    from leitor_planilhas import linhas_para_registros, filtrar_linhas_por_filtros, turno_unico_entre_linhas
+                    from leitor_planilhas import linhas_para_registros, filtrar_linhas_por_filtros
+                    try:
+                        from leitor_planilhas import turno_unico_entre_linhas
+                    except ImportError:
+                        turno_unico_entre_linhas = None
+                    import inspect
                     casar_planilha = bool(st.session_state.get("casar_planilha_sge", False))
-                    linhas_fonte, _descartadas = filtrar_linhas_por_filtros(
-                        st.session_state.get("planilha_linhas", []),
-                        {
-                            "escola": st.session_state.get("escola", ""),
-                            "turno": st.session_state.get("turno", ""),
-                            "turma": st.session_state.get("turma", ""),
-                            "trimestre": st.session_state.get("trimestre", ""),
-                        },
-                        logger=log_progress,
-                        casar_planilha=casar_planilha,
-                    )
-                    if casar_planilha and not st.session_state.get("turno", ""):
+                    _filtros_planilha = {
+                        "escola": st.session_state.get("escola", ""),
+                        "turno": st.session_state.get("turno", ""),
+                        "turma": st.session_state.get("turma", ""),
+                        "trimestre": st.session_state.get("trimestre", ""),
+                    }
+                    if "casar_planilha" in inspect.signature(filtrar_linhas_por_filtros).parameters:
+                        linhas_fonte, _descartadas = filtrar_linhas_por_filtros(
+                            st.session_state.get("planilha_linhas", []),
+                            _filtros_planilha,
+                            logger=log_progress,
+                            casar_planilha=casar_planilha,
+                        )
+                    else:
+                        linhas_fonte, _descartadas = filtrar_linhas_por_filtros(
+                            st.session_state.get("planilha_linhas", []),
+                            _filtros_planilha,
+                            logger=log_progress,
+                        )
+                        if casar_planilha:
+                            log_progress("[AVISO] leitor_planilhas desatualizado em memoria. Reinicie o painel para usar o casamento.")
+                    if casar_planilha and turno_unico_entre_linhas is not None and not st.session_state.get("turno", ""):
                         _turno_unico = turno_unico_entre_linhas(linhas_fonte, logger=log_progress)
                         if _turno_unico:
                             st.session_state.turno = _turno_unico

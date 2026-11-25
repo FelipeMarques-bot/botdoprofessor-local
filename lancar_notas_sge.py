@@ -1777,6 +1777,16 @@ def _is_probably_grade_column(col_name: str) -> bool:
     return True
 
 
+def _is_activity_like_grade_column(col_name: str) -> bool:
+    norm = _normalize(col_name)
+    if re.match(r"^\d+\s*[-–—:.]", norm):
+        return True
+    return bool(re.search(
+        r"atividade|avaliacao|prova|trabalho|projeto|jogo|seminario|relatorio|pesquisa|simulado|resolucao",
+        norm,
+    ))
+
+
 def _match_turma(expected: str, value: str) -> bool:
     """Compara ano/turma de forma tolerante.
 
@@ -1945,6 +1955,7 @@ def carregar_notas_notion(
         grade_status_map = _build_grade_status_map(rows[0].get("properties", {})) if rows else {}
         if grade_status_map:
             _log(logger, f"  [diag] Mapeamento nota→status: {grade_status_map}")
+        avisos_status: set = set()
 
         for row in rows:
             props = row.get("properties", {})
@@ -1983,27 +1994,20 @@ def carregar_notas_notion(
                     # Preferencialmente usa o ultimo numero (ex.: "24 - Resolucao 1" → "1"),
                     # pois o primeiro pode ser parte do nome (ex.: "24").
                     all_nums = re.findall(r"(\d+)", col_name)
-                    if all_nums:
-                        last_num = all_nums[-1]
-                        cand = f"Status lancamento {last_num}"
+                    for num in (all_nums[-1], all_nums[0]) if all_nums else ():
+                        cand = f"Status lancamento {num}"
                         if any(
-                            re.search(rf"status\s*lancamento\s*{re.escape(last_num)}", _normalize(p))
+                            re.search(rf"status\s*lancamento\s*{re.escape(num)}", _normalize(p))
                             for p in props
                         ):
                             status_prop_nome = cand
-                        else:
-                            # Tenta o primeiro numero como ultimo recurso
-                            first_num = all_nums[0]
-                            cand_first = f"Status lancamento {first_num}"
-                            if any(
-                                re.search(rf"status\s*lancamento\s*{re.escape(first_num)}", _normalize(p))
-                                for p in props
-                            ):
-                                status_prop_nome = cand_first
-                            else:
-                                continue
-                    else:
-                        continue
+                            break
+                    if not status_prop_nome:
+                        if not _is_activity_like_grade_column(col_name):
+                            continue
+                        if col_name not in avisos_status:
+                            avisos_status.add(col_name)
+                            _log(logger, f"  [diag] Coluna '{col_name}' sem 'Status lancamento N' pareado; nota sera carregada sem marcar status no Notion.")
 
                 # Verifica se a atividade ja foi lancada (Status lancamento N == "Lancada")
                 status_prop_real = _resolve_existing_status_prop(props, status_prop_nome)

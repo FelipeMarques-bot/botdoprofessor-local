@@ -2034,7 +2034,7 @@ with st.sidebar:
             if st.session_state.get("fonte", "") == "planilha" else []
         )
         with col_f1:
-            from leitor_planilhas import valores_distintos as _val_dist
+            from leitor_planilhas import _normalize as _norm_campo, valores_distintos as _val_dist
             _escolas_disp = _val_dist(_linhas_painel, "escola")
             if _escolas_disp:
                 escola = st.selectbox(
@@ -2053,15 +2053,22 @@ with st.sidebar:
                     placeholder="vazio = todas as escolas",
                 )
             st.session_state.escola = escola
-            _turmas_disp = _val_dist(_linhas_painel, "turma")
+            _linhas_da_escola = [
+                ln for ln in _linhas_painel
+                if not escola or _norm_campo(str(ln.get("escola") or "")) == _norm_campo(escola)
+            ]
+            _turmas_disp = _val_dist(_linhas_da_escola, "turma")
             if _turmas_disp:
                 turma = st.selectbox(
                     "Turma",
                     options=[""] + _turmas_disp,
                     key="turma_opcoes",
                     on_change=_auto_salvar_prefs,
-                    help="Opções vindas da tabela do painel.",
+                    help="Opções vindas da tabela do painel para a escola selecionada.",
                 )
+                if turma and turma not in _turmas_disp:
+                    turma = ""
+                    st.session_state["turma_opcoes"] = ""
                 st.session_state["turma_input"] = turma
             else:
                 turma = st.text_input(
@@ -2592,14 +2599,17 @@ with tab_plan:
             key="planilha_upload",
         )
         if plan_arquivo:
+            import hashlib
             nome_arq = plan_arquivo.name
-            if nome_arq != st.session_state.get("planilha_ultimo_arquivo", ""):
+            dados_arq = plan_arquivo.getbuffer()
+            hash_arq = hashlib.md5(dados_arq).hexdigest()
+            if (nome_arq, hash_arq) != st.session_state.get("planilha_ultimo_upload", ("", "")):
                 from leitor_planilhas import carregar_notas, registros_para_linhas
                 tmp_dir = Path(tempfile.gettempdir()) / "sge_bot_uploads"
                 tmp_dir.mkdir(exist_ok=True)
                 tmp_path = tmp_dir / f"_painel_{nome_arq}"
                 with open(tmp_path, "wb") as f:
-                    f.write(plan_arquivo.getbuffer())
+                    f.write(dados_arq)
                 ext = nome_arq.rsplit(".", 1)[-1].lower()
                 fonte_arq = "excel" if ext in ("xlsx", "xls") else "csv"
                 try:
@@ -2611,6 +2621,7 @@ with tab_plan:
                 _aplicar_status_salvo(linhas)
                 st.session_state.planilha_linhas = linhas
                 st.session_state.planilha_ultimo_arquivo = nome_arq
+                st.session_state.planilha_ultimo_upload = (nome_arq, hash_arq)
                 if registros_arq:
                     st.success(f"{len(registros_arq)} nota(s) carregada(s). Edite se precisar e execute.")
                 else:
@@ -2618,6 +2629,7 @@ with tab_plan:
         else:
             if st.session_state.get("planilha_ultimo_arquivo"):
                 st.session_state.planilha_ultimo_arquivo = ""
+                st.session_state.planilha_ultimo_upload = ("", "")
 
         if "planilha_linhas" not in st.session_state:
             st.session_state.planilha_linhas = []
